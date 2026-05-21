@@ -433,7 +433,7 @@ def api_generate():
     settings = {**config, "job_name": job_name, "job_safe_z": safe_z}
 
     try:
-        gcode = generate_master_gcode(placement_dicts, settings)
+        gcode = generate_master_gcode(list(_placements.values()), settings)
     except Exception as e:
         return jsonify({"error": f"Generation failed: {e}"}), 500
 
