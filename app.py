@@ -9,6 +9,7 @@ from collision import PlacedPart, blank_rect, check_placement, slot_label
 from config import load_config, save_config
 from gcode_generator import generate_master_gcode
 from gcode_parser import GcodePart, parse_vcarve_text
+from tool_library import ToolLibrary
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -364,6 +365,11 @@ def api_place():
         msg = part.z_validation.messages[0] if part.z_validation.messages else "File failed Z validation."
         return jsonify({"ok": False, "error": "z_blocked", "message": msg}), 422
 
+    library = ToolLibrary(config.get("tools", {}))
+    unknown = library.find_unknown_tools(part)
+    if unknown:
+        return jsonify({"ok": False, "error": "unknown_tools", "tools": unknown}), 422
+
     instance_id = _make_instance_id(part.filename)
     new_placed = PlacedPart(part=part, rail=rail, slot_inches=slot_inches, instance_id=instance_id)
 
@@ -406,6 +412,44 @@ def api_remove_placement(instance_id: str):
 @app.route("/api/compatibility")
 def api_compatibility():
     return jsonify(_tool_compatibility())
+
+
+@app.route("/api/resolve-tool", methods=["POST"])
+def api_resolve_tool():
+    """
+    Operator supplies a diameter for an unknown tool.
+    Optionally persists it to the tool library in config.json.
+    Updates any in-memory cached parts that reference this tool.
+    """
+    data = request.get_json(force=True) or {}
+    tool_number = (data.get("tool_number") or "").strip().upper()
+    diameter_raw = data.get("diameter_inches")
+    save_to_library = bool(data.get("save_to_library", False))
+
+    if not tool_number:
+        return jsonify({"error": "tool_number required"}), 400
+    try:
+        diameter = float(diameter_raw)
+    except (TypeError, ValueError):
+        return jsonify({"error": "diameter_inches must be a number"}), 400
+    if diameter <= 0:
+        return jsonify({"error": "diameter_inches must be positive"}), 400
+
+    if save_to_library:
+        config.setdefault("tools", {})[tool_number] = {
+            "name": data.get("description", ""),
+            "diameter_inches": diameter,
+        }
+        save_config(config)
+
+    # Patch all cached parts so /api/place no longer blocks on this tool
+    for part in _loaded.values():
+        if tool_number in part.tools:
+            part.tools[tool_number]["diameter_inches"] = diameter
+        else:
+            part.tools[tool_number] = {"diameter_inches": diameter, "description": ""}
+
+    return jsonify({"ok": True, "tool_number": tool_number, "diameter_inches": diameter})
 
 
 @app.route("/api/generate", methods=["POST"])
