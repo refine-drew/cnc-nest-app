@@ -1,19 +1,280 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>5x10 CNC Layout Tool</title>
-  </head>
-  <body>
-    <h1>5x10 CNC Layout Tool</h1>
-    <p>Welcome to the 5x10 CNC Layout Tool prototype.</p>
-    <div id="app"></div>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CNC Nest Tool</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;font-size:13px;background:#1c1c1e;color:#e0e0e0}
+button{cursor:pointer;border:1px solid #444;background:#2c2c2e;color:#e0e0e0;border-radius:4px;padding:4px 10px;font-size:12px}
+button:hover{background:#3a3a3c}
+button:disabled{opacity:0.4;cursor:default}
+button.primary{background:#0a84ff;border-color:#0a84ff;color:#fff}
+button.primary:hover{background:#0070e0}
+input[type=text]{background:#2c2c2e;border:1px solid #444;color:#e0e0e0;border-radius:4px;padding:3px 8px;font-size:12px;outline:none}
+input[type=text]:focus{border-color:#0a84ff}
+h2{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#888;padding:8px 10px 4px;border-bottom:1px solid #333}
 
-    <script src="/static/bed.js"></script>
-    <script src="/static/sidebar.js"></script>
-    <script src="/static/placement.js"></script>
-    <script src="/static/job.js"></script>
-    <script src="/static/config.js"></script>
-  </body>
+/* ── layout ── */
+body{display:flex;flex-direction:column}
+#topbar{flex:none;height:40px;display:flex;align-items:center;gap:8px;padding:0 10px;background:#242426;border-bottom:1px solid #333;z-index:10}
+#topbar .title{font-size:13px;font-weight:600;color:#ccc;margin-right:6px;white-space:nowrap}
+#topbar .sep{width:1px;height:20px;background:#444;margin:0 4px}
+#main{flex:1;display:grid;grid-template-columns:240px 1fr 260px;overflow:hidden;min-height:0}
+#statusbar{flex:none;height:26px;display:flex;align-items:center;gap:0;padding:0;background:#242426;border-top:1px solid #333;font-size:11px;color:#888;overflow:hidden}
+.sb-item{padding:0 14px;border-right:1px solid #333;line-height:26px;white-space:nowrap}
+.sb-item span{color:#ccc}
+
+/* ── sidebars ── */
+.sidebar{display:flex;flex-direction:column;overflow:hidden;background:#242426}
+#sidebar-left{border-right:1px solid #333}
+#sidebar-right{border-left:1px solid #333}
+
+/* ── library section ── */
+#lib-search{padding:6px 8px;border-bottom:1px solid #333}
+#lib-search input{width:100%}
+#lib-tree{flex:1;overflow-y:auto;padding:4px 0}
+.lib-folder{cursor:pointer;padding:3px 8px 3px 6px;user-select:none;display:flex;align-items:center;gap:4px;color:#ccc}
+.lib-folder:hover{background:#2c2c2e}
+.lib-folder .arrow{font-size:10px;width:12px;text-align:center;color:#666}
+.lib-file{cursor:grab;padding:3px 8px 3px 22px;color:#bbb;display:flex;align-items:center;gap:6px;user-select:none;transition:background .1s}
+.lib-file:hover{background:#2c2c2e;color:#fff}
+.lib-file.dragging{opacity:0.4}
+.lib-file .z-ok{color:#30d158}
+.lib-file .z-warn{color:#ffd60a}
+.lib-file .z-blocked{color:#ff453a}
+.lib-folder-children{margin-left:12px}
+.lib-folder-children.collapsed{display:none}
+
+/* ── parts tray ── */
+#tray-list{overflow-y:auto;padding:4px 0;flex:1}
+.tray-item{padding:5px 8px;display:flex;align-items:flex-start;gap:6px;cursor:grab;border-bottom:1px solid #2a2a2a;position:relative}
+.tray-item:hover{background:#2c2c2e}
+.tray-item .dot{width:10px;height:10px;border-radius:50%;flex:none;margin-top:2px}
+.tray-item .info{flex:1;min-width:0}
+.tray-item .name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#ddd}
+.tray-item .dims{color:#888;font-size:11px}
+.tray-item .tags{display:flex;gap:3px;flex-wrap:wrap;margin-top:2px}
+.tag{padding:0 4px;border-radius:2px;font-size:10px;background:#333;color:#bbb}
+.tag.conflict{background:#4a1e1e;color:#ff6b6b}
+.tray-item .remove{position:absolute;right:6px;top:4px;opacity:0;background:none;border:none;color:#888;font-size:14px;padding:0;line-height:1;cursor:pointer}
+.tray-item:hover .remove{opacity:1}
+#tray-empty{padding:16px 10px;color:#666;font-size:12px;text-align:center}
+
+/* ── canvas area ── */
+#canvas-area{position:relative;overflow:hidden;background:#111}
+#bed-canvas{display:block;cursor:crosshair}
+#zoom-indicator{position:absolute;bottom:8px;right:10px;font-size:11px;color:#555;background:rgba(0,0,0,.4);padding:2px 6px;border-radius:3px;pointer-events:none}
+#view-toggle{position:absolute;bottom:8px;left:10px;display:flex;gap:4px}
+#view-toggle button{font-size:11px;padding:2px 8px;opacity:.7}
+#view-toggle button.active{opacity:1;background:#3a3a3c}
+
+/* ── right sidebar ── */
+#sidebar-right{display:flex;flex-direction:column;overflow:hidden}
+#placements-list{overflow-y:auto;padding:4px 0;max-height:160px}
+.placement-row{padding:4px 10px;display:flex;align-items:center;gap:6px;font-size:12px;border-bottom:1px solid #2a2a2a}
+.placement-row .slot-label{font-weight:600;color:#0a84ff;min-width:36px}
+.placement-row .pname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#ccc}
+.placement-row .remove-btn{background:none;border:none;color:#666;font-size:13px;padding:0;cursor:pointer}
+.placement-row .remove-btn:hover{color:#ff453a}
+#compat-section{padding:6px 8px;border-bottom:1px solid #333}
+.compat-row{display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px}
+.compat-ok{color:#30d158}
+.compat-conflict{color:#ff453a}
+#job-stats{padding:8px 10px;font-size:12px;color:#888;line-height:1.8}
+#job-stats .val{color:#ccc}
+#safe-z-info{padding:6px 10px;font-size:12px;border-top:1px solid #333}
+
+/* ── modals ── */
+#modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
+#modal-overlay.open{display:flex}
+.modal{background:#2c2c2e;border:1px solid #444;border-radius:8px;padding:20px;min-width:320px;max-width:480px}
+.modal h3{font-size:14px;margin-bottom:12px;color:#e0e0e0}
+.modal p{color:#aaa;font-size:12px;margin-bottom:10px;line-height:1.5}
+.modal .field{margin-bottom:10px}
+.modal .field label{display:block;font-size:11px;color:#888;margin-bottom:3px}
+.modal .field input{width:100%}
+.modal .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+
+/* ── settings panel ── */
+#settings-panel{display:none;position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.5);align-items:center;justify-content:center}
+#settings-panel.open{display:flex}
+.settings-box{background:#2c2c2e;border:1px solid #444;border-radius:8px;padding:20px;width:400px;max-height:80vh;overflow-y:auto}
+.settings-box h3{font-size:14px;margin-bottom:14px}
+.settings-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #333;font-size:12px}
+.settings-row label{color:#aaa}
+.settings-row input{width:120px;text-align:right}
+</style>
+</head>
+<body>
+
+<!-- ── top bar ── -->
+<div id="topbar">
+  <span class="title">CNC Nest Tool</span>
+  <div class="sep"></div>
+  <label style="font-size:11px;color:#888;margin-right:2px">Job:</label>
+  <input type="text" id="job-name-input" placeholder="auto" style="width:160px"/>
+  <div style="flex:1"></div>
+  <button id="btn-generate" class="primary" disabled>Generate G-code</button>
+  <div class="sep"></div>
+  <button id="btn-save" disabled>Save Job</button>
+  <button id="btn-load">Load Job</button>
+  <div class="sep"></div>
+  <button id="btn-settings" title="Settings">⚙</button>
+</div>
+
+<!-- ── main 3-column layout ── -->
+<div id="main">
+
+  <!-- left sidebar -->
+  <div id="sidebar-left" class="sidebar">
+    <h2>Library</h2>
+    <div id="lib-search"><input type="text" id="lib-search-input" placeholder="Search files…"/></div>
+    <div id="lib-tree"></div>
+    <h2>Parts Tray</h2>
+    <div id="tray-list"><div id="tray-empty">Drag files from library</div></div>
+  </div>
+
+  <!-- bed canvas -->
+  <div id="canvas-area">
+    <canvas id="bed-canvas"></canvas>
+    <div id="zoom-indicator">100%</div>
+    <div id="view-toggle">
+      <button class="active" data-view="bounds">Bounds</button>
+      <button data-view="cuts">Cut moves</button>
+      <button data-view="all">All moves</button>
+    </div>
+  </div>
+
+  <!-- right sidebar -->
+  <div id="sidebar-right" class="sidebar">
+    <h2>Placements</h2>
+    <div id="placements-list"></div>
+    <h2>Tool Compatibility</h2>
+    <div id="compat-section"></div>
+    <h2>Job Info</h2>
+    <div id="safe-z-info" style="font-size:12px;color:#888">Safe Z: —</div>
+    <div id="job-stats">
+      Parts placed: <span class="val" id="stat-placed">0</span><br>
+      Tool changes: <span class="val" id="stat-changes">0</span><br>
+      Tool sequence: <span class="val" id="stat-seq">—</span><br>
+      Utilization: <span class="val" id="stat-util">0%</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── status bar ── -->
+<div id="statusbar">
+  <div class="sb-item"><span id="sb-placed">0</span> placed</div>
+  <div class="sb-item"><span id="sb-slots">—</span> empty slots</div>
+  <div class="sb-item">Tools: <span id="sb-tools">—</span></div>
+  <div class="sb-item">Util: <span id="sb-util">0%</span></div>
+  <div class="sb-item" id="sb-message" style="flex:1"></div>
+</div>
+
+<!-- ── unknown tool modal ── -->
+<div id="modal-overlay">
+  <div class="modal" id="modal-unknown-tool">
+    <h3>Unknown Tool Diameter</h3>
+    <p id="modal-tool-desc">Tool <strong id="modal-tool-num"></strong> has no diameter. Enter it to continue placement.</p>
+    <div class="field">
+      <label>Diameter (inches)</label>
+      <input type="text" id="modal-tool-dia" placeholder="e.g. 0.5"/>
+    </div>
+    <div class="field" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="modal-tool-save" checked/>
+      <label for="modal-tool-save" style="font-size:12px;color:#aaa">Save to tool library</label>
+    </div>
+    <div class="actions">
+      <button id="modal-tool-cancel">Cancel</button>
+      <button id="modal-tool-confirm" class="primary">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── settings panel ── -->
+<div id="settings-panel">
+  <div class="settings-box">
+    <h3>Settings</h3>
+    <div class="settings-row"><label>Library path</label><input type="text" id="cfg-library-path"/></div>
+    <div class="settings-row"><label>Output path</label><input type="text" id="cfg-output-path"/></div>
+    <div class="settings-row"><label>Rail width (mm)</label><input type="text" id="cfg-rail-width"/></div>
+    <div class="settings-row"><label>Safe Z clearance (mm)</label><input type="text" id="cfg-safe-z"/></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <button id="cfg-cancel">Cancel</button>
+      <button id="cfg-save" class="primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Global app state shared across all modules
+const App = {
+  placements: [],       // array of placement objects from /api/placements
+  tray: [],             // array of part objects loaded into the tray
+  config: {},           // from /api/config
+  slots: [],            // from /api/slots
+  compatibility: {},    // from latest /api/place or /api/placements
+  jobSafeZ: {},         // {value, driven_by}
+
+  // Called whenever placements change — refreshes all UI panels
+  onPlacementsChanged() {
+    if (window.BedCanvas) BedCanvas.render();
+    if (window.JobPanel)  JobPanel.refresh();
+    _updateStatusBar();
+    _updateTopButtons();
+  },
+
+  setMessage(msg, isError) {
+    const el = document.getElementById("sb-message");
+    if (el) { el.textContent = msg; el.style.color = isError ? "#ff453a" : "#888"; }
+    if (msg) setTimeout(() => { if (el) el.textContent = ""; }, 4000);
+  },
+};
+
+function _updateStatusBar() {
+  const n = App.placements.length;
+  const slots = App.slots.length;
+  const usedSlots = new Set(App.placements.map(p => p.slot)).size;
+  const emptySlots = Math.max(0, slots * 2 - usedSlots);
+  const seq = App.placements.length
+    ? [...new Set(App.placements.flatMap(p => p.tool_sequence || []))].join(" → ")
+    : "—";
+  const bedArea = 1524 * 3048;
+  const usedArea = App.placements.reduce(
+    (sum, p) => sum + (p.blank_width || 0) * (p.blank_height || 0), 0);
+  const util = bedArea > 0 ? Math.round(usedArea / bedArea * 100) : 0;
+
+  _set("sb-placed", n);
+  _set("sb-slots", emptySlots);
+  _set("sb-tools", seq);
+  _set("sb-util", util + "%");
+  _set("sb-util", util + "%");
+  _set("stat-placed", n);
+  _set("stat-seq", seq);
+  _set("stat-util", util + "%");
+  const changes = [...new Set(App.placements.flatMap(p => p.tool_sequence || []))].length;
+  _set("stat-changes", Math.max(0, changes - 1));
+}
+
+function _updateTopButtons() {
+  const hasPlaced = App.placements.length > 0;
+  const noConflict = !App.compatibility.has_conflict;
+  document.getElementById("btn-generate").disabled = !(hasPlaced && noConflict);
+  document.getElementById("btn-save").disabled = !hasPlaced;
+}
+
+function _set(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+</script>
+<script src="/static/bed.js"></script>
+<script src="/static/sidebar.js"></script>
+<script src="/static/placement.js"></script>
+<script src="/static/job.js"></script>
+<script src="/static/config.js"></script>
+</body>
 </html>
