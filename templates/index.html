@@ -21,15 +21,28 @@ body{display:flex;flex-direction:column}
 #topbar{flex:none;height:40px;display:flex;align-items:center;gap:8px;padding:0 10px;background:#242426;border-bottom:1px solid #333;z-index:10}
 #topbar .title{font-size:13px;font-weight:600;color:#ccc;margin-right:6px;white-space:nowrap}
 #topbar .sep{width:1px;height:20px;background:#444;margin:0 4px}
-#main{flex:1;display:grid;grid-template-columns:240px 1fr 260px;overflow:hidden;min-height:0}
+#main{flex:1;display:grid;grid-template-columns:var(--lw,240px) 6px 1fr 6px var(--rw,260px);overflow:hidden;min-height:0}
 #statusbar{flex:none;height:26px;display:flex;align-items:center;gap:0;padding:0;background:#242426;border-top:1px solid #333;font-size:11px;color:#888;overflow:hidden}
 .sb-item{padding:0 14px;border-right:1px solid #333;line-height:26px;white-space:nowrap}
 .sb-item span{color:#ccc}
 
 /* ── sidebars ── */
-.sidebar{display:flex;flex-direction:column;overflow:hidden;background:#242426}
-#sidebar-left{border-right:1px solid #333}
-#sidebar-right{border-left:1px solid #333}
+.sidebar{display:flex;flex-direction:column;overflow:hidden;background:#242426;transition:opacity .15s}
+.sidebar.hidden{opacity:0;pointer-events:none}
+
+/* ── resize handles ── */
+.rh{position:relative;background:#2a2a2a;z-index:5;flex:none;display:flex;align-items:center;justify-content:center;cursor:col-resize;transition:background .1s}
+.rh:hover,.rh.dragging{background:#0a84ff}
+/* collapse tab — sits in the center of the handle, intercepts click */
+.rh-tab{position:absolute;top:50%;transform:translateY(-50%);width:14px;height:36px;background:#333;border:1px solid #444;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:9px;color:#888;cursor:pointer;user-select:none;z-index:6;transition:background .1s,color .1s}
+.rh-tab:hover{background:#444;color:#e0e0e0}
+/* when adjacent sidebar is collapsed the handle shrinks to just the tab width */
+#main.left-hidden{grid-template-columns:0px 16px 1fr 6px var(--rw,260px)}
+#main.right-hidden{grid-template-columns:var(--lw,240px) 6px 1fr 16px 0px}
+#main.left-hidden #rh-left{cursor:default;background:#242426}
+#main.right-hidden #rh-right{cursor:default;background:#242426}
+/* prevent text-select during drag */
+body.resizing{user-select:none;cursor:col-resize}
 
 /* ── library section ── */
 #lib-search{padding:6px 8px;border-bottom:1px solid #333}
@@ -136,6 +149,9 @@ body{display:flex;flex-direction:column}
     <div id="tray-list"><div id="tray-empty">Drag files from library</div></div>
   </div>
 
+  <!-- left resize handle -->
+  <div class="rh" id="rh-left"><div class="rh-tab" id="tab-left" title="Hide/show library">◀</div></div>
+
   <!-- bed canvas -->
   <div id="canvas-area">
     <canvas id="bed-canvas"></canvas>
@@ -146,6 +162,9 @@ body{display:flex;flex-direction:column}
       <button data-view="all">All moves</button>
     </div>
   </div>
+
+  <!-- right resize handle -->
+  <div class="rh" id="rh-right"><div class="rh-tab" id="tab-right" title="Hide/show job panel">▶</div></div>
 
   <!-- right sidebar -->
   <div id="sidebar-right" class="sidebar">
@@ -271,6 +290,100 @@ function _set(id, val) {
   if (el) el.textContent = val;
 }
 </script>
+<script>
+// ── sidebar resize & collapse ─────────────────────────────────────────────
+(function() {
+  const MIN = 140, MAX = 520;
+  let dragging = null; // {side:'left'|'right', startX, startW}
+
+  const main     = document.getElementById("main");
+  const rhLeft   = document.getElementById("rh-left");
+  const rhRight  = document.getElementById("rh-right");
+  const tabLeft  = document.getElementById("tab-left");
+  const tabRight = document.getElementById("tab-right");
+
+  function lw() { return parseFloat(getComputedStyle(main).getPropertyValue("--lw")) || 240; }
+  function rw() { return parseFloat(getComputedStyle(main).getPropertyValue("--rw")) || 260; }
+  function setLW(w) { main.style.setProperty("--lw", Math.max(MIN, Math.min(MAX, w)) + "px"); }
+  function setRW(w) { main.style.setProperty("--rw", Math.max(MIN, Math.min(MAX, w)) + "px"); }
+
+  // Collapse / expand
+  let leftHidden = false, rightHidden = false;
+  // Save last known widths so they restore on re-open
+  let savedLW = 240, savedRW = 260;
+
+  function toggleLeft() {
+    leftHidden = !leftHidden;
+    if (leftHidden) {
+      savedLW = lw();
+      main.classList.add("left-hidden");
+      document.getElementById("sidebar-left").classList.add("hidden");
+      tabLeft.textContent = "▶";
+      tabLeft.title = "Show library";
+    } else {
+      main.classList.remove("left-hidden");
+      document.getElementById("sidebar-left").classList.remove("hidden");
+      setLW(savedLW);
+      tabLeft.textContent = "◀";
+      tabLeft.title = "Hide library";
+    }
+    if (window.BedCanvas) BedCanvas.render();
+  }
+
+  function toggleRight() {
+    rightHidden = !rightHidden;
+    if (rightHidden) {
+      savedRW = rw();
+      main.classList.add("right-hidden");
+      document.getElementById("sidebar-right").classList.add("hidden");
+      tabRight.textContent = "◀";
+      tabRight.title = "Show job panel";
+    } else {
+      main.classList.remove("right-hidden");
+      document.getElementById("sidebar-right").classList.remove("hidden");
+      setRW(savedRW);
+      tabRight.textContent = "▶";
+      tabRight.title = "Hide job panel";
+    }
+    if (window.BedCanvas) BedCanvas.render();
+  }
+
+  tabLeft.addEventListener("click",  e => { e.stopPropagation(); toggleLeft();  });
+  tabRight.addEventListener("click", e => { e.stopPropagation(); toggleRight(); });
+
+  // Drag to resize
+  function startDrag(e, side) {
+    if (e.target === tabLeft || e.target === tabRight) return;
+    if (side === "left"  && leftHidden)  return;
+    if (side === "right" && rightHidden) return;
+    dragging = { side, startX: e.clientX, startW: side === "left" ? lw() : rw() };
+    document.body.classList.add("resizing");
+    rhLeft.classList.toggle("dragging",  side === "left");
+    rhRight.classList.toggle("dragging", side === "right");
+    e.preventDefault();
+  }
+
+  rhLeft.addEventListener("mousedown",  e => startDrag(e, "left"));
+  rhRight.addEventListener("mousedown", e => startDrag(e, "right"));
+
+  document.addEventListener("mousemove", e => {
+    if (!dragging) return;
+    const dx = e.clientX - dragging.startX;
+    if (dragging.side === "left")  setLW(dragging.startW + dx);
+    else                           setRW(dragging.startW - dx);
+    if (window.BedCanvas) BedCanvas.render();
+  });
+
+  document.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = null;
+    document.body.classList.remove("resizing");
+    rhLeft.classList.remove("dragging");
+    rhRight.classList.remove("dragging");
+  });
+})();
+</script>
+
 <script src="/static/bed.js"></script>
 <script src="/static/sidebar.js"></script>
 <script src="/static/placement.js"></script>
