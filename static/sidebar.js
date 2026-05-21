@@ -74,10 +74,13 @@ const LibraryPanel = (() => {
     div.addEventListener("click", () => TrayPanel.add(e));
     div.addEventListener("dragstart", ev => {
       ev.dataTransfer.setData("text/plain", e.path);
-      ev.dataTransfer.setData("application/cnc-part", JSON.stringify(e));
+      window._cncDragPart = { ...e, filename: e.name };
       div.classList.add("dragging");
     });
-    div.addEventListener("dragend", () => div.classList.remove("dragging"));
+    div.addEventListener("dragend", () => {
+      div.classList.remove("dragging");
+      window._cncDragPart = null;
+    });
     return div;
   }
 
@@ -176,10 +179,13 @@ const TrayPanel = (() => {
 
       div.addEventListener("dragstart", ev => {
         ev.dataTransfer.setData("text/plain", path);
-        ev.dataTransfer.setData("application/cnc-part", JSON.stringify(e));
+        window._cncDragPart = { ...e, filename: e.name || e.filename };
         div.classList.add("dragging");
       });
-      div.addEventListener("dragend", () => div.classList.remove("dragging"));
+      div.addEventListener("dragend", () => {
+        div.classList.remove("dragging");
+        window._cncDragPart = null;
+      });
 
       list.appendChild(div);
     }

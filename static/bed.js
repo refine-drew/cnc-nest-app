@@ -629,15 +629,19 @@ const BedCanvas = (() => {
   // ── drop target (sidebar drag) ────────────────────────────────────────────
   function _onDragOver(e) {
     e.preventDefault();
-    const pos = _clientPos(e);
+    const pos  = _clientPos(e);
     const mach = toMachine(pos.x, pos.y);
     const rail = mach.x < BED_X_MM / 2 ? "A" : "B";
-    hoverSlot = _findNearestSlot(pos.x, pos.y);
+    hoverSlot  = _findNearestSlot(pos.x, pos.y);
     if (hoverSlot) hoverSlot.rail = rail;
 
-    const ds = dragState || {};
-    ds.nearestRail = rail;
-    if (!dragState) dragState = ds;
+    // dataTransfer.getData() returns "" during dragover (browser security);
+    // sidebar.js stores the part in window._cncDragPart on dragstart instead.
+    if (!dragState) dragState = {};
+    dragState.nearestRail = rail;
+    if (!dragState.part && window._cncDragPart) {
+      dragState.part = window._cncDragPart;
+    }
     render();
   }
 
@@ -649,10 +653,13 @@ const BedCanvas = (() => {
     }
     dragState = null;
     hoverSlot = null;
+    window._cncDragPart = null;
     render();
   }
 
-  function _onDragLeave() {
+  function _onDragLeave(e) {
+    // Only clear when leaving the canvas entirely, not entering a child element
+    if (e.relatedTarget && canvas.contains(e.relatedTarget)) return;
     dragState = null;
     hoverSlot = null;
     render();
