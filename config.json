@@ -3,9 +3,22 @@
   "output_path": "~/Downloads",
   "job_name_format": "nest_{timestamp}",
   "tools": {
-    "T1": { "name": "1/4\" upcut spiral", "diameter_inches": 0.25 },
-    "T2": { "name": "1/2\" end mill", "diameter_inches": 0.5 },
-    "T4": { "name": "Table Stiff", "diameter_inches": 0.75 }
+    "T1": {
+      "name": "1/4\" upcut spiral",
+      "diameter_inches": 0.25
+    },
+    "T2": {
+      "name": "1/2\" end mill",
+      "diameter_inches": 0.5
+    },
+    "T4": {
+      "name": "Table Stiff",
+      "diameter_inches": 0.75
+    },
+    "T5": {
+      "name": "",
+      "diameter_inches": 0.375
+    }
   },
   "advanced": {
     "bed_x_mm": 1524.0,
@@ -14,6 +27,20 @@
     "safe_z_clearance_mm": 6.35,
     "park_x": 0.0,
     "park_y": 3048.0,
-    "slots": [0, 13, 19.5, 26, 39, 52, 58.5, 65, 78, 91, 97.5, 104, 117]
+    "slots": [
+      0,
+      13,
+      19.5,
+      26,
+      39,
+      52,
+      58.5,
+      65,
+      78,
+      91,
+      97.5,
+      104,
+      117
+    ]
   }
 }

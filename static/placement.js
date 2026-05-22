@@ -2,19 +2,23 @@
  * placement.js — Placement API calls, drag/drop wiring, job panel updates
  */
 
-const Placement = (() => {
+var Placement = (() => {
   // Pending placement that was blocked by unknown_tools
   let _pendingUnknown = null; // {path, rail, slot_inches, tools: [...]}
   let _unknownQueue   = [];   // tools still needing resolution
 
   // ── place via API ─────────────────────────────────────────────────────────
   async function place(path, rail, slot_inches) {
+    // (b) before API call
+    console.log("[drop] (b) before /api/place", { path, rail, slot_inches });
     const r = await fetch("/api/place", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, rail, slot_inches }),
     });
     const data = await r.json();
+    // (c) response received
+    console.log("[drop] (c) /api/place response", { status: r.status, data });
 
     if (r.status === 422 && data.error === "unknown_tools") {
       _pendingUnknown = { path, rail, slot_inches };
@@ -51,6 +55,8 @@ const Placement = (() => {
     App.placements        = r.placements || [];
     App.compatibility     = r.compatibility || {};
     App.jobSafeZ          = r.job_safe_z || {};
+    // (d) placements state updated
+    console.log("[drop] (d) placements state updated", App.placements);
     App.onPlacementsChanged();
   }
 
@@ -162,7 +168,7 @@ const Placement = (() => {
 })();
 
 
-const JobPanel = (() => {
+var JobPanel = (() => {
   function refresh() {
     _renderPlacements();
     _renderCompat();

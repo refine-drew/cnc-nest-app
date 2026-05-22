@@ -9,7 +9,7 @@
  *   BedCanvas.render() after updating App.placements.
  */
 
-const BedCanvas = (() => {
+var BedCanvas = (() => {
   // ── machine constants (overwritten from /api/config on init) ──────────────
   let BED_X_MM = 1524.0;   // 60"
   let BED_Y_MM = 3048.0;   // 120"
@@ -166,7 +166,7 @@ const BedCanvas = (() => {
     ctx.strokeStyle = "rgba(255,255,255,0.06)";
     ctx.lineWidth = 1;
     for (const slot of SLOTS) {
-      const machY = slot.inches * 25.4;
+      const machY = slot.machine_y;
       const p1 = toCanvas(0, machY);
       const p2 = toCanvas(BED_X_MM, machY);
       ctx.beginPath();
@@ -183,7 +183,7 @@ const BedCanvas = (() => {
     const size = Math.min(Math.max(4, s * 8), 12);
 
     for (const slot of SLOTS) {
-      const machY = slot.inches * 25.4;
+      const machY = slot.machine_y;
       const aPos = toCanvas(RAIL_W, machY);
       const bPos = toCanvas(BED_X_MM - RAIL_W, machY);
 
@@ -273,25 +273,40 @@ const BedCanvas = (() => {
 
   // ── placed parts ──────────────────────────────────────────────────────────
   function _drawParts() {
-    const placements = (window.App && App.placements) ? App.placements : [];
+    const placements = App?.placements ?? [];
+    console.log("[render] _drawParts called, placements.length =", placements.length);
     for (const p of placements) {
       _drawOnePart(p);
     }
   }
 
   function _drawOnePart(p) {
+    console.log("[render] _drawOnePart", {
+      filename: p.filename, slot: p.slot,
+      machine_x: p.machine_x, machine_y: p.machine_y,
+      blank_width: p.blank_width, blank_height: p.blank_height,
+    });
     const color = colorForPart(p.filename);
     const s = baseScale * zoom;
 
-    // machine_x = p.machine_x (= rail_w for A, = BED_X - rail_w - blank_w for B)
-    // machine_y = p.machine_y (= br.min_y from blank_rect)
-    const machX0 = p.machine_x;
+    // blank_height spans machine X (short, 60"); blank_width spans machine Y (long, 120").
+    // B rail machine_x from the API uses blank_width, so recompute from BED_X_MM for both rails
+    // to stay consistent with the ghost preview in _drawDragFeedback.
+    const bh = p.blank_height;  // machine X extent
+    const bw = p.blank_width;   // machine Y extent
+    let machX0, machX1;
+    if (p.rail === "A") {
+      machX0 = RAIL_W;
+      machX1 = RAIL_W + bh;
+    } else {
+      machX0 = BED_X_MM - RAIL_W - bh;
+      machX1 = BED_X_MM - RAIL_W;
+    }
     const machY0 = p.machine_y;
-    const machX1 = machX0 + p.blank_width;
-    const machY1 = machY0 + p.blank_height;
+    const machY1 = p.machine_y + bw;
 
-    const tl = toCanvas(machX1, machY0);  // top-left in canvas coords
-    const br = toCanvas(machX0, machY1);  // bottom-right
+    const tl = toCanvas(machX1, machY1);  // true top-left: high machX (up), high machY (left)
+    const br = toCanvas(machX0, machY0);  // true bottom-right: low machX (down), low machY (right)
     const rw = br.x - tl.x;
     const rh = br.y - tl.y;
 
@@ -306,8 +321,8 @@ const BedCanvas = (() => {
 
     // Toolpath extents (dashed, lighter)
     if (p.tp_min_x !== undefined && p.tp_max_x !== undefined) {
-      const tpTL = toCanvas(p.tp_max_x, p.tp_min_y);
-      const tpBR = toCanvas(p.tp_min_x, p.tp_max_y);
+      const tpTL = toCanvas(p.tp_max_x, p.tp_max_y);
+      const tpBR = toCanvas(p.tp_min_x, p.tp_min_y);
       ctx.strokeStyle = hexToRgba(color, 0.5);
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 3]);
@@ -438,7 +453,7 @@ const BedCanvas = (() => {
     // Highlight target slot
     if (hoverSlot) {
       const { rail: hr, slot_inches } = hoverSlot;
-      const machY = slot_inches * 25.4;
+      const machY = (120 - slot_inches) * 25.4;
       const slotMachX = hr === "A" ? RAIL_W : BED_X_MM - RAIL_W;
       const pos = toCanvas(slotMachX, machY);
       ctx.strokeStyle = hr === "A" ? "#4dabf7" : "#30d158";
@@ -455,7 +470,6 @@ const BedCanvas = (() => {
         const color = colorForPart(dragState.part.filename);
         const bw = dragState.part.blank_width;
         const bh = dragState.part.blank_height;
-        const my = (120 - slot_inches) * 25.4;
         let gTL, gBR;
         if (hr === "A") {
           gTL = toCanvas(RAIL_W + bh, machY);
@@ -572,10 +586,14 @@ const BedCanvas = (() => {
 
   // ── hit testing ───────────────────────────────────────────────────────────
   function _hitTestPart(cx, cy) {
-    const placements = (window.App && App.placements) ? App.placements : [];
+    const placements = App?.placements ?? [];
     for (const p of [...placements].reverse()) {
-      const tl = toCanvas(p.machine_x + p.blank_height, p.machine_y);
-      const br = toCanvas(p.machine_x, p.machine_y + p.blank_width);
+      const bh = p.blank_height;
+      const bw = p.blank_width;
+      const machX1 = p.rail === "A" ? RAIL_W + bh : BED_X_MM - RAIL_W;
+      const machX0 = p.rail === "A" ? RAIL_W      : BED_X_MM - RAIL_W - bh;
+      const tl = toCanvas(machX1, p.machine_y + bw);
+      const br = toCanvas(machX0, p.machine_y);
       if (cx >= tl.x && cx <= br.x && cy >= tl.y && cy <= br.y) {
         return p.instance_id;
       }
@@ -592,7 +610,7 @@ const BedCanvas = (() => {
 
     let best = null, bestD = Infinity;
     for (const slot of SLOTS) {
-      const machY = slot.inches * 25.4;
+      const machY = slot.machine_y;
       const d = Math.abs(mach.y - machY);
       if (d < bestD) { bestD = d; best = slot; }
     }
@@ -645,16 +663,20 @@ const BedCanvas = (() => {
     render();
   }
 
-  function _onDrop(e) {
-    e.preventDefault();
-    const path = e.dataTransfer.getData("text/plain");
-    if (path && hoverSlot && window.Placement) {
-      Placement.placeFromDrop(path, hoverSlot.rail, hoverSlot.slot_inches);
+  async function _onDrop(e) {
+    try {
+      e.preventDefault();
+      const path = e.dataTransfer.getData("text/plain");
+      if (path && hoverSlot && window.Placement) {
+        await Placement.placeFromDrop(path, hoverSlot.rail, hoverSlot.slot_inches);
+      }
+      dragState = null;
+      hoverSlot = null;
+      window._cncDragPart = null;
+      render();
+    } catch (err) {
+      console.error("[drop] EXCEPTION in _onDrop:", err);
     }
-    dragState = null;
-    hoverSlot = null;
-    window._cncDragPart = null;
-    render();
   }
 
   function _onDragLeave(e) {

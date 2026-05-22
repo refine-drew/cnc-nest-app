@@ -2,7 +2,7 @@
  * sidebar.js — Library browser and parts tray
  */
 
-const LibraryPanel = (() => {
+var LibraryPanel = (() => {
   let allEntries = []; // flat list of file entries for search
 
   function init() {
@@ -110,7 +110,7 @@ const LibraryPanel = (() => {
 })();
 
 
-const TrayPanel = (() => {
+var TrayPanel = (() => {
   // Map filename → part info (only one entry per unique file)
   const trayParts = new Map(); // path → entry
 
