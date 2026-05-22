@@ -1,6 +1,9 @@
-#!/bin/zsh
+#!/bin/bash
 cd "$(dirname "$0")"
-if [ -f .venv/bin/activate ]; then
-  source .venv/bin/activate
-fi
-python app.py
+echo "Updating CNC Nest Tool..."
+git pull
+echo "Starting server..."
+python3 app.py &
+sleep 2
+open http://localhost:5000
+wait

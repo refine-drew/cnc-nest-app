@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Dict
 
 from flask import Flask, abort, jsonify, render_template, request
@@ -31,16 +32,16 @@ _PITCH_195 = {0, 19.5, 39, 58.5, 78, 97.5, 117}
 # ── private helpers ───────────────────────────────────────────────────────────
 
 def _library_root() -> str:
-    return os.path.expanduser(config["library_path"])
+    return str(Path(config["library_path"]).expanduser().resolve())
 
 
 def _resolve_library_path(rel: str) -> str:
     """Resolve a library-relative path and abort 400 on any traversal attempt."""
-    root = os.path.normpath(_library_root())
-    full = os.path.normpath(os.path.join(root, rel))
-    if not (full == root or full.startswith(root + os.sep)):
+    root = Path(config["library_path"]).expanduser().resolve()
+    full = (root / rel).resolve()
+    if root != full and root not in full.parents:
         abort(400, description="Invalid path")
-    return full
+    return str(full)
 
 
 def _rail_width() -> float:
@@ -58,9 +59,8 @@ def _make_instance_id(filename: str) -> str:
 
 
 def _parse_file(abs_path: str) -> GcodePart:
-    with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-        text = f.read()
-    return parse_vcarve_text(text, filename=os.path.basename(abs_path))
+    p = Path(abs_path)
+    return parse_vcarve_text(p.read_text(encoding="utf-8", errors="replace"), filename=p.name)
 
 
 def _part_dict(part: GcodePart, rel_path: str = "") -> dict:
@@ -295,9 +295,9 @@ def _generate_report(job_name: str, placements: list, settings: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _output_dir() -> str:
-    d = os.path.expanduser(config["output_path"])
-    os.makedirs(d, exist_ok=True)
+def _output_dir() -> Path:
+    d = Path(config["output_path"]).expanduser()
+    d.mkdir(parents=True, exist_ok=True)
     return d
 
 
@@ -373,7 +373,7 @@ def api_library():
             return entries
         for name in names:
             abs_path = os.path.join(abs_dir, name)
-            rel_path = os.path.join(rel_dir, name) if rel_dir else name
+            rel_path = f"{rel_dir}/{name}" if rel_dir else name
             if os.path.isdir(abs_path):
                 entries.append({
                     "type": "folder",
@@ -588,15 +588,13 @@ def api_generate():
         return jsonify({"error": f"Generation failed: {e}"}), 500
 
     out = _output_dir()
-    nc_path = os.path.join(out, f"{job_name}.nc")
-    report_path = os.path.join(out, f"{job_name}.txt")
+    nc_path = out / f"{job_name}.nc"
+    report_path = out / f"{job_name}.txt"
 
-    with open(nc_path, "w", encoding="utf-8") as f:
-        f.write(gcode)
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(_generate_report(job_name, placement_dicts, settings))
+    nc_path.write_text(gcode, encoding="utf-8")
+    report_path.write_text(_generate_report(job_name, placement_dicts, settings), encoding="utf-8")
 
-    return jsonify({"ok": True, "job_name": job_name, "nc_path": nc_path, "report_path": report_path})
+    return jsonify({"ok": True, "job_name": job_name, "nc_path": str(nc_path), "report_path": str(report_path)})
 
 
 @app.route("/api/save-job", methods=["POST"])
