@@ -9,14 +9,15 @@ RAIL_W = 82.55
 BED_X = 1524.0
 
 
-def make_part(vcarve_x_span, vcarve_y_span, min_vx, max_vx, min_vy, max_vy, filename="part.nc"):
+def make_part(vcarve_x_span, vcarve_y_span, min_vx, max_vx, min_vy, max_vy,
+              filename="part.nc", tools=None):
     """Minimal GcodePart with known blank and toolpath extents."""
     return GcodePart(
         filename=filename,
         vcarve_x_span=vcarve_x_span,
         vcarve_y_span=vcarve_y_span,
         material_thickness=19.05,
-        tools={},
+        tools=tools or {},
         min_vx=min_vx,
         max_vx=max_vx,
         min_vy=min_vy,
@@ -324,3 +325,45 @@ def test_collision_message_contains_slot_labels():
     result = check_placement(new, existing, RAIL_W, BED_X)
     assert "A39" in result.message
     assert "A52" in result.message
+
+
+# --- tool-radius collision tests ---
+
+def test_toolpath_rect_expands_by_tool_radius():
+    part = make_part(100, 100, 0, 100, 0, 100)
+    p = placed(part, "A", 39)
+    base = toolpath_rect(p, RAIL_W, BED_X, tool_radius_mm=0.0)
+    expanded = toolpath_rect(p, RAIL_W, BED_X, tool_radius_mm=10.0)
+    assert expanded.min_x == pytest.approx(base.min_x - 10.0)
+    assert expanded.max_x == pytest.approx(base.max_x + 10.0)
+    assert expanded.min_y == pytest.approx(base.min_y - 10.0)
+    assert expanded.max_y == pytest.approx(base.max_y + 10.0)
+
+
+def test_check_placement_catches_tool_radius_collision():
+    """Centerline is clear but cutter physically reaches the adjacent blank."""
+    # A at slot 26: blank machine Y = [2087.6, 2387.6]  (vcarve_x_span=300)
+    # B at slot 39: toolpath max_y = 2057.4 - (-20) = 2077.4  (min_vx=-20)
+    # Centerline gap = 2087.6 - 2077.4 = 10.2mm — no centerline collision
+    # T2 = 1.0" dia → radius 12.7mm > 10.2mm → expanded toolpath reaches A's blank
+    part_a = make_part(300, 100, 0, 300, 0, 100, "a.nc")
+    part_b = make_part(300, 100, -20, 300, 0, 100, "b.nc",
+                       tools={"T2": {"description": "End Mill", "diameter_inches": 1.0}})
+
+    result = check_placement(placed(part_b, "A", 39, "i2"),
+                             [placed(part_a, "A", 26, "i1")], RAIL_W, BED_X)
+    assert result.collides
+    assert "T2" in result.message
+
+
+def test_check_placement_passes_when_radius_fits_in_gap():
+    """Same geometry, smaller tool — cutter stays clear of the adjacent blank."""
+    # Same setup: 10.2mm centerline gap
+    # T2 = 0.25" dia → radius 3.175mm < 10.2mm → no collision
+    part_a = make_part(300, 100, 0, 300, 0, 100, "a.nc")
+    part_b = make_part(300, 100, -20, 300, 0, 100, "b.nc",
+                       tools={"T2": {"description": "End Mill", "diameter_inches": 0.25}})
+
+    result = check_placement(placed(part_b, "A", 39, "i2"),
+                             [placed(part_a, "A", 26, "i1")], RAIL_W, BED_X)
+    assert not result.collides

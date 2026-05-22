@@ -59,9 +59,11 @@ def blank_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float) -> Rec
         )
 
 
-def toolpath_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float) -> Rect:
+def toolpath_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float,
+                  tool_radius_mm: float = 0.0) -> Rect:
     """
-    Toolpath extents in machine coordinates.
+    Toolpath extents in machine coordinates, optionally expanded by tool_radius_mm
+    on all four sides to account for the physical width of the cutter.
     VCarve X → machine Y,  VCarve Y → machine X
     A rail: machX = rail_w + vcarve_Y,   machY = slot_mark - vcarve_X
     B rail: machX = (bed_x-rail_w) - vcarve_Y,  machY = (slot_mark + vcarve_x_span) - vcarve_X
@@ -69,7 +71,7 @@ def toolpath_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float) -> 
     p = placed.part
     my = _machine_y(placed.slot_inches)
     if placed.rail == "A":
-        return Rect(
+        r = Rect(
             min_x=rail_width_mm + p.min_vy,
             max_x=rail_width_mm + p.max_vy,
             min_y=my - p.max_vx,
@@ -77,12 +79,42 @@ def toolpath_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float) -> 
         )
     else:  # B rail
         far_x = bed_x_mm - rail_width_mm
-        return Rect(
+        r = Rect(
             min_x=far_x - p.max_vy,
             max_x=far_x - p.min_vy,
             min_y=my + p.vcarve_x_span - p.max_vx,
             max_y=my + p.vcarve_x_span - p.min_vx,
         )
+    if tool_radius_mm:
+        r = Rect(
+            min_x=r.min_x - tool_radius_mm,
+            max_x=r.max_x + tool_radius_mm,
+            min_y=r.min_y - tool_radius_mm,
+            max_y=r.max_y + tool_radius_mm,
+        )
+    return r
+
+
+def _max_tool_radius(placed: PlacedPart) -> float:
+    """Largest tool radius in mm across all tools defined in the part."""
+    best = 0.0
+    for info in placed.part.tools.values():
+        r = (info.get("diameter_inches") or 0) * 25.4 / 2
+        if r > best:
+            best = r
+    return best
+
+
+def _largest_tool_str(placed: PlacedPart) -> str:
+    """'T2 (0.5\" dia) ' label for the largest-diameter tool, or '' if none defined."""
+    best_num, best_dia = "", 0.0
+    for num, info in placed.part.tools.items():
+        dia = info.get("diameter_inches") or 0
+        if dia > best_dia:
+            best_dia, best_num = dia, num
+    if not best_dia:
+        return ""
+    return f"{best_num} ({best_dia:.3g}\" dia) "
 
 
 def rects_overlap(a: Rect, b: Rect) -> bool:
@@ -103,18 +135,24 @@ def check_placement(
     Check whether new_placed collides with any already-placed part.
 
     A collision occurs when:
-      - new part's toolpath extents overlap an existing part's blank boundary, OR
-      - an existing part's toolpath extents overlap the new part's blank boundary.
+      - new part's toolpath extents (expanded by its largest tool radius) overlap
+        an existing part's blank boundary, OR
+      - an existing part's toolpath extents (expanded by its largest tool radius)
+        overlap the new part's blank boundary.
 
     Toolpath extents overlapping each other is NOT a collision — the cutter can
     swing freely in clearance zones between blanks.
     """
-    new_tp = toolpath_rect(new_placed, rail_width_mm, bed_x_mm)
+    new_radius = _max_tool_radius(new_placed)
+    new_tool_str = _largest_tool_str(new_placed)
+    new_tp = toolpath_rect(new_placed, rail_width_mm, bed_x_mm, new_radius)
     new_blank = blank_rect(new_placed, rail_width_mm, bed_x_mm)
     new_slot = slot_label(new_placed.rail, new_placed.slot_inches)
 
     for placed in existing:
-        ex_tp = toolpath_rect(placed, rail_width_mm, bed_x_mm)
+        ex_radius = _max_tool_radius(placed)
+        ex_tool_str = _largest_tool_str(placed)
+        ex_tp = toolpath_rect(placed, rail_width_mm, bed_x_mm, ex_radius)
         ex_blank = blank_rect(placed, rail_width_mm, bed_x_mm)
         ex_slot = slot_label(placed.rail, placed.slot_inches)
 
@@ -123,7 +161,7 @@ def check_placement(
                 collides=True,
                 message=(
                     f"Cannot place {new_placed.part.filename} at slot {new_slot}: "
-                    f"its toolpath would extend into the blank area of "
+                    f"its {new_tool_str}toolpath would extend into the blank area of "
                     f"{placed.part.filename} at slot {ex_slot}. "
                     "Move one of the parts to a slot with more clearance."
                 ),
@@ -135,7 +173,7 @@ def check_placement(
                 collides=True,
                 message=(
                     f"Cannot place {new_placed.part.filename} at slot {new_slot}: "
-                    f"the toolpath of {placed.part.filename} at slot {ex_slot} "
+                    f"the {ex_tool_str}toolpath of {placed.part.filename} at slot {ex_slot} "
                     f"would extend into the new part's blank area. "
                     "Move one of the parts to a slot with more clearance."
                 ),
