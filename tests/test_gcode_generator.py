@@ -124,52 +124,94 @@ def test_extract_body_empty_when_no_m03():
     assert body == []
 
 
+def test_extract_body_strips_g43_within_body():
+    """G43 appearing after M03 (e.g. multi-region VCarve files) must be stripped."""
+    lines = [
+        "T2 M06", "G43 H2 Z44.4754", "M03 S18000",
+        "G00 X0 Y0",
+        "G01 X100 Y100 Z-0.254",
+        "G43 H2 Z44.4754",  # mid-body G43 — must be filtered out
+        "G00 X200 Y200",
+        "G53 G49 Z0", "M05",
+    ]
+    body = _extract_body(lines)
+    assert not any("G43" in ln.upper() for ln in body)
+    assert "G00 X200 Y200" in body
+
+
+def test_extract_body_strips_trailing_z_retract():
+    """Trailing G00 Z retract is stripped so the generator controls the retract."""
+    lines = [
+        "T2 M06", "G43 H2 Z44", "M03 S18000",
+        "G00 X0 Y0",
+        "G01 X100 Y100 Z-0.254",
+        "G00 Z25.4",  # trailing retract — must be stripped
+        "G53 G49 Z0", "M05",
+    ]
+    body = _extract_body(lines)
+    assert body == ["G00 X0 Y0", "G01 X100 Y100 Z-0.254"]
+
+
 # ── _transform_line ───────────────────────────────────────────────────────────
 
 def test_transform_a_rail_adds_offset():
-    # A rail: b_x=True (mirror X), b_y=False (additive Y)
-    # output_X = slot_mark - vcarve_X; output_Y = rail_w + vcarve_Y
+    # A rail: b_x=True, b_y=False
+    # file X (VCarve X) → machine Y: slot_mark - vx → output Y word
+    # file Y (VCarve Y) → machine X: rail_w + vy  → output X word
     # slot_mark=2057.4, rail_w=82.55
-    # X50 → 2057.4 - 50 = 2007.4; Y100 → 82.55 + 100 = 182.55
+    # X50 → Y(2057.4 - 50) = Y2007.4;  Y100 → X(82.55 + 100) = X182.55
     slot_mark = (120 - 39) * 25.4  # 2057.4
     params = {"b_x": True, "x": slot_mark, "b_y": False, "y": RAIL_W}
     result = _transform_line("G01 X50 Y100 Z-0.254", params)
-    assert "X2007.4000" in result   # slot_mark - 50
-    assert "Y182.5500" in result    # RAIL_W + 100
+    assert "Y2007.4000" in result   # file X=50 → machine Y
+    assert "X182.5500" in result    # file Y=100 → machine X
     assert "Z-0.254" in result      # Z unchanged
 
 
 def test_transform_b_rail_mirrors():
     # B rail: b_x=True, b_y=True (both mirrored)
-    # output_X = x_const - vcarve_X; output_Y = y_const - vcarve_Y
+    # file X → machine Y: x_const - vx → output Y word
+    # file Y → machine X: y_const - vy → output X word
     params = {"b_x": True, "x": BED_X - RAIL_W, "b_y": True, "y": 2100.0}
     result = _transform_line("G01 X50 Y30 Z-0.254", params)
-    assert "X1391.4500" in result  # (BED_X-RAIL_W) - 50 = 1441.45 - 50
-    assert "Y2070.0000" in result  # 2100 - 30
+    assert "Y1391.4500" in result  # file X=50 → machine Y = (BED_X-RAIL_W) - 50
+    assert "X2070.0000" in result  # file Y=30 → machine X = 2100 - 30
 
 
 def test_transform_b_rail_swaps_g02_to_g03():
-    # b_x=True, b_y=True → both mirrored → net NO swap (even number of mirrors)
-    # b_x != b_y is False, so arc NOT swapped
+    # B rail: both axes mirrored + axis-swap = 3 total flips (odd) → orientation reversed → swap
     params = {"b_x": True, "x": 1441.45, "b_y": True, "y": 2100.0}
     result = _transform_line("G02 X50 Y50 I10 J0 Z-0.254", params)
-    assert "G02" in result   # NOT swapped when both axes mirrored
-    assert "G03" not in result
+    assert "G03" in result   # G02 swapped to G03 on B rail
+    assert "G02" not in result
 
 
 def test_transform_b_rail_swaps_g03_to_g02():
-    # b_x != b_y triggers swap; only one axis mirrored
-    params = {"b_x": True, "x": 1441.45, "b_y": False, "y": 2100.0}
+    # B rail: orientation reversed → G03 becomes G02
+    params = {"b_x": True, "x": 1441.45, "b_y": True, "y": 2100.0}
     result = _transform_line("G03 X50 Y50 I-10 J5 Z-0.254", params)
     assert "G02" in result
+    assert "G03" not in result
+
+
+def test_transform_a_rail_no_arc_swap():
+    # A rail: one axis mirrored + axis-swap = 2 total flips (even) → orientation preserved → no swap
+    slot_mark = (120 - 39) * 25.4
+    params = {"b_x": True, "x": slot_mark, "b_y": False, "y": RAIL_W}
+    result_cw = _transform_line("G02 X50 Y50 I10 J0 Z-0.254", params)
+    result_ccw = _transform_line("G03 X50 Y50 I-10 J5 Z-0.254", params)
+    assert "G02" in result_cw and "G03" not in result_cw
+    assert "G03" in result_ccw and "G02" not in result_ccw
 
 
 def test_transform_b_rail_negates_ij():
-    # Both axes mirrored: negate I (x_mirror) AND J (y_mirror)
+    # Both axes mirrored.
+    # file I20 (VCarve-X direction) → machine-Y direction → output J, negated: J-20
+    # file J-5 (VCarve-Y direction) → machine-X direction → output I, negated: I5
     params = {"b_x": True, "x": 1441.45, "b_y": True, "y": 2100.0}
     result = _transform_line("G02 X50 Y50 I20 J-5 Z-0.254", params)
-    assert "I-20.0000" in result
-    assert "J5.0000" in result
+    assert "J-20.0000" in result  # file I20, x_mirror → output J=-20
+    assert "I5.0000" in result    # file J-5, y_mirror → output I=5
 
 
 def test_transform_comment_unchanged():
@@ -304,27 +346,32 @@ def test_output_single_tool_block_for_single_part():
 def test_a_rail_coordinates_offset_in_output():
     # SINGLE_T2 has vcarve_x_span=200, vcarve_y_span=100
     # A rail slot 39: slot_mark=2057.4, rail_w=82.55
-    # G00 X0 Y0: output_X = slot_mark - 0 = 2057.4, output_Y = rail_w + 0 = 82.55
+    # G00 X0 Y0 in file:
+    #   file X=0 (VCarve X) → machine Y = slot_mark - 0 = 2057.4 → output Y word
+    #   file Y=0 (VCarve Y) → machine X = rail_w + 0 = 82.55    → output X word
     p = _placed(SINGLE_T2, "A", 39)
     result = generate_master_gcode([p], SETTINGS)
     slot_mark = (120 - 39) * 25.4  # 2057.4
-    assert f"X{slot_mark:.4f}" in result
-    assert f"Y{RAIL_W:.4f}" in result
+    assert f"Y{slot_mark:.4f}" in result   # file X=0 → machine Y
+    assert f"X{RAIL_W:.4f}" in result      # file Y=0 → machine X
 
 
 def test_b_rail_coordinates_mirrored_in_output():
     # SINGLE_T2: vcarve_x_span=200, vcarve_y_span=100
-    # B rail slot 39: x_const = slot_mark + vcarve_x_span = 2057.4+200=2257.4
-    #                 y_const = BED_X - RAIL_W = 1441.45
-    # G00 X0 Y0: output_X = 2257.4 - 0 = 2257.4, output_Y = 1441.45 - 0 = 1441.45
+    # B rail slot 39:
+    #   machine-Y const = slot_mark + vcarve_x_span = 2057.4+200 = 2257.4
+    #   machine-X const = BED_X - RAIL_W = 1441.45
+    # G00 X0 Y0 in file:
+    #   file X=0 → machine Y = 2257.4 - 0 = 2257.4 → output Y word
+    #   file Y=0 → machine X = 1441.45 - 0 = 1441.45 → output X word
     p = _placed(SINGLE_T2, "B", 39)
     result = generate_master_gcode([p], SETTINGS)
     slot_mark = (120 - 39) * 25.4
     vcarve_x_span = p.part.vcarve_x_span  # 200.0
-    x_const = slot_mark + vcarve_x_span   # 2257.4
-    y_const = BED_X - RAIL_W              # 1441.45
-    assert f"X{x_const:.4f}" in result
-    assert f"Y{y_const:.4f}" in result
+    mach_y_const = slot_mark + vcarve_x_span   # 2257.4
+    mach_x_const = BED_X - RAIL_W              # 1441.45
+    assert f"Y{mach_y_const:.4f}" in result    # file X=0 → machine Y
+    assert f"X{mach_x_const:.4f}" in result    # file Y=0 → machine X
 
 
 def test_b_rail_arcs_swapped_in_output():
@@ -345,6 +392,23 @@ def test_two_parts_same_tool_merged():
     p2 = _placed(SINGLE_T2, "A", 26, "i2")
     result = generate_master_gcode([p1, p2], SETTINGS)
     assert result.count("T2 M06") == 1
+
+
+def test_two_parts_same_tool_has_retract_between_segments():
+    """Within a tool block, a G00 Z[safe_z] separates part segments; one also precedes park."""
+    p1 = _placed(SINGLE_T2, "A", 39, "i1")
+    p2 = _placed(SINGLE_T2, "A", 26, "i2")
+    result = generate_master_gcode([p1, p2], SETTINGS)
+    # job_safe_z = 25.4: one between segments, one before park = 2 total
+    assert result.count("G00 Z25.4000") == 2
+
+
+def test_g43_appears_only_once_per_tool_block():
+    """G43 must appear exactly once per tool block, never between part segments."""
+    p1 = _placed(SINGLE_T2, "A", 39, "i1")
+    p2 = _placed(SINGLE_T2, "A", 26, "i2")
+    result = generate_master_gcode([p1, p2], SETTINGS)
+    assert result.count("G43") == 1
 
 
 def test_two_parts_two_passes_merged():

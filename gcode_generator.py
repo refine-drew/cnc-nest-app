@@ -17,6 +17,8 @@ _IJ = re.compile(r"([IJ])([+-]?\d*\.?\d+)")
 _N_CODE = re.compile(r"^N\d+\s*")
 _TOOL_CMT = re.compile(r"\(\s*Tool:\s*(.+?)\)", re.IGNORECASE)
 _SPINDLE = re.compile(r"\bM03\b.*\bS(\d+)\b", re.IGNORECASE)
+_G43_LINE = re.compile(r"\bG43\b", re.IGNORECASE)
+_Z_RETRACT = re.compile(r"^G0?0\s+Z[+-]?\d*\.?\d+\s*$", re.IGNORECASE)
 
 
 # ── public entry point ────────────────────────────────────────────────────────
@@ -92,7 +94,9 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
             N(f"G43 H{h_num} Z{job_safe_z:.4f}"),
             N(f"M03 S{block['spindle_speed']}"),
         ]
-        for seg in segs:
+        for seg_idx, seg in enumerate(segs):
+            if seg_idx > 0:
+                out.append(N(f"G00 Z{job_safe_z:.4f}"))
             for ln in seg:
                 if ln.strip():
                     out.append(N(ln.strip()))
@@ -105,6 +109,7 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
     out += [
         "",
         "( ---- park ---- )",
+        N(f"G00 Z{job_safe_z:.4f}"),
         N(f"G00 G53 X{park_x:.4f} Y{park_y:.4f} M05"),
         N("M30"),
         "%",
@@ -183,7 +188,10 @@ def _spindle_speed(lines: List[str]) -> Optional[int]:
 def _extract_body(lines: List[str]) -> List[str]:
     """
     Return the movement lines from a pass: everything after M03 and before
-    the trailing G53/M05/M30 retract block. Strips any existing N-codes.
+    the trailing G53/M05/M30 retract block. Strips N-codes and any G43 lines
+    (G43 is emitted once per tool block by the generator; source copies are dropped).
+    Trailing Z-only retracts are also stripped so the generator can emit a single
+    clean G00 Z[job_safe_z] between part segments.
     """
     body: List[str] = []
     in_body = False
@@ -197,8 +205,10 @@ def _extract_body(lines: List[str]) -> List[str]:
                     re.search(r"\bM05\b|\bM30\b", s, re.IGNORECASE) or
                     (re.search(r"\bG53\b", s, re.IGNORECASE) and "Z" in s.upper())):
                 break
-            if s:
+            if s and not _G43_LINE.search(s):
                 body.append(_N_CODE.sub("", s))
+    while body and _Z_RETRACT.match(body[-1]):
+        body.pop()
     return body
 
 
@@ -229,12 +239,16 @@ def _transform_params(placed: PlacedPart, rail_w: float, bed_x: float) -> dict:
 
 def _transform_line(line: str, p: dict) -> str:
     """
-    Apply placement transform to XY coordinates on one G-code line.
+    Apply placement transform to a single G-code line.
 
+    Axis mapping: VCarve X (file X word) → machine Y (output Y word)
+                  VCarve Y (file Y word) → machine X (output X word)
+    Arc offsets:  file I (VCarve-X direction) → output J (machine-Y direction)
+                  file J (VCarve-Y direction) → output I (machine-X direction)
+
+    p['b_x']/p['x']: mirror flag and constant for the VCarve-X → machine-Y transform
+    p['b_y']/p['y']: mirror flag and constant for the VCarve-Y → machine-X transform
     Comments and G53 machine-coord lines are returned unchanged.
-
-    A rail (b_x=True, b_y=False): mirror X only → swap G02/G03, negate I, keep J.
-    B rail (b_x=True, b_y=True):  mirror both  → keep G02/G03, negate I and J.
     """
     s = line.strip()
     if not s or s.startswith("("):
@@ -246,31 +260,38 @@ def _transform_line(line: str, p: dict) -> str:
     x_mirror = p["b_x"]
     y_mirror = p["b_y"]
 
-    # Arc direction: swap G02/G03 only when exactly one axis is mirrored
-    if x_mirror != y_mirror:
+    # Arc direction: the axis swap (file X→output Y, file Y→output X) contributes one
+    # orientation flip. Combined with the per-axis mirrors, det(Jacobian) < 0 (swap
+    # needed) when x_mirror == y_mirror (both same sign → product positive → det negative).
+    # A rail (b_x=True, b_y=False): det > 0 → no swap.
+    # B rail (b_x=True, b_y=True): det < 0 → swap.
+    if x_mirror == y_mirror:
         if re.search(r"\bG02\b", result, re.IGNORECASE):
             result = re.sub(r"\bG02\b", "G03", result, flags=re.IGNORECASE)
         elif re.search(r"\bG03\b", result, re.IGNORECASE):
             result = re.sub(r"\bG03\b", "G02", result, flags=re.IGNORECASE)
 
-    # Arc centre offsets: negate I when X is mirrored, negate J when Y is mirrored
-    if x_mirror:
-        result = re.sub(r"(I)([+-]?\d*\.?\d+)",
-                        lambda m: f"I{-float(m.group(2)):.4f}", result)
-    if y_mirror:
-        result = re.sub(r"(J)([+-]?\d*\.?\d+)",
-                        lambda m: f"J{-float(m.group(2)):.4f}", result)
+    # Arc offsets: file I (VCarve-X direction) → machine-Y → output J (negate if x_mirror)
+    #              file J (VCarve-Y direction) → machine-X → output I (negate if y_mirror)
+    # Use placeholders to avoid cross-contamination between the two substitutions.
+    result = re.sub(r"I([+-]?\d*\.?\d+)",
+                    lambda m: f"__J__{-float(m.group(1)):.4f}" if x_mirror
+                    else f"__J__{float(m.group(1)):.4f}", result)
+    result = re.sub(r"J([+-]?\d*\.?\d+)",
+                    lambda m: f"__I__{-float(m.group(1)):.4f}" if y_mirror
+                    else f"__I__{float(m.group(1)):.4f}", result)
+    result = result.replace("__J__", "J").replace("__I__", "I")
 
-    def _repl_x(m: re.Match) -> str:
-        val = float(m.group(1))
-        return f"X{p['x'] - val:.4f}" if x_mirror else f"X{val + p['x']:.4f}"
+    # Coordinates: file X (VCarve X) → machine Y → output Y word
+    #              file Y (VCarve Y) → machine X → output X word
+    result = re.sub(r"X([+-]?\d*\.?\d+)",
+                    lambda m: f"__Y__{p['x'] - float(m.group(1)):.4f}" if x_mirror
+                    else f"__Y__{float(m.group(1)) + p['x']:.4f}", result)
+    result = re.sub(r"Y([+-]?\d*\.?\d+)",
+                    lambda m: f"__X__{p['y'] - float(m.group(1)):.4f}" if y_mirror
+                    else f"__X__{float(m.group(1)) + p['y']:.4f}", result)
+    result = result.replace("__Y__", "Y").replace("__X__", "X")
 
-    def _repl_y(m: re.Match) -> str:
-        val = float(m.group(1))
-        return f"Y{p['y'] - val:.4f}" if y_mirror else f"Y{val + p['y']:.4f}"
-
-    result = re.sub(r"X([+-]?\d*\.?\d+)", _repl_x, result)
-    result = re.sub(r"Y([+-]?\d*\.?\d+)", _repl_y, result)
     return result
 
 
