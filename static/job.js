@@ -58,6 +58,9 @@ document.addEventListener("DOMContentLoaded", () => {
     App.placements    = data.placements || [];
     App.compatibility = data.compatibility || {};
     App.jobSafeZ      = data.job_safe_z || {};
+    App.toolSequence  = data.tool_sequence || [];
+    App.toolChanges   = data.tool_changes ?? 0;
+    App.utilization   = data.utilization ?? 0;
     if (data.job_name) document.getElementById("job-name-input").value = data.job_name;
     if (data.warnings && data.warnings.length) {
       App.setMessage("Loaded with warnings: " + data.warnings.join("; "), false);

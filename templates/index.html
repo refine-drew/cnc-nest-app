@@ -240,6 +240,9 @@ var App = {
   slots: [],            // from /api/slots
   compatibility: {},    // from latest /api/place or /api/placements
   jobSafeZ: {},         // {value, driven_by}
+  toolSequence: [],     // ordered tool list for the full job
+  toolChanges: 0,
+  utilization: 0,       // % of bed area covered by placed blanks
 
   // Called whenever placements change — refreshes all UI panels
   onPlacementsChanged() {
@@ -261,24 +264,17 @@ function _updateStatusBar() {
   const slots = App.slots.length;
   const usedSlots = new Set(App.placements.map(p => p.slot)).size;
   const emptySlots = Math.max(0, slots * 2 - usedSlots);
-  const seq = App.placements.length
-    ? [...new Set(App.placements.flatMap(p => p.tool_sequence || []))].join(" → ")
-    : "—";
-  const bedArea = 1524 * 3048;
-  const usedArea = App.placements.reduce(
-    (sum, p) => sum + (p.blank_width || 0) * (p.blank_height || 0), 0);
-  const util = bedArea > 0 ? Math.round(usedArea / bedArea * 100) : 0;
+  const seq = (App.toolSequence || []).join(" → ") || "—";
+  const util = App.utilization ?? 0;
 
   _set("sb-placed", n);
   _set("sb-slots", emptySlots);
   _set("sb-tools", seq);
   _set("sb-util", util + "%");
-  _set("sb-util", util + "%");
   _set("stat-placed", n);
   _set("stat-seq", seq);
   _set("stat-util", util + "%");
-  const changes = [...new Set(App.placements.flatMap(p => p.tool_sequence || []))].length;
-  _set("stat-changes", Math.max(0, changes - 1));
+  _set("stat-changes", App.toolChanges ?? 0);
 }
 
 function _updateTopButtons() {

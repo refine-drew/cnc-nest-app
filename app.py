@@ -128,6 +128,14 @@ def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
         _rail_width(),
         _bed_x(),
     )
+    tools_list = [
+        {
+            "tool_number": num,
+            "description": info.get("description", ""),
+            "diameter_inches": info.get("diameter_inches"),
+        }
+        for num, info in placed.part.tools.items()
+    ]
     return {
         "instance_id": instance_id,
         "filename": placed.part.filename,
@@ -137,8 +145,10 @@ def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
         "slot": slot_label(placed.rail, placed.slot_inches),
         "machine_x": br.min_x,
         "machine_y": br.min_y,
-        "vcarve_x_span": placed.part.vcarve_x_span,   # was blank_width
-        "vcarve_y_span": placed.part.vcarve_y_span,   # was blank_height
+        "vcarve_x_span": placed.part.vcarve_x_span,
+        "vcarve_y_span": placed.part.vcarve_y_span,
+        "tools": tools_list,
+        "tool_sequence": [gp.tool_number for gp in placed.part.passes],
         "segments": segments,
     }
 
@@ -158,6 +168,38 @@ def _compute_job_safe_z() -> dict:
         return {"value": None, "driven_by": None}
     clearance = float(config["advanced"]["safe_z_clearance_mm"])
     return {"value": round(max_t + clearance, 4), "driven_by": driver}
+
+
+def _compute_job_stats() -> dict:
+    """Tool sequence, change count, and bed utilization across all placements."""
+    bed_x = float(config["advanced"]["bed_x_mm"])
+    bed_y = float(config["advanced"]["bed_y_mm"])
+
+    # Execution-ordered unique tool list (mirrors _build_blocks pass-index walk)
+    max_passes = max((len(p.part.passes) for p in _placements.values()), default=0)
+    ordered_tools: list = []
+    seen_tools: set = set()
+    for idx in range(max_passes):
+        by_tool: set = set()
+        for placed in _placements.values():
+            if idx < len(placed.part.passes):
+                by_tool.add(placed.part.passes[idx].tool_number)
+        for tn in sorted(by_tool):
+            if tn not in seen_tools:
+                seen_tools.add(tn)
+                ordered_tools.append(tn)
+
+    bed_area = bed_x * bed_y
+    used_area = sum(
+        p.part.vcarve_x_span * p.part.vcarve_y_span for p in _placements.values()
+    )
+    utilization = round(used_area / bed_area * 100, 1) if bed_area else 0.0
+
+    return {
+        "tool_sequence": ordered_tools,
+        "tool_changes": max(0, len(ordered_tools) - 1),
+        "utilization": utilization,
+    }
 
 
 def _tool_compatibility() -> dict:
@@ -392,6 +434,7 @@ def api_placements_get():
         "placements": [_placement_dict(iid, p) for iid, p in _placements.items()],
         "compatibility": _tool_compatibility(),
         "job_safe_z": _compute_job_safe_z(),
+        **_compute_job_stats(),
     })
 
 
@@ -663,6 +706,7 @@ def api_load_job():
         "placements": [_placement_dict(iid, p) for iid, p in _placements.items()],
         "compatibility": _tool_compatibility(),
         "job_safe_z": _compute_job_safe_z(),
+        **_compute_job_stats(),
     })
 
 

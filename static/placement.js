@@ -55,8 +55,9 @@ var Placement = (() => {
     App.placements        = r.placements || [];
     App.compatibility     = r.compatibility || {};
     App.jobSafeZ          = r.job_safe_z || {};
-    // (d) placements state updated
-    console.log("[drop] (d) placements state updated", App.placements);
+    App.toolSequence      = r.tool_sequence || [];
+    App.toolChanges       = r.tool_changes ?? 0;
+    App.utilization       = r.utilization ?? 0;
     App.onPlacementsChanged();
   }
 
