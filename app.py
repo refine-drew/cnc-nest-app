@@ -161,26 +161,48 @@ def _compute_job_safe_z() -> dict:
 
 
 def _tool_compatibility() -> dict:
-    """Tool compatibility matrix across all placed parts."""
-    seen: Dict[str, list] = {}
+    """Tool compatibility matrix across all placed parts, ordered by job execution sequence."""
+    if not _placements:
+        return {"matrix": [], "has_conflict": False}
+
+    # Build execution-ordered unique tool list (mirrors _build_blocks pass-index walk)
+    max_passes = max(len(p.part.passes) for p in _placements.values())
+    ordered_tools: list = []
+    seen_tools: set = set()
+    for idx in range(max_passes):
+        by_tool: set = set()
+        for placed in _placements.values():
+            if idx < len(placed.part.passes):
+                by_tool.add(placed.part.passes[idx].tool_number)
+        for tn in sorted(by_tool):
+            if tn not in seen_tools:
+                seen_tools.add(tn)
+                ordered_tools.append(tn)
+
+    # Collect one usage entry per (tool, placed-part) pair using pass membership
+    usages_by_tool: Dict[str, list] = {tn: [] for tn in ordered_tools}
     for placed in _placements.values():
-        for num, info in placed.part.tools.items():
+        pass_tools = {gp.tool_number for gp in placed.part.passes}
+        for tn in ordered_tools:
+            if tn not in pass_tools:
+                continue
+            info = placed.part.tools.get(tn, {})
             entry = {
                 "filename": placed.part.filename,
                 "description": info.get("description", ""),
                 "diameter_inches": info.get("diameter_inches"),
             }
-            seen.setdefault(num, [])
-            if entry not in seen[num]:
-                seen[num].append(entry)
+            if entry not in usages_by_tool[tn]:
+                usages_by_tool[tn].append(entry)
 
     matrix = []
     has_conflict = False
-    for num, usages in sorted(seen.items()):
+    for tn in ordered_tools:
+        usages = usages_by_tool[tn]
         conflict = len({u["description"] for u in usages}) > 1
         if conflict:
             has_conflict = True
-        matrix.append({"tool_number": num, "usages": usages, "conflict": conflict})
+        matrix.append({"tool_number": tn, "usages": usages, "conflict": conflict})
 
     return {"matrix": matrix, "has_conflict": has_conflict}
 

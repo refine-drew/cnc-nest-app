@@ -8,7 +8,7 @@ HEADER_SIZE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 PART_SIZE_PATTERN = re.compile(r"\(\s*PART SIZE X\s*=\s*([0-9.+-]+)\s*Y\s*=\s*([0-9.+-]+)\s*\)", re.IGNORECASE)
-TOOL_HEADER_PATTERN = re.compile(r"\(\s*(T\d+)\s*=.*\{([0-9.]+)\s*inches\}\)", re.IGNORECASE)
+TOOL_HEADER_PATTERN = re.compile(r"\(\s*(T\d+)\s*=\s*(.+?)\s*\)", re.IGNORECASE)
 INLINE_TOOL_PATTERN = re.compile(r"\(\s*Tool:\s*([^\{\)]+)\{([0-9.]+)\s*inches\}\)", re.IGNORECASE)
 TOOL_CHANGE_PATTERN = re.compile(r"\bT(\d+)\s+M06\b", re.IGNORECASE)
 G43_Z_PATTERN = re.compile(r"\bG43\b.*\bZ([+-]?\d*\.?\d+)", re.IGNORECASE)
@@ -110,14 +110,31 @@ def extract_blank_and_material(lines: List[str]) -> Tuple[float, float, Optional
     return vcarve_x_span, vcarve_y_span, material_thickness
 
 
+def _extract_diameter(text: str) -> Optional[float]:
+    """Extract tool diameter in inches from description text, trying multiple formats."""
+    # Pattern 1: {N inch...} — curly brace notation, singular or plural
+    m = re.search(r'\{([\d.]+)\s+inch', text, re.IGNORECASE)
+    if m:
+        return float(m.group(1))
+    # Pattern 2: N inch... — number before 'inch' without braces (e.g. ".5 inches Dia")
+    m = re.search(r'([\d.]+)\s+inch', text, re.IGNORECASE)
+    if m:
+        return float(m.group(1))
+    # Pattern 3: bare decimal number only (e.g. ROUNDOVER 0.125); integer-only values ignored
+    m = re.search(r'\b(\d+\.\d+)\b', text)
+    if m:
+        return float(m.group(1))
+    return None
+
+
 def extract_tools(lines: List[str]) -> Dict[str, Dict[str, Optional[float]]]:
     tools: Dict[str, Dict[str, Optional[float]]] = {}
     for line in lines:
         header_match = TOOL_HEADER_PATTERN.search(line)
         if header_match:
             tool_number = header_match.group(1).upper()
-            diameter = float(header_match.group(2))
-            tools[tool_number] = {"description": line.strip("()"), "diameter_inches": diameter}
+            description = header_match.group(2).strip()
+            tools[tool_number] = {"description": description, "diameter_inches": _extract_diameter(description)}
             continue
 
         inline_match = INLINE_TOOL_PATTERN.search(line)

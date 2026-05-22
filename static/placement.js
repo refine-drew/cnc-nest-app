@@ -203,8 +203,19 @@ var JobPanel = (() => {
 
     sec.innerHTML = matrix.map(t => {
       const icon = t.conflict ? '<span class="compat-conflict">⚠</span>' : '<span class="compat-ok">✓</span>';
-      const desc = t.usages.map(u => u.description || "—").join(" / ");
-      return `<div class="compat-row">${icon} <strong>${t.tool_number}</strong> <span style="color:#888;font-size:11px">${desc}</span></div>`;
+      const rawDescs = [...new Set(t.usages.map(u => u.description || '—'))];
+      const cleanDescs = rawDescs.map(d => {
+        // "End Mill {.75 inches}" or "End Mill {0.5 inch}" → "End Mill  0.75\""
+        let m = d.match(/^(.+?)\s*\{([\d.]+)\s+inch/i);
+        if (m) return `${m[1].trim()}  ${parseFloat(m[2])}"`;
+        // "Ball Nose .5 inches Dia" → "Ball Nose  0.5\""
+        m = d.match(/^(.+?)\s+([\d.]+)\s+inch/i);
+        if (m) return `${m[1].trim()}  ${parseFloat(m[2])}"`;
+        return d;
+      });
+      const descStr = cleanDescs.join(' / ');
+      const files = [...new Set(t.usages.map(u => u.filename))].join(', ');
+      return `<div class="compat-row"><div class="compat-main">${icon} <strong>${t.tool_number}</strong> <span class="compat-desc">${descStr}</span></div><div class="compat-files">${files}</div></div>`;
     }).join("");
   }
 

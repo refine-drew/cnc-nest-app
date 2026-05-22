@@ -297,3 +297,41 @@ def test_extract_passes_empty_when_no_tool_change():
     part = parse_vcarve_text(SAMPLE_VCARVE)
 
     assert part.passes == []
+
+
+# --- tool header format tests ---
+
+def _minimal(header_comment):
+    return f"( Material Size)\n( X=100, Y=50, Z=19)\n{header_comment}\nT2 M06\nM30\n"
+
+
+def test_extract_tools_plural_inches_brace():
+    part = parse_vcarve_text(_minimal("(T2 = End Mill {0.5 inches})"))
+    assert part.tools["T2"]["diameter_inches"] == pytest.approx(0.5)
+    assert part.tools["T2"]["description"] == "End Mill {0.5 inches}"
+
+
+def test_extract_tools_singular_inch_brace():
+    part = parse_vcarve_text(_minimal("(T2 = End Mill {0.5 inch})"))
+    assert part.tools["T2"]["diameter_inches"] == pytest.approx(0.5)
+    assert part.tools["T2"]["description"] == "End Mill {0.5 inch}"
+
+
+def test_extract_tools_no_brace_dia_suffix():
+    part = parse_vcarve_text(_minimal("(T1 = Ball Nose .5 inches Dia)").replace("T2", "T1"))
+    assert part.tools["T1"]["diameter_inches"] == pytest.approx(0.5)
+    assert part.tools["T1"]["description"] == "Ball Nose .5 inches Dia"
+
+
+def test_extract_tools_no_diameter_integer_only():
+    part = parse_vcarve_text(_minimal("(T5 = ROUNDOVER 125)").replace("T2", "T5"))
+    assert part.tools["T5"]["diameter_inches"] is None
+    assert part.tools["T5"]["description"] == "ROUNDOVER 125"
+
+
+def test_extract_tools_description_excludes_tool_prefix():
+    part = parse_vcarve_text(_minimal("(T4 = End Mill {.75 inches})").replace("T2", "T4"))
+    desc = part.tools["T4"]["description"]
+    assert desc == "End Mill {.75 inches}"
+    assert "T4" not in desc
+    assert "=" not in desc

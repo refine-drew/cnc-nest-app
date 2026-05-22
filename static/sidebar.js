@@ -62,13 +62,12 @@ var LibraryPanel = (() => {
 
     const zIcon = e.z_status === "ok" ? "✓" : e.z_status === "warning" ? "⚠" : "✕";
     const zClass = "z-" + (e.z_status || "ok");
-    const dims = e.vcarve_x_span ? `${e.vcarve_x_span}×${e.vcarve_y_span}mm` : "";
-    const thick = e.material_thickness ? ` · ${e.material_thickness}mm` : "";
+    const dims = e.vcarve_x_span ? `${e.vcarve_x_span}×${e.vcarve_y_span}mm · ${e.material_thickness || "?"}mm` : "";
+    const tooltip = [e.path, dims].filter(Boolean).join(" — ");
 
     div.innerHTML = `
       <span class="${zClass}" title="${(e.z_messages||[]).join('; ')}">${zIcon}</span>
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${e.path}">${e.name}</span>
-      <span style="color:#666;font-size:10px;white-space:nowrap">${dims}${thick}</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${tooltip}">${e.name}</span>
     `;
 
     div.addEventListener("click", () => TrayPanel.add(e));
