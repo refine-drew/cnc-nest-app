@@ -127,55 +127,65 @@ def test_extract_body_empty_when_no_m03():
 # ── _transform_line ───────────────────────────────────────────────────────────
 
 def test_transform_a_rail_adds_offset():
-    params = {"b": False, "x": RAIL_W, "y": 2000.0}
+    # A rail: b_x=True (mirror X), b_y=False (additive Y)
+    # output_X = slot_mark - vcarve_X; output_Y = rail_w + vcarve_Y
+    # slot_mark=2057.4, rail_w=82.55
+    # X50 → 2057.4 - 50 = 2007.4; Y100 → 82.55 + 100 = 182.55
+    slot_mark = (120 - 39) * 25.4  # 2057.4
+    params = {"b_x": True, "x": slot_mark, "b_y": False, "y": RAIL_W}
     result = _transform_line("G01 X50 Y100 Z-0.254", params)
-    assert "X132.5500" in result   # 50 + 82.55
-    assert "Y2100.0000" in result  # 100 + 2000
-    assert "Z-0.254" in result     # Z unchanged
+    assert "X2007.4000" in result   # slot_mark - 50
+    assert "Y182.5500" in result    # RAIL_W + 100
+    assert "Z-0.254" in result      # Z unchanged
 
 
 def test_transform_b_rail_mirrors():
-    # blank_height=100, machine_y=2000 → y_const=2100; x_const=BED_X-RAIL_W=1441.45
-    params = {"b": True, "x": BED_X - RAIL_W, "y": 2100.0}
+    # B rail: b_x=True, b_y=True (both mirrored)
+    # output_X = x_const - vcarve_X; output_Y = y_const - vcarve_Y
+    params = {"b_x": True, "x": BED_X - RAIL_W, "b_y": True, "y": 2100.0}
     result = _transform_line("G01 X50 Y30 Z-0.254", params)
-    assert "X1391.4500" in result  # 1441.45 - 50
+    assert "X1391.4500" in result  # (BED_X-RAIL_W) - 50 = 1441.45 - 50
     assert "Y2070.0000" in result  # 2100 - 30
 
 
 def test_transform_b_rail_swaps_g02_to_g03():
-    params = {"b": True, "x": 1441.45, "y": 2100.0}
+    # b_x=True, b_y=True → both mirrored → net NO swap (even number of mirrors)
+    # b_x != b_y is False, so arc NOT swapped
+    params = {"b_x": True, "x": 1441.45, "b_y": True, "y": 2100.0}
     result = _transform_line("G02 X50 Y50 I10 J0 Z-0.254", params)
-    assert result.startswith("G03")
-    assert result.count("G02") == 0
+    assert "G02" in result   # NOT swapped when both axes mirrored
+    assert "G03" not in result
 
 
 def test_transform_b_rail_swaps_g03_to_g02():
-    params = {"b": True, "x": 1441.45, "y": 2100.0}
+    # b_x != b_y triggers swap; only one axis mirrored
+    params = {"b_x": True, "x": 1441.45, "b_y": False, "y": 2100.0}
     result = _transform_line("G03 X50 Y50 I-10 J5 Z-0.254", params)
-    assert result.startswith("G02")
+    assert "G02" in result
 
 
 def test_transform_b_rail_negates_ij():
-    params = {"b": True, "x": 1441.45, "y": 2100.0}
+    # Both axes mirrored: negate I (x_mirror) AND J (y_mirror)
+    params = {"b_x": True, "x": 1441.45, "b_y": True, "y": 2100.0}
     result = _transform_line("G02 X50 Y50 I20 J-5 Z-0.254", params)
     assert "I-20.0000" in result
     assert "J5.0000" in result
 
 
 def test_transform_comment_unchanged():
-    params = {"b": False, "x": RAIL_W, "y": 2000.0}
+    params = {"b_x": False, "x": RAIL_W, "b_y": False, "y": 2000.0}
     line = "(Tool: End Mill {0.5 inches})"
     assert _transform_line(line, params) == line
 
 
 def test_transform_g53_unchanged():
-    params = {"b": False, "x": RAIL_W, "y": 2000.0}
+    params = {"b_x": False, "x": RAIL_W, "b_y": False, "y": 2000.0}
     line = "G53 G49 Z0"
     assert _transform_line(line, params) == line
 
 
 def test_transform_a_rail_z_unchanged():
-    params = {"b": False, "x": RAIL_W, "y": 2000.0}
+    params = {"b_x": True, "x": 2057.4, "b_y": False, "y": RAIL_W}
     result = _transform_line("G01 X10 Y10 Z18.796", params)
     assert "Z18.796" in result
 
@@ -185,18 +195,21 @@ def test_transform_a_rail_z_unchanged():
 def test_transform_params_a_rail():
     p = _placed(SINGLE_T2, "A", 39)
     params = _transform_params(p, RAIL_W, BED_X)
-    assert not params["b"]
-    assert params["x"] == pytest.approx(RAIL_W)
-    assert params["y"] == pytest.approx((120 - 39) * 25.4)
+    slot_mark = (120 - 39) * 25.4
+    assert params["b_x"] is True
+    assert params["b_y"] is False
+    assert params["x"] == pytest.approx(slot_mark)
+    assert params["y"] == pytest.approx(RAIL_W)
 
 
 def test_transform_params_b_rail():
     p = _placed(SINGLE_T2, "B", 39)
     params = _transform_params(p, RAIL_W, BED_X)
-    assert params["b"]
-    assert params["x"] == pytest.approx(BED_X - RAIL_W)
-    machine_y = (120 - 39) * 25.4
-    assert params["y"] == pytest.approx(machine_y + p.part.blank_height)
+    slot_mark = (120 - 39) * 25.4
+    assert params["b_x"] is True
+    assert params["b_y"] is True
+    assert params["x"] == pytest.approx(slot_mark + p.part.vcarve_x_span)
+    assert params["y"] == pytest.approx(BED_X - RAIL_W)
 
 
 # ── _nearest_neighbor_sort ────────────────────────────────────────────────────
@@ -289,24 +302,29 @@ def test_output_single_tool_block_for_single_part():
 # ── coordinate transformation in output ──────────────────────────────────────
 
 def test_a_rail_coordinates_offset_in_output():
+    # SINGLE_T2 has vcarve_x_span=200, vcarve_y_span=100
+    # A rail slot 39: slot_mark=2057.4, rail_w=82.55
+    # G00 X0 Y0: output_X = slot_mark - 0 = 2057.4, output_Y = rail_w + 0 = 82.55
     p = _placed(SINGLE_T2, "A", 39)
     result = generate_master_gcode([p], SETTINGS)
-    machine_y = (120 - 39) * 25.4  # 2057.4
-    # G00 X0 Y0 → X82.5500 Y2057.4000
-    assert f"X{RAIL_W:.4f}" in result
-    assert f"Y{machine_y:.4f}" in result
+    slot_mark = (120 - 39) * 25.4  # 2057.4
+    assert f"X{slot_mark:.4f}" in result
+    assert f"Y{RAIL_W:.4f}" in result
 
 
 def test_b_rail_coordinates_mirrored_in_output():
+    # SINGLE_T2: vcarve_x_span=200, vcarve_y_span=100
+    # B rail slot 39: x_const = slot_mark + vcarve_x_span = 2057.4+200=2257.4
+    #                 y_const = BED_X - RAIL_W = 1441.45
+    # G00 X0 Y0: output_X = 2257.4 - 0 = 2257.4, output_Y = 1441.45 - 0 = 1441.45
     p = _placed(SINGLE_T2, "B", 39)
     result = generate_master_gcode([p], SETTINGS)
-    machine_y = (120 - 39) * 25.4
-    blank_h = p.part.blank_height  # 100.0
-    x_const = BED_X - RAIL_W  # 1441.45
-    # file X=0 → machine X=1441.45, file X=100 → machine X=1341.45
+    slot_mark = (120 - 39) * 25.4
+    vcarve_x_span = p.part.vcarve_x_span  # 200.0
+    x_const = slot_mark + vcarve_x_span   # 2257.4
+    y_const = BED_X - RAIL_W              # 1441.45
     assert f"X{x_const:.4f}" in result
-    # file Y=0 → machine Y = machine_y + blank_h
-    assert f"Y{machine_y + blank_h:.4f}" in result
+    assert f"Y{y_const:.4f}" in result
 
 
 def test_b_rail_arcs_swapped_in_output():

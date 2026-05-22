@@ -40,47 +40,48 @@ def blank_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float) -> Rec
     p = placed.part
     my = _machine_y(placed.slot_inches)
     if placed.rail == "A":
+        # vcarve_y_span = dim across bed = machine X extent
+        # vcarve_x_span = dim along rail = machine Y extent
+        # slot mark (my) = HIGH machine-Y edge
         return Rect(
             min_x=rail_width_mm,
-            max_x=rail_width_mm + p.blank_width,
-            min_y=my,
-            max_y=my + p.blank_height,
+            max_x=rail_width_mm + p.vcarve_y_span,
+            min_y=my - p.vcarve_x_span,
+            max_y=my,
         )
     else:  # B rail
-        min_x = bed_x_mm - rail_width_mm - p.blank_width
+        min_x = bed_x_mm - rail_width_mm - p.vcarve_y_span
         return Rect(
             min_x=min_x,
-            max_x=min_x + p.blank_width,
+            max_x=min_x + p.vcarve_y_span,
             min_y=my,
-            max_y=my + p.blank_height,
+            max_y=my + p.vcarve_x_span,
         )
 
 
 def toolpath_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float) -> Rect:
     """
     Toolpath extents in machine coordinates.
-
-    A rail: direct offset — file coords shift by (rail_width_mm, machine_y).
-    B rail: 180° rotation — file coords are mirrored through blank center.
-      new_X = (machine_x + blank_width) - file_x
-      new_Y = (machine_y + blank_height) - file_y
+    VCarve X → machine Y,  VCarve Y → machine X
+    A rail: machX = rail_w + vcarve_Y,   machY = slot_mark - vcarve_X
+    B rail: machX = (bed_x-rail_w) - vcarve_Y,  machY = (slot_mark + vcarve_x_span) - vcarve_X
     """
     p = placed.part
     my = _machine_y(placed.slot_inches)
     if placed.rail == "A":
         return Rect(
-            min_x=rail_width_mm + p.min_x,
-            max_x=rail_width_mm + p.max_x,
-            min_y=my + p.min_y,
-            max_y=my + p.max_y,
+            min_x=rail_width_mm + p.min_vy,
+            max_x=rail_width_mm + p.max_vy,
+            min_y=my - p.max_vx,
+            max_y=my - p.min_vx,
         )
     else:  # B rail
-        machine_x = bed_x_mm - rail_width_mm - p.blank_width
+        far_x = bed_x_mm - rail_width_mm
         return Rect(
-            min_x=machine_x + p.blank_width - p.max_x,
-            max_x=machine_x + p.blank_width - p.min_x,
-            min_y=my + p.blank_height - p.max_y,
-            max_y=my + p.blank_height - p.min_y,
+            min_x=far_x - p.max_vy,
+            max_x=far_x - p.min_vy,
+            min_y=my + p.vcarve_x_span - p.max_vx,
+            max_y=my + p.vcarve_x_span - p.min_vx,
         )
 
 

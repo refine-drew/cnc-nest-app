@@ -104,8 +104,8 @@ def test_parse_vcarve_text_extracts_blank_and_material():
     part = parse_vcarve_text(SAMPLE_VCARVE, filename="sample.nc")
 
     assert part.filename == "sample.nc"
-    assert part.blank_width == 1676.4
-    assert part.blank_height == 3200.4
+    assert part.vcarve_x_span == 1676.4
+    assert part.vcarve_y_span == 3200.4
     assert part.material_thickness == 31.877
 
 
@@ -119,10 +119,10 @@ def test_parse_vcarve_text_extracts_tool_from_header():
 def test_parse_vcarve_text_scans_coordinates():
     part = parse_vcarve_text(SAMPLE_VCARVE)
 
-    assert part.min_x == 0.0
-    assert part.max_x == 200.0
-    assert part.min_y == 0.0
-    assert part.max_y == 300.0
+    assert part.min_vx == 0.0
+    assert part.max_vx == 200.0
+    assert part.min_vy == 0.0
+    assert part.max_vy == 300.0
 
 
 # --- modal coordinate tests ---
@@ -136,10 +136,10 @@ G01 X200 Y50
 """
     part = parse_vcarve_text(gcode)
     # After G01 X100 (no Y), machine is at (100, 10) — must be included in bbox
-    assert part.min_x == 0.0
-    assert part.max_x == 200.0
-    assert part.min_y == 10.0
-    assert part.max_y == 50.0
+    assert part.min_vx == 0.0
+    assert part.max_vx == 200.0
+    assert part.min_vy == 10.0
+    assert part.max_vy == 50.0
 
 
 def test_modal_coordinates_carry_x_forward():
@@ -150,10 +150,10 @@ G01 Y100
 """
     part = parse_vcarve_text(gcode)
     # G01 Y100 (no X) — machine moves to (50, 100)
-    assert part.min_x == 50.0
-    assert part.max_x == 50.0
-    assert part.min_y == 0.0
-    assert part.max_y == 100.0
+    assert part.min_vx == 50.0
+    assert part.max_vx == 50.0
+    assert part.min_vy == 0.0
+    assert part.max_vy == 100.0
 
 
 def test_machine_coord_moves_excluded_from_bbox():
@@ -165,8 +165,8 @@ G53 X0 Y3048
 """
     part = parse_vcarve_text(gcode)
     # G53 line should not affect bounding box
-    assert part.max_x == 100.0
-    assert part.max_y == 100.0
+    assert part.max_vx == 100.0
+    assert part.max_vy == 100.0
 
 
 # --- Z scanning tests ---

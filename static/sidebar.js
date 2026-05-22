@@ -62,7 +62,7 @@ var LibraryPanel = (() => {
 
     const zIcon = e.z_status === "ok" ? "✓" : e.z_status === "warning" ? "⚠" : "✕";
     const zClass = "z-" + (e.z_status || "ok");
-    const dims = e.blank_width ? `${e.blank_width}×${e.blank_height}mm` : "";
+    const dims = e.vcarve_x_span ? `${e.vcarve_x_span}×${e.vcarve_y_span}mm` : "";
     const thick = e.material_thickness ? ` · ${e.material_thickness}mm` : "";
 
     div.innerHTML = `
@@ -158,7 +158,7 @@ var TrayPanel = (() => {
       const tagHtml = tools.map(t =>
         `<span class="tag${conflictTools.has(t) ? " conflict" : ""}">${t}</span>`
       ).join("");
-      const dims = e.blank_width ? `${e.blank_width}×${e.blank_height}mm · ${e.material_thickness||"?"}mm` : "";
+      const dims = e.vcarve_x_span ? `${e.vcarve_x_span}×${e.vcarve_y_span}mm · ${e.material_thickness||"?"}mm` : "";
       const zStatus = e.z_status === "ok" ? "✓" : e.z_status === "warning" ? "⚠" : "✕";
       const zColor = e.z_status === "ok" ? "#30d158" : e.z_status === "warning" ? "#ffd60a" : "#ff453a";
 

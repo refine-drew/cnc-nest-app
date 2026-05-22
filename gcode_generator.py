@@ -13,7 +13,6 @@ from collision import PlacedPart
 
 # ── compiled patterns ─────────────────────────────────────────────────────────
 
-_XY = re.compile(r"([XY])([+-]?\d*\.?\d+)")
 _IJ = re.compile(r"([IJ])([+-]?\d*\.?\d+)")
 _N_CODE = re.compile(r"^N\d+\s*")
 _TOOL_CMT = re.compile(r"\(\s*Tool:\s*(.+?)\)", re.IGNORECASE)
@@ -207,33 +206,35 @@ def _extract_body(lines: List[str]) -> List[str]:
 
 def _transform_params(placed: PlacedPart, rail_w: float, bed_x: float) -> dict:
     """
-    Pre-compute transformation constants for a placement.
+    Pre-compute per-placement transform constants.
 
-    A rail (additive offset):
-      new_X = file_X + rail_w
-      new_Y = file_Y + machine_y
+    VCarve X → G-code X output → machine Y direction
+    VCarve Y → G-code Y output → machine X direction
 
-    B rail (mirror — 180° rotation):
-      new_X = (bed_x - rail_w) - file_X
-      new_Y = (machine_y + blank_height) - file_Y
+    A rail (translate, mirror X only):
+      output_X = slot_mark - vcarve_X        (G-code X = machine Y, reversed)
+      output_Y = rail_w + vcarve_Y           (G-code Y = machine X, additive)
+
+    B rail (mirror both):
+      output_X = (slot_mark + vcarve_x_span) - vcarve_X
+      output_Y = (bed_x - rail_w) - vcarve_Y
     """
-    my = (120.0 - placed.slot_inches) * 25.4
+    slot_mark = (120.0 - placed.slot_inches) * 25.4
     if placed.rail == "A":
-        return {"b": False, "x": rail_w, "y": my}
-    return {
-        "b": True,
-        "x": bed_x - rail_w,
-        "y": my + placed.part.blank_height,
-    }
+        return {"b_x": True,  "x": slot_mark,
+                "b_y": False, "y": rail_w}
+    return {"b_x": True, "x": slot_mark + placed.part.vcarve_x_span,
+            "b_y": True, "y": bed_x - rail_w}
 
 
 def _transform_line(line: str, p: dict) -> str:
     """
-    Apply placement offset/rotation to XY coordinates on one G-code line.
+    Apply placement transform to XY coordinates on one G-code line.
 
-    Lines starting with '(' (comments) and G53 machine-coord lines are
-    returned unchanged. For B rail, G02/G03 arc direction is swapped and
-    I/J arc-center offsets are negated.
+    Comments and G53 machine-coord lines are returned unchanged.
+
+    A rail (b_x=True, b_y=False): mirror X only → swap G02/G03, negate I, keep J.
+    B rail (b_x=True, b_y=True):  mirror both  → keep G02/G03, negate I and J.
     """
     s = line.strip()
     if not s or s.startswith("("):
@@ -242,23 +243,35 @@ def _transform_line(line: str, p: dict) -> str:
         return s
 
     result = s
+    x_mirror = p["b_x"]
+    y_mirror = p["b_y"]
 
-    if p["b"]:
-        # Swap arc direction
+    # Arc direction: swap G02/G03 only when exactly one axis is mirrored
+    if x_mirror != y_mirror:
         if re.search(r"\bG02\b", result, re.IGNORECASE):
             result = re.sub(r"\bG02\b", "G03", result, flags=re.IGNORECASE)
         elif re.search(r"\bG03\b", result, re.IGNORECASE):
             result = re.sub(r"\bG03\b", "G02", result, flags=re.IGNORECASE)
-        # Negate arc centre offsets
-        result = _IJ.sub(lambda m: f"{m.group(1)}{-float(m.group(2)):.4f}", result)
 
-    def _repl(m: re.Match) -> str:
-        axis, val = m.group(1), float(m.group(2))
-        const = p["x"] if axis == "X" else p["y"]
-        new_val = const - val if p["b"] else val + const
-        return f"{axis}{new_val:.4f}"
+    # Arc centre offsets: negate I when X is mirrored, negate J when Y is mirrored
+    if x_mirror:
+        result = re.sub(r"(I)([+-]?\d*\.?\d+)",
+                        lambda m: f"I{-float(m.group(2)):.4f}", result)
+    if y_mirror:
+        result = re.sub(r"(J)([+-]?\d*\.?\d+)",
+                        lambda m: f"J{-float(m.group(2)):.4f}", result)
 
-    return _XY.sub(_repl, result)
+    def _repl_x(m: re.Match) -> str:
+        val = float(m.group(1))
+        return f"X{p['x'] - val:.4f}" if x_mirror else f"X{val + p['x']:.4f}"
+
+    def _repl_y(m: re.Match) -> str:
+        val = float(m.group(1))
+        return f"Y{p['y'] - val:.4f}" if y_mirror else f"Y{val + p['y']:.4f}"
+
+    result = re.sub(r"X([+-]?\d*\.?\d+)", _repl_x, result)
+    result = re.sub(r"Y([+-]?\d*\.?\d+)", _repl_y, result)
+    return result
 
 
 # ── nearest-neighbour travel sort ─────────────────────────────────────────────

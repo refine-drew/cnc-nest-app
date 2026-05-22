@@ -67,16 +67,16 @@ def _part_dict(part: GcodePart, rel_path: str = "") -> dict:
     return {
         "filename": part.filename,
         "path": rel_path,
-        "blank_width": part.blank_width,
-        "blank_height": part.blank_height,
+        "vcarve_x_span": part.vcarve_x_span,   # was blank_width
+        "vcarve_y_span": part.vcarve_y_span,   # was blank_height
         "material_thickness": part.material_thickness,
         "tools": part.tools,
         "z_status": part.z_validation.status,
         "z_messages": part.z_validation.messages,
-        "min_x": part.min_x,
-        "max_x": part.max_x,
-        "min_y": part.min_y,
-        "max_y": part.max_y,
+        "min_vx": part.min_vx,    # was min_x
+        "max_vx": part.max_vx,
+        "min_vy": part.min_vy,    # was min_y
+        "max_vy": part.max_vy,
         "min_z": part.min_z,
         "max_z": part.max_z,
         "safe_z": part.safe_z,
@@ -85,9 +85,49 @@ def _part_dict(part: GcodePart, rel_path: str = "") -> dict:
     }
 
 
+def _transform_segments(
+    segs: list, rail: str, slot_inches: float,
+    vcarve_x_span: float, rail_width_mm: float, bed_x_mm: float,
+) -> list:
+    """
+    Convert file-coordinate segments to machine coordinates for canvas rendering.
+    file_Y → machine X (vertical),  file_X → machine Y (horizontal)
+    A rail:  machX = rail_w + fileY              machY = (slot_mark - vcarve_x_span) + fileX
+    B rail:  machX = (BED_X-rail_w) - fileY     machY = (slot_mark + vcarve_x_span) - fileX
+    """
+    slot_mark = (120.0 - slot_inches) * 25.4
+    result = []
+    for s in segs:
+        if rail == "A":
+            x1 = rail_width_mm + s["y1"]
+            y1 = (slot_mark - vcarve_x_span) + s["x1"]
+            x2 = rail_width_mm + s["y2"]
+            y2 = (slot_mark - vcarve_x_span) + s["x2"]
+        else:
+            far_x = bed_x_mm - rail_width_mm
+            x1 = far_x - s["y1"]
+            y1 = (slot_mark + vcarve_x_span) - s["x1"]
+            x2 = far_x - s["y2"]
+            y2 = (slot_mark + vcarve_x_span) - s["x2"]
+        result.append({
+            "x1": round(x1, 3), "y1": round(y1, 3),
+            "x2": round(x2, 3), "y2": round(y2, 3),
+            "cutting": s["cutting"],
+        })
+    return result
+
+
 def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
     br = blank_rect(placed, _rail_width(), _bed_x())
     rel = _placement_paths.get(instance_id, placed.part.filename)
+    segments = _transform_segments(
+        placed.part.segments,
+        placed.rail,
+        placed.slot_inches,
+        placed.part.vcarve_x_span,    # was blank_width
+        _rail_width(),
+        _bed_x(),
+    )
     return {
         "instance_id": instance_id,
         "filename": placed.part.filename,
@@ -97,8 +137,9 @@ def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
         "slot": slot_label(placed.rail, placed.slot_inches),
         "machine_x": br.min_x,
         "machine_y": br.min_y,
-        "blank_width": placed.part.blank_width,
-        "blank_height": placed.part.blank_height,
+        "vcarve_x_span": placed.part.vcarve_x_span,   # was blank_width
+        "vcarve_y_span": placed.part.vcarve_y_span,   # was blank_height
+        "segments": segments,
     }
 
 
@@ -176,7 +217,7 @@ def _generate_report(job_name: str, placements: list, settings: dict) -> str:
         lines.append(
             f"  {entry['slot']:<8}"
             f"{p['filename'][:25]:<26}"
-            f"{p['blank_width']:.0f}×{p['blank_height']:.0f}{'':>6}"
+            f"{p['vcarve_x_span']:.0f}×{p['vcarve_y_span']:.0f}{'':>6}"
             f"{entry['slot_inches']:.1f}\" from left"
         )
     changes = max(0, len(tools_seen) - 1)
@@ -288,8 +329,8 @@ def api_library():
                         "type": "file",
                         "name": name,
                         "path": rel_path,
-                        "blank_width": part.blank_width,
-                        "blank_height": part.blank_height,
+                        "vcarve_x_span": part.vcarve_x_span,
+                        "vcarve_y_span": part.vcarve_y_span,
                         "material_thickness": part.material_thickness,
                         "tools": list(part.tools.keys()),
                         "z_status": part.z_validation.status,
@@ -513,8 +554,8 @@ def api_save_job():
                 "slot_inches": p.slot_inches,
                 "slot": slot_label(p.rail, p.slot_inches),
                 "instance_id": iid,
-                "blank_width": p.part.blank_width,
-                "blank_height": p.part.blank_height,
+                "vcarve_x_span": p.part.vcarve_x_span,
+                "vcarve_y_span": p.part.vcarve_y_span,
             }
             for iid, p in _placements.items()
         ],
@@ -572,13 +613,13 @@ def api_load_job():
                 continue
 
         part = _loaded[rel]
-        saved_w = entry.get("blank_width")
-        saved_h = entry.get("blank_height")
+        saved_w = entry.get("vcarve_x_span") or entry.get("blank_width")   # back-compat
+        saved_h = entry.get("vcarve_y_span") or entry.get("blank_height")
         if saved_w and saved_h:
-            if abs(part.blank_width - saved_w) > 0.1 or abs(part.blank_height - saved_h) > 0.1:
+            if abs(part.vcarve_x_span - saved_w) > 0.1 or abs(part.vcarve_y_span - saved_h) > 0.1:
                 warnings.append(
                     f"{rel}: dimensions changed since job was saved "
-                    f"({saved_w}×{saved_h} → {part.blank_width}×{part.blank_height}). "
+                    f"({saved_w}×{saved_h} → {part.vcarve_x_span}×{part.vcarve_y_span}). "
                     "Re-placement required."
                 )
                 continue

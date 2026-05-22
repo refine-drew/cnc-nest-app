@@ -284,26 +284,27 @@ var BedCanvas = (() => {
     console.log("[render] _drawOnePart", {
       filename: p.filename, slot: p.slot,
       machine_x: p.machine_x, machine_y: p.machine_y,
-      blank_width: p.blank_width, blank_height: p.blank_height,
+      vcarve_x_span: p.vcarve_x_span, vcarve_y_span: p.vcarve_y_span,
     });
     const color = colorForPart(p.filename);
     const s = baseScale * zoom;
 
-    // blank_height spans machine X (short, 60"); blank_width spans machine Y (long, 120").
-    // B rail machine_x from the API uses blank_width, so recompute from BED_X_MM for both rails
-    // to stay consistent with the ghost preview in _drawDragFeedback.
-    const bh = p.blank_height;  // machine X extent
-    const bw = p.blank_width;   // machine Y extent
-    let machX0, machX1;
+    let machX0, machX1, machY0, machY1;
     if (p.rail === "A") {
+      // vcarve_y_span spans machine X (canvas vertical), vcarve_x_span spans machine Y (canvas horizontal).
+      // machine_y = slot_mark - vcarve_x_span; recover slot_mark to anchor the high-Y edge.
+      const slotMark = p.machine_y + p.vcarve_x_span;
       machX0 = RAIL_W;
-      machX1 = RAIL_W + bh;
+      machX1 = RAIL_W + p.vcarve_y_span;
+      machY0 = slotMark - p.vcarve_x_span;
+      machY1 = slotMark;
     } else {
-      machX0 = BED_X_MM - RAIL_W - bh;
+      // B rail: vcarve_y_span = machine X extent, vcarve_x_span = machine Y extent.
+      machX0 = BED_X_MM - RAIL_W - p.vcarve_y_span;
       machX1 = BED_X_MM - RAIL_W;
+      machY0 = p.machine_y;
+      machY1 = p.machine_y + p.vcarve_x_span;
     }
-    const machY0 = p.machine_y;
-    const machY1 = p.machine_y + bw;
 
     const tl = toCanvas(machX1, machY1);  // true top-left: high machX (up), high machY (left)
     const br = toCanvas(machX0, machY0);  // true bottom-right: low machX (down), low machY (right)
@@ -351,81 +352,44 @@ var BedCanvas = (() => {
       ctx.fillText(label, tl.x + 3, tl.y + fontSize + 2);
     }
 
-    // Cut-move toolpaths
-    if (viewMode !== "bounds" && p.passes) {
-      _drawToolpaths(p, color);
+    // Cut-move toolpaths (segments pre-transformed to machine coords by backend)
+    if (viewMode !== "bounds" && p.segments) {
+      _drawSegments(p, color);
     }
   }
 
-  function _drawToolpaths(p, color) {
-    if (!p.passes) return;
+  function _drawSegments(p, color) {
+    if (!p.segments || !p.segments.length) return;
     const showAll = viewMode === "all";
     ctx.lineWidth = Math.min(Math.max(0.5, baseScale * zoom * 0.3), 2);
 
-    for (const pass of p.passes) {
-      _renderPassLines(pass.lines, p, color, showAll);
+    // Cutting moves — solid, part color
+    ctx.strokeStyle = color;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    for (const seg of p.segments) {
+      if (!seg.cutting) continue;
+      const from = toCanvas(seg.x1, seg.y1);
+      const to   = toCanvas(seg.x2, seg.y2);
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x,   to.y);
     }
-  }
+    ctx.stroke();
 
-  function _renderPassLines(lines, p, color, showAll) {
-    let curX = 0, curY = 0, curZ = 0;
-    let inCut = false;
-    const isB = p.rail === "B";
-
-    for (const line of lines) {
-      const upper = line.toUpperCase();
-      if (!upper.match(/G0[0123]/)) continue;
-
-      const xm = line.match(/X([+-]?\d*\.?\d+)/i);
-      const ym = line.match(/Y([+-]?\d*\.?\d+)/i);
-      const zm = line.match(/Z([+-]?\d*\.?\d+)/i);
-
-      const fileX = xm ? parseFloat(xm[1]) : curX;
-      const fileY = ym ? parseFloat(ym[1]) : curY;
-      const newZ  = zm ? parseFloat(zm[1]) : curZ;
-
-      // Transform file coords to machine coords
-      const {mx: fromMX, my: fromMY} = _fileToMachine(curX, curY, p, isB);
-      const {mx: toMX,   my: toMY}   = _fileToMachine(fileX, fileY, p, isB);
-
-      const isRapid = upper.includes("G00");
-      const isCut   = !isRapid && newZ < 0;
-
-      if (isCut || (showAll && isRapid)) {
-        const from = toCanvas(fromMX, fromMY);
-        const to   = toCanvas(toMX,   toMY);
-
-        ctx.beginPath();
+    // Rapid moves — dashed gray, only in "all" mode
+    if (showAll) {
+      ctx.strokeStyle = "rgba(150,150,150,0.4)";
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      for (const seg of p.segments) {
+        if (seg.cutting) continue;
+        const from = toCanvas(seg.x1, seg.y1);
+        const to   = toCanvas(seg.x2, seg.y2);
         ctx.moveTo(from.x, from.y);
-        ctx.lineTo(to.x, to.y);
-
-        if (isRapid) {
-          ctx.strokeStyle = "rgba(150,150,150,0.4)";
-          ctx.setLineDash([3, 4]);
-        } else {
-          ctx.strokeStyle = color;
-          ctx.setLineDash([]);
-        }
-        ctx.stroke();
-        ctx.setLineDash([]);
+        ctx.lineTo(to.x,   to.y);
       }
-
-      curX = fileX; curY = fileY; curZ = newZ;
-    }
-  }
-
-  function _fileToMachine(fileX, fileY, p, isB) {
-    const railW = RAIL_W;
-    const my = (120 - p.slot_inches) * 25.4;
-    if (!isB) {
-      return { mx: railW + fileX, my: my + fileY };
-    } else {
-      const bedX = BED_X_MM;
-      const bh   = p.blank_height;
-      return {
-        mx: (bedX - railW) - fileX,
-        my: (my + bh) - fileY,
-      };
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
   }
 
@@ -468,13 +432,15 @@ var BedCanvas = (() => {
       // Ghost part outline
       if (dragState.part) {
         const color = colorForPart(dragState.part.filename);
-        const bw = dragState.part.blank_width;
-        const bh = dragState.part.blank_height;
+        const bw = dragState.part.vcarve_x_span;
+        const bh = dragState.part.vcarve_y_span;
         let gTL, gBR;
         if (hr === "A") {
+          // vcarve_y_span for machine X, vcarve_x_span for machine Y. slot_mark at high-Y.
           gTL = toCanvas(RAIL_W + bh, machY);
-          gBR = toCanvas(RAIL_W, machY + bw);
+          gBR = toCanvas(RAIL_W, machY - bw);
         } else {
+          // B rail: unchanged.
           gTL = toCanvas(BED_X_MM - RAIL_W, machY);
           gBR = toCanvas(BED_X_MM - RAIL_W - bh, machY + bw);
         }
@@ -588,12 +554,21 @@ var BedCanvas = (() => {
   function _hitTestPart(cx, cy) {
     const placements = App?.placements ?? [];
     for (const p of [...placements].reverse()) {
-      const bh = p.blank_height;
-      const bw = p.blank_width;
-      const machX1 = p.rail === "A" ? RAIL_W + bh : BED_X_MM - RAIL_W;
-      const machX0 = p.rail === "A" ? RAIL_W      : BED_X_MM - RAIL_W - bh;
-      const tl = toCanvas(machX1, p.machine_y + bw);
-      const br = toCanvas(machX0, p.machine_y);
+      let machX0, machX1, machY0, machY1;
+      if (p.rail === "A") {
+        const slotMark = p.machine_y + p.vcarve_x_span;
+        machX0 = RAIL_W;
+        machX1 = RAIL_W + p.vcarve_y_span;
+        machY0 = slotMark - p.vcarve_x_span;
+        machY1 = slotMark;
+      } else {
+        machX0 = BED_X_MM - RAIL_W - p.vcarve_y_span;
+        machX1 = BED_X_MM - RAIL_W;
+        machY0 = p.machine_y;
+        machY1 = p.machine_y + p.vcarve_x_span;
+      }
+      const tl = toCanvas(machX1, machY1);
+      const br = toCanvas(machX0, machY0);
       if (cx >= tl.x && cx <= br.x && cy >= tl.y && cy <= br.y) {
         return p.instance_id;
       }

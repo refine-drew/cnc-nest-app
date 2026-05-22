@@ -34,56 +34,60 @@ class GcodePass:
 @dataclass
 class GcodePart:
     filename: str
-    blank_width: float
-    blank_height: float
+    vcarve_x_span: float       # VCarve X = along rail = machine Y extent
+    vcarve_y_span: float       # VCarve Y = across bed = machine X extent
     material_thickness: Optional[float]
     tools: Dict[str, Dict[str, Optional[float]]]
-    min_x: float
-    max_x: float
-    min_y: float
-    max_y: float
+    min_vx: float              # VCarve X min
+    max_vx: float
+    min_vy: float              # VCarve Y min
+    max_vy: float
     raw_lines: List[str]
     min_z: Optional[float] = None
     max_z: Optional[float] = None
     safe_z: Optional[float] = None
     z_validation: ZValidation = field(default_factory=lambda: ZValidation(status="ok"))
     passes: List[GcodePass] = field(default_factory=list)
+    segments: List[dict] = field(default_factory=list)
 
 
 def parse_vcarve_text(text: str, filename: str = "") -> GcodePart:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    blank_width, blank_height, material_thickness = extract_blank_and_material(lines)
+    vcarve_x_span, vcarve_y_span, material_thickness = extract_blank_and_material(lines)
     tools = extract_tools(lines)
-    min_x, max_x, min_y, max_y = scan_coordinates(lines)
+    min_vx, max_vx, min_vy, max_vy = scan_coordinates(lines)
     min_z, max_z, safe_z = scan_z_values(lines)
     passes = extract_passes(lines)
     z_validation = validate_z(min_z, safe_z, material_thickness)
 
-    if min_x is None or max_x is None or min_y is None or max_y is None:
-        min_x, min_y = 0.0, 0.0
-        max_x, max_y = blank_width, blank_height
+    if min_vx is None or max_vx is None or min_vy is None or max_vy is None:
+        min_vx, min_vy = 0.0, 0.0
+        max_vx, max_vy = vcarve_x_span, vcarve_y_span
+
+    segments = extract_file_segments(passes)
 
     return GcodePart(
         filename=filename,
-        blank_width=blank_width,
-        blank_height=blank_height,
+        vcarve_x_span=vcarve_x_span,
+        vcarve_y_span=vcarve_y_span,
         material_thickness=material_thickness,
         tools=tools,
-        min_x=min_x,
-        max_x=max_x,
-        min_y=min_y,
-        max_y=max_y,
+        min_vx=min_vx,
+        max_vx=max_vx,
+        min_vy=min_vy,
+        max_vy=max_vy,
         raw_lines=lines,
         min_z=min_z,
         max_z=max_z,
         safe_z=safe_z,
         z_validation=z_validation,
         passes=passes,
+        segments=segments,
     )
 
 
 def extract_blank_and_material(lines: List[str]) -> Tuple[float, float, Optional[float]]:
-    blank_width = blank_height = 0.0
+    vcarve_x_span = vcarve_y_span = 0.0
     material_thickness: Optional[float] = None
     for i, line in enumerate(lines):
         if "( Material Size" in line or "(Material Size" in line:
@@ -91,19 +95,19 @@ def extract_blank_and_material(lines: List[str]) -> Tuple[float, float, Optional
                 size_line = lines[i + 1]
                 size_match = HEADER_SIZE_PATTERN.search(size_line)
                 if size_match:
-                    blank_width = float(size_match.group(1))
-                    blank_height = float(size_match.group(2))
+                    vcarve_x_span = float(size_match.group(1))
+                    vcarve_y_span = float(size_match.group(2))
                     material_thickness = float(size_match.group(3))
-                    return blank_width, blank_height, material_thickness
+                    return vcarve_x_span, vcarve_y_span, material_thickness
 
     for line in lines:
         part_match = PART_SIZE_PATTERN.search(line)
         if part_match:
-            blank_width = float(part_match.group(1))
-            blank_height = float(part_match.group(2))
+            vcarve_x_span = float(part_match.group(1))
+            vcarve_y_span = float(part_match.group(2))
             break
 
-    return blank_width, blank_height, material_thickness
+    return vcarve_x_span, vcarve_y_span, material_thickness
 
 
 def extract_tools(lines: List[str]) -> Dict[str, Dict[str, Optional[float]]]:
@@ -274,6 +278,48 @@ def validate_z(
         return ZValidation(status="blocked", messages=messages)
 
     return ZValidation(status=status, messages=messages)
+
+
+def extract_file_segments(passes: List[GcodePass]) -> List[dict]:
+    """
+    Walk tool passes and extract lateral moves as file-coordinate segments.
+    Each dict: {x1, y1, x2, y2, cutting}.
+    cutting=True on G01/G02/G03 moves where current Z < 0 (through/overcut depth).
+    Z-only moves and G53 machine-coord lines are skipped.
+    """
+    segments: List[dict] = []
+    rapid_pat = re.compile(r"\bG0?0\b", re.IGNORECASE)
+    move_pat  = re.compile(r"\bG0?[0-3]\b", re.IGNORECASE)
+
+    for pass_ in passes:
+        cur_x, cur_y, cur_z = 0.0, 0.0, 0.0
+        for line in pass_.lines:
+            if line.startswith("("):
+                continue
+            if MACHINE_COORD_PATTERN.search(line):
+                continue
+            if not move_pat.search(line):
+                continue
+            is_rapid = bool(rapid_pat.search(line))
+            new_x, new_y, new_z = cur_x, cur_y, cur_z
+            for axis, val in COORD_PATTERN.findall(line):
+                a = axis.upper()
+                if a == "X":
+                    new_x = float(val)
+                elif a == "Y":
+                    new_y = float(val)
+                elif a == "Z":
+                    new_z = float(val)
+            if new_x != cur_x or new_y != cur_y:
+                cutting = (not is_rapid) and (new_z < 0)
+                segments.append({
+                    "x1": cur_x, "y1": cur_y,
+                    "x2": new_x, "y2": new_y,
+                    "cutting": cutting,
+                })
+            cur_x, cur_y, cur_z = new_x, new_y, new_z
+
+    return segments
 
 
 def extract_passes(lines: List[str]) -> List[GcodePass]:

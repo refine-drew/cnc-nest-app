@@ -34,12 +34,12 @@ def _make_part(tools: dict, tool_numbers: list) -> GcodePart:
     passes = [GcodePass(pass_index=i, tool_number=tn) for i, tn in enumerate(tool_numbers)]
     return GcodePart(
         filename="test.nc",
-        blank_width=100.0,
-        blank_height=100.0,
+        vcarve_x_span=100.0,
+        vcarve_y_span=100.0,
         material_thickness=19.05,
         tools=tools,
-        min_x=0.0, max_x=100.0,
-        min_y=0.0, max_y=100.0,
+        min_vx=0.0, max_vx=100.0,
+        min_vy=0.0, max_vy=100.0,
         raw_lines=[],
         z_validation=ZValidation(status="ok"),
         passes=passes,

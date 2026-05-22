@@ -126,7 +126,7 @@ def test_library_scans_nc_files(client, tmp_path, monkeypatch):
     file_entries = [e for e in entries if e["type"] == "file"]
     assert len(file_entries) == 1
     assert file_entries[0]["name"] == "part.nc"
-    assert file_entries[0]["blank_width"] == 100.0
+    assert file_entries[0]["vcarve_x_span"] == 100.0
     assert file_entries[0]["z_status"] == "ok"
 
 
@@ -154,8 +154,8 @@ def test_load_file_parses_and_returns_metadata(client, tmp_path, monkeypatch):
     r = client.post("/api/load-file", json={"path": "602894-3.nc"})
     assert r.status_code == 200
     data = r.get_json()
-    assert data["blank_width"] == 426.0
-    assert data["blank_height"] == 648.0
+    assert data["vcarve_x_span"] == 426.0
+    assert data["vcarve_y_span"] == 648.0
     assert data["material_thickness"] == 19.05
     assert data["z_status"] == "ok"
     assert data["pass_count"] == 1
@@ -223,11 +223,15 @@ def test_place_blocked_file_rejected(client, tmp_path, monkeypatch):
 
 
 def test_place_collision_returns_409(client, tmp_path, monkeypatch):
-    # Oversized toolpath that will collide with anything at an adjacent slot
+    # VCarve X = along rail = machine Y. A toolpath with X=-5000 extends far toward
+    # higher machine Y, reaching adjacent slots.
+    # Part at slot 52 (slot_mark=1727.2): toolpath min_y = 1727.2 - max_vx.
+    # With max_vx=500, min_y = 1727.2-500=1227.2 (doesn't reach slot 39 blank at 1857.4-2057.4).
+    # But with min_vx=-400, toolpath max_y = slot_mark - min_vx = 1727.2+400=2127.2 > 1857.4 → collision!
     oversized = (
         "( Material Size)\n( X= 200.0, Y= 100.0, Z= 19.05)\n"
         "(T2 = End Mill {0.5 inches})\nT2 M06\n"
-        "G01 X100 Y100 Z-0.254\nG01 X200 Y5000 Z-0.254\nM30\n"
+        "G01 X100 Y10 Z-0.254\nG01 X-400 Y10 Z-0.254\nM30\n"
     )
     _seed_library(tmp_path, monkeypatch, {"big.nc": oversized})
     client.post("/api/place", json={"path": "big.nc", "rail": "A", "slot_inches": 52})
