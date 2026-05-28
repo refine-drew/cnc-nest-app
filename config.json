@@ -24,7 +24,8 @@
     "bed_x_mm": 1524.0,
     "bed_y_mm": 3048.0,
     "rail_width_mm": 82.55,
-    "safe_z_clearance_mm": 6.35,
+    "slot_edge_margin_in": 1.5,
+    "safe_z_clearance_mm": 30,
     "park_x": 0.0,
     "park_y": 3048.0,
     "slots": [

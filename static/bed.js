@@ -14,6 +14,7 @@ var BedCanvas = (() => {
   let BED_X_MM = 1524.0;   // 60"
   let BED_Y_MM = 3048.0;   // 120"
   let RAIL_W   = 82.55;    // A/B rail machine-X position
+  let EDGE_MARGIN_IN = 1.5; // overtravel margin: slot 0 sits this far inside the bed edge
 
   // slot data loaded from /api/slots
   let SLOTS = [];
@@ -417,7 +418,7 @@ var BedCanvas = (() => {
     // Highlight target slot
     if (hoverSlot) {
       const { rail: hr, slot_inches } = hoverSlot;
-      const machY = (120 - slot_inches) * 25.4;
+      const machY = (120 - slot_inches - EDGE_MARGIN_IN) * 25.4;
       const slotMachX = hr === "A" ? RAIL_W : BED_X_MM - RAIL_W;
       const pos = toCanvas(slotMachX, machY);
       ctx.strokeStyle = hr === "A" ? "#4dabf7" : "#30d158";
@@ -695,6 +696,9 @@ var BedCanvas = (() => {
       BED_X_MM = parseFloat(cfg.advanced.bed_x_mm);
       BED_Y_MM = parseFloat(cfg.advanced.bed_y_mm);
       RAIL_W   = parseFloat(cfg.advanced.rail_width_mm);
+      if (cfg.advanced.slot_edge_margin_in != null) {
+        EDGE_MARGIN_IN = parseFloat(cfg.advanced.slot_edge_margin_in);
+      }
       SLOTS    = slotData.slots;
       resize();
     }).catch(() => resize());

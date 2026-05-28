@@ -52,6 +52,10 @@ def _bed_x() -> float:
     return float(config["advanced"]["bed_x_mm"])
 
 
+def _edge_margin_in() -> float:
+    return float(config["advanced"].get("slot_edge_margin_in", 1.5))
+
+
 def _make_instance_id(filename: str) -> str:
     stem = os.path.splitext(filename)[0]
     _instance_counts[stem] = _instance_counts.get(stem, 0) + 1
@@ -88,6 +92,7 @@ def _part_dict(part: GcodePart, rel_path: str = "") -> dict:
 def _transform_segments(
     segs: list, rail: str, slot_inches: float,
     vcarve_x_span: float, rail_width_mm: float, bed_x_mm: float,
+    edge_margin_in: float = 0.0,
 ) -> list:
     """
     Convert file-coordinate segments to machine coordinates for canvas rendering.
@@ -95,7 +100,7 @@ def _transform_segments(
     A rail:  machX = rail_w + fileY              machY = (slot_mark - vcarve_x_span) + fileX
     B rail:  machX = (BED_X-rail_w) - fileY     machY = (slot_mark + vcarve_x_span) - fileX
     """
-    slot_mark = (120.0 - slot_inches) * 25.4
+    slot_mark = (120.0 - slot_inches - edge_margin_in) * 25.4
     result = []
     for s in segs:
         if rail == "A":
@@ -118,7 +123,7 @@ def _transform_segments(
 
 
 def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
-    br = blank_rect(placed, _rail_width(), _bed_x())
+    br = blank_rect(placed, _rail_width(), _bed_x(), _edge_margin_in())
     rel = _placement_paths.get(instance_id, placed.part.filename)
     segments = _transform_segments(
         placed.part.segments,
@@ -127,6 +132,7 @@ def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
         placed.part.vcarve_x_span,    # was blank_width
         _rail_width(),
         _bed_x(),
+        _edge_margin_in(),
     )
     tools_list = [
         {
@@ -340,6 +346,7 @@ def api_config_post():
 
 @app.route("/api/slots")
 def api_slots():
+    edge_margin = _edge_margin_in()
     result = []
     for s in config["advanced"]["slots"]:
         s = float(s)
@@ -353,7 +360,7 @@ def api_slots():
             "inches": s,
             "label_a": f"A{label}",
             "label_b": f"B{label}",
-            "machine_y": round((120 - s) * 25.4, 4),
+            "machine_y": round((120 - s - edge_margin) * 25.4, 4),
             "pitch": pitches,
         })
     return jsonify({"slots": result})
@@ -479,7 +486,7 @@ def api_place():
     instance_id = _make_instance_id(part.filename)
     new_placed = PlacedPart(part=part, rail=rail, slot_inches=slot_inches, instance_id=instance_id)
 
-    result = check_placement(new_placed, list(_placements.values()), _rail_width(), _bed_x())
+    result = check_placement(new_placed, list(_placements.values()), _rail_width(), _bed_x(), _edge_margin_in())
     if result.collides:
         # Roll back the instance counter
         stem = os.path.splitext(part.filename)[0]

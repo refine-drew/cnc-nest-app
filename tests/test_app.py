@@ -74,10 +74,11 @@ def test_slots_returns_all_positions(client):
 def test_slots_machine_y_calculation(client):
     r = client.get("/api/slots")
     slots = {s["inches"]: s for s in r.get_json()["slots"]}
-    # A0 → machine_y = (120-0)*25.4 = 3048
-    assert slots[0]["machine_y"] == pytest.approx(3048.0)
-    # A39 → (120-39)*25.4 = 2057.4
-    assert slots[39]["machine_y"] == pytest.approx(2057.4)
+    # Slots are shifted inward by slot_edge_margin_in (default 1.5") for overtravel.
+    # A0 → (120 - 0 - 1.5) * 25.4 = 3009.9
+    assert slots[0]["machine_y"] == pytest.approx(3009.9)
+    # A39 → (120 - 39 - 1.5) * 25.4 = 2019.3
+    assert slots[39]["machine_y"] == pytest.approx(2019.3)
 
 
 def test_slots_pitch_labels(client):
