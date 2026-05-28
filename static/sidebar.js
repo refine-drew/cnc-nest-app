@@ -21,7 +21,7 @@ var LibraryPanel = (() => {
         tree.innerHTML = `<div style="padding:12px 10px;color:#666;font-size:12px">Library folder not found:<br><code style="color:#888">${data.library_path}</code><br><br>Set it in Settings ⚙</div>`;
         return;
       }
-      _renderEntries(tree, data.entries, "");
+      _renderEntries(tree, data.entries, 0);
     }).catch(() => {
       document.getElementById("lib-tree").innerHTML =
         '<div style="padding:12px 10px;color:#666">Could not load library.</div>';
