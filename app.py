@@ -10,6 +10,7 @@ from collision import PlacedPart, blank_rect, check_placement, slot_label
 from config import load_config, save_config
 from gcode_generator import generate_master_gcode
 from gcode_parser import GcodePart, parse_vcarve_text
+from runtime_estimator import estimate_lines_runtime, format_duration
 from tool_library import ToolLibrary
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -86,6 +87,7 @@ def _part_dict(part: GcodePart, rel_path: str = "") -> dict:
         "safe_z": part.safe_z,
         "pass_count": len(part.passes),
         "tool_sequence": [p.tool_number for p in part.passes],
+        "runtime_seconds": part.runtime_seconds,
     }
 
 
@@ -156,6 +158,7 @@ def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
         "tools": tools_list,
         "tool_sequence": [gp.tool_number for gp in placed.part.passes],
         "segments": segments,
+        "runtime_seconds": placed.part.runtime_seconds,
     }
 
 
@@ -201,10 +204,17 @@ def _compute_job_stats() -> dict:
     )
     utilization = round(used_area / bed_area * 100, 1) if bed_area else 0.0
 
+    # Per-part runtimes already include each part's internal T# M06 events.
+    # Summing slightly overestimates because the generator merges consecutive
+    # same-tool blocks across parts; the .txt report runs the estimator over
+    # the actual merged G-code for the precise number.
+    runtime_seconds = sum(p.part.runtime_seconds for p in _placements.values())
+
     return {
         "tool_sequence": ordered_tools,
         "tool_changes": max(0, len(ordered_tools) - 1),
         "utilization": utilization,
+        "runtime_seconds": round(runtime_seconds, 2),
     }
 
 
@@ -255,7 +265,12 @@ def _tool_compatibility() -> dict:
     return {"matrix": matrix, "has_conflict": has_conflict}
 
 
-def _generate_report(job_name: str, placements: list, settings: dict) -> str:
+def _generate_report(
+    job_name: str,
+    placements: list,
+    settings: dict,
+    gcode: str = "",
+) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     safe_z = settings.get("job_safe_z", {})
     bed_y = settings["advanced"]["bed_y_mm"]
@@ -291,13 +306,16 @@ def _generate_report(job_name: str, placements: list, settings: dict) -> str:
             f"{entry['slot_inches']:.1f}\" from left"
         )
     changes = max(0, len(tools_seen) - 1)
+    runtime = estimate_lines_runtime(gcode.splitlines()) if gcode else None
     lines += [
         "",
         f"  Tool sequence: {tool_seq}",
         f"  Tool changes: {changes}",
         f"  Parts placed: {len(placements)}",
-        "=" * 52,
     ]
+    if runtime:
+        lines.append(f"  Estimated runtime: {format_duration(runtime['seconds'])}")
+    lines.append("=" * 52)
     return "\n".join(lines) + "\n"
 
 
@@ -406,6 +424,7 @@ def api_library():
                         "tools": list(part.tools.keys()),
                         "z_status": part.z_validation.status,
                         "z_messages": part.z_validation.messages,
+                        "runtime_seconds": part.runtime_seconds,
                     })
                 except Exception as e:
                     entries.append({"type": "file", "name": name, "path": rel_path, "error": str(e)})
@@ -599,7 +618,10 @@ def api_generate():
     report_path = out / f"{job_name}.txt"
 
     nc_path.write_text(gcode, encoding="utf-8")
-    report_path.write_text(_generate_report(job_name, placement_dicts, settings), encoding="utf-8")
+    report_path.write_text(
+        _generate_report(job_name, placement_dicts, settings, gcode),
+        encoding="utf-8",
+    )
 
     return jsonify({"ok": True, "job_name": job_name, "nc_path": str(nc_path), "report_path": str(report_path)})
 

@@ -61,6 +61,7 @@ document.addEventListener("DOMContentLoaded", () => {
     App.toolSequence  = data.tool_sequence || [];
     App.toolChanges   = data.tool_changes ?? 0;
     App.utilization   = data.utilization ?? 0;
+    App.runtimeSeconds = data.runtime_seconds ?? 0;
     if (data.job_name) document.getElementById("job-name-input").value = data.job_name;
     if (data.warnings && data.warnings.length) {
       App.setMessage("Loaded with warnings: " + data.warnings.join("; "), false);

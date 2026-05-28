@@ -49,6 +49,7 @@ class GcodePart:
     z_validation: ZValidation = field(default_factory=lambda: ZValidation(status="ok"))
     passes: List[GcodePass] = field(default_factory=list)
     segments: List[dict] = field(default_factory=list)
+    runtime_seconds: float = 0.0
 
 
 def parse_vcarve_text(text: str, filename: str = "") -> GcodePart:
@@ -65,6 +66,9 @@ def parse_vcarve_text(text: str, filename: str = "") -> GcodePart:
         max_vx, max_vy = vcarve_x_span, vcarve_y_span
 
     segments = extract_file_segments(passes)
+
+    from runtime_estimator import estimate_passes_runtime
+    runtime_seconds = estimate_passes_runtime(passes)["seconds"]
 
     return GcodePart(
         filename=filename,
@@ -83,6 +87,7 @@ def parse_vcarve_text(text: str, filename: str = "") -> GcodePart:
         z_validation=z_validation,
         passes=passes,
         segments=segments,
+        runtime_seconds=runtime_seconds,
     )
 
 

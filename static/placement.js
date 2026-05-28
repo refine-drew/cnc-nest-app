@@ -58,6 +58,7 @@ var Placement = (() => {
     App.toolSequence      = r.tool_sequence || [];
     App.toolChanges       = r.tool_changes ?? 0;
     App.utilization       = r.utilization ?? 0;
+    App.runtimeSeconds    = r.runtime_seconds ?? 0;
     App.onPlacementsChanged();
   }
 

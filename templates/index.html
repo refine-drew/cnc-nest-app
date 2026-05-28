@@ -181,6 +181,7 @@ body.resizing{user-select:none;cursor:col-resize}
       Parts placed: <span class="val" id="stat-placed">0</span><br>
       Tool changes: <span class="val" id="stat-changes">0</span><br>
       Tool sequence: <span class="val" id="stat-seq">—</span><br>
+      Est. runtime: <span class="val" id="stat-runtime">—</span><br>
       Utilization: <span class="val" id="stat-util">0%</span>
     </div>
   </div>
@@ -243,6 +244,7 @@ var App = {
   toolSequence: [],     // ordered tool list for the full job
   toolChanges: 0,
   utilization: 0,       // % of bed area covered by placed blanks
+  runtimeSeconds: 0,    // estimated total cut time
 
   // Called whenever placements change — refreshes all UI panels
   onPlacementsChanged() {
@@ -275,6 +277,15 @@ function _updateStatusBar() {
   _set("stat-seq", seq);
   _set("stat-util", util + "%");
   _set("stat-changes", App.toolChanges ?? 0);
+  _set("stat-runtime", n ? formatDuration(App.runtimeSeconds || 0) : "—");
+}
+
+function formatDuration(seconds) {
+  if (seconds == null || seconds < 0) return "—";
+  const s = Math.round(seconds);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
 function _updateTopButtons() {
