@@ -18,6 +18,10 @@
     "T5": {
       "name": "",
       "diameter_inches": 0.375
+    },
+    "T99": {
+      "name": "test",
+      "diameter_inches": 0.1
     }
   },
   "advanced": {
