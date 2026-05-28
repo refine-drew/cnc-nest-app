@@ -68,7 +68,7 @@ def parse_vcarve_text(text: str, filename: str = "") -> GcodePart:
     segments = extract_file_segments(passes)
 
     from runtime_estimator import estimate_passes_runtime
-    runtime_seconds = estimate_passes_runtime(passes)["seconds"]
+    runtime_seconds = estimate_passes_runtime(passes, tool_change_seconds=0.0)["seconds"]
 
     return GcodePart(
         filename=filename,
