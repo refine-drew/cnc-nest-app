@@ -63,13 +63,11 @@ var LibraryPanel = (() => {
     const zIcon = e.z_status === "ok" ? "✓" : e.z_status === "warning" ? "⚠" : "✕";
     const zClass = "z-" + (e.z_status || "ok");
     const dims = e.vcarve_x_span ? `${e.vcarve_x_span}×${e.vcarve_y_span}mm · ${e.material_thickness || "?"}mm` : "";
-    const runtime = e.runtime_seconds ? `~${formatDuration(e.runtime_seconds)}` : "";
     const tooltip = [e.path, dims].filter(Boolean).join(" — ");
 
     div.innerHTML = `
       <span class="${zClass}" title="${(e.z_messages||[]).join('; ')}">${zIcon}</span>
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${tooltip}">${e.name}</span>
-      ${runtime ? `<span style="color:#666;font-size:10px;margin-left:6px">${runtime}</span>` : ""}
     `;
 
     div.addEventListener("click", () => TrayPanel.add(e));
@@ -159,7 +157,11 @@ var TrayPanel = (() => {
       const tagHtml = tools.map(t =>
         `<span class="tag${conflictTools.has(t) ? " conflict" : ""}">${t}</span>`
       ).join("");
-      const dims = e.vcarve_x_span ? `${e.vcarve_x_span}×${e.vcarve_y_span}mm · ${e.material_thickness||"?"}mm` : "";
+      const mmToIn = mm => Math.round(mm / 25.4 * 10) / 10;
+      const dims = e.vcarve_x_span
+        ? `${mmToIn(e.vcarve_x_span)}×${mmToIn(e.vcarve_y_span)}" · ${e.material_thickness ? mmToIn(e.material_thickness) + '"' : "?"}`
+        : "";
+      const runtime = e.runtime_seconds ? `~${formatDuration(e.runtime_seconds)}` : "";
       const zStatus = e.z_status === "ok" ? "✓" : e.z_status === "warning" ? "⚠" : "✕";
       const zColor = e.z_status === "ok" ? "#30d158" : e.z_status === "warning" ? "#ffd60a" : "#ff453a";
 
@@ -167,7 +169,7 @@ var TrayPanel = (() => {
         <div class="dot" style="background:${color}"></div>
         <div class="info">
           <div class="name">${e.name || e.filename}</div>
-          <div class="dims">${dims}</div>
+          <div class="dims">${dims}${dims && runtime ? " · " : ""}${runtime}</div>
           <div class="tags">${tagHtml}<span style="margin-left:4px;color:${zColor};font-size:10px">${zStatus}</span></div>
         </div>
         <button class="remove" title="Remove from tray">×</button>
