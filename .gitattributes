@@ -1,0 +1,2 @@
+# Ensure Mac launcher scripts use LF line endings
+*.command text eol=lf
