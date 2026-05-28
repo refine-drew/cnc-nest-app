@@ -65,7 +65,7 @@ def parse_vcarve_text(text: str, filename: str = "") -> GcodePart:
         min_vx, min_vy = 0.0, 0.0
         max_vx, max_vy = vcarve_x_span, vcarve_y_span
 
-    segments = extract_file_segments(passes)
+    segments = extract_file_segments(passes, material_thickness)
 
     from runtime_estimator import estimate_passes_runtime
     runtime_seconds = estimate_passes_runtime(passes, tool_change_seconds=0.0)["seconds"]
@@ -302,11 +302,11 @@ def validate_z(
     return ZValidation(status=status, messages=messages)
 
 
-def extract_file_segments(passes: List[GcodePass]) -> List[dict]:
+def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[float] = None) -> List[dict]:
     """
     Walk tool passes and extract lateral moves as file-coordinate segments.
     Each dict: {x1, y1, x2, y2, cutting}.
-    cutting=True on G01/G02/G03 moves where current Z < 0 (through/overcut depth).
+    cutting=True on G01/G02/G03 moves where Z is below the material surface.
     Z-only moves and G53 machine-coord lines are skipped.
     """
     segments: List[dict] = []
@@ -333,7 +333,7 @@ def extract_file_segments(passes: List[GcodePass]) -> List[dict]:
                 elif a == "Z":
                     new_z = float(val)
             if new_x != cur_x or new_y != cur_y:
-                cutting = (not is_rapid) and (new_z < 0)
+                cutting = (not is_rapid) and (new_z < (material_thickness if material_thickness else 0))
                 segments.append({
                     "x1": cur_x, "y1": cur_y,
                     "x2": new_x, "y2": new_y,
