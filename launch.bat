@@ -35,11 +35,11 @@ if errorlevel 1 (
 )
 
 REM Open browser after server starts
-start /b cmd /c "timeout /t 3 /nobreak >nul && start http://localhost:5000"
+start /b cmd /c "timeout /t 3 /nobreak >nul && start http://localhost:5001"
 
 echo Starting server...
 echo.
-echo CNC Nest Tool is running at http://localhost:5000
+echo CNC Nest Tool is running at http://localhost:5001
 echo Close this window to stop the server.
 echo.
 

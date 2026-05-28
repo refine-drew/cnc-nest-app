@@ -38,7 +38,7 @@ SERVER_PID=$!
 # Wait up to 10 seconds for server to respond
 READY=0
 for i in $(seq 1 10); do
-    if curl -s http://localhost:5000 >/dev/null 2>&1; then
+    if curl -s http://localhost:5001 >/dev/null 2>&1; then
         READY=1
         break
     fi
@@ -56,10 +56,10 @@ if [ $READY -eq 0 ]; then
     echo "Server is taking longer than expected — opening browser anyway..."
 fi
 
-open http://localhost:5000
+open http://localhost:5001
 
 echo ""
-echo "CNC Nest Tool is running at http://localhost:5000"
+echo "CNC Nest Tool is running at http://localhost:5001"
 echo "Close this window to stop the server."
 echo ""
 
