@@ -635,7 +635,7 @@ def api_save_job():
     job_name = _job_name(data)
 
     job = {
-        "version": "1.0",
+        "version": "1.1",
         "created": datetime.now().isoformat(),
         "job_name": job_name,
         "placements": [
