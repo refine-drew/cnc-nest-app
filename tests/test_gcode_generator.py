@@ -11,6 +11,7 @@ from collision import PlacedPart
 from gcode_generator import (
     generate_master_gcode,
     _build_blocks,
+    _dedup_spindle,
     _extract_body,
     _transform_line,
     _transform_params,
@@ -85,6 +86,38 @@ ARC_NC = (
 )
 
 
+# A multi-region pass: VCarve re-issues M03 S18000 before each cutting region
+# (after a clearance retract) even though the spindle never stops. The repeated
+# command is redundant and should be dropped from the master output.
+MULTI_REGION_REDUNDANT = (
+    "( Material Size)\n( X= 200.0, Y= 100.0, Z= 19.05)\n"
+    "(T2 = End Mill {0.5 inches})\n"
+    "T2 M06\n(Tool: End Mill {0.5 inches})\nG43 H2 Z44.4754\nM03 S18000\n"
+    "G00 X0 Y0\n"
+    "G01 X50 Y50 Z-0.254\n"
+    "G00 Z38.1\n"          # clearance retract between regions
+    "M03 S18000\n"         # redundant — spindle already at 18000
+    "G00 X100 Y100\n"
+    "G01 X120 Y120 Z-0.254\n"
+    "G53 G49 Z0\nM05\nM30\n%\n"
+)
+
+# A pass that genuinely changes the spindle speed mid-pass — the change must
+# be preserved in the output.
+MULTI_REGION_REAL_CHANGE = (
+    "( Material Size)\n( X= 200.0, Y= 100.0, Z= 19.05)\n"
+    "(T2 = End Mill {0.5 inches})\n"
+    "T2 M06\n(Tool: End Mill {0.5 inches})\nG43 H2 Z44.4754\nM03 S18000\n"
+    "G00 X0 Y0\n"
+    "G01 X50 Y50 Z-0.254\n"
+    "G00 Z38.1\n"
+    "M03 S12000\n"         # genuine speed change — keep it
+    "G00 X100 Y100\n"
+    "G01 X120 Y120 Z-0.254\n"
+    "G53 G49 Z0\nM05\nM30\n%\n"
+)
+
+
 def _placed(nc_text, rail, slot_inches, instance_id="i1"):
     part = parse_vcarve_text(nc_text, filename="part.nc")
     return PlacedPart(part=part, rail=rail, slot_inches=slot_inches, instance_id=instance_id)
@@ -150,6 +183,32 @@ def test_extract_body_strips_trailing_z_retract():
     ]
     body = _extract_body(lines)
     assert body == ["G00 X0 Y0", "G01 X100 Y100 Z-0.254"]
+
+
+# ── _dedup_spindle ────────────────────────────────────────────────────────────
+
+def test_dedup_spindle_drops_redundant_standalone():
+    # spindle already at 18000; a bare M03 S18000 is redundant → whole line dropped
+    assert _dedup_spindle("M03 S18000", 18000) == (None, 18000)
+
+
+def test_dedup_spindle_keeps_genuine_change():
+    # different speed → keep the line and update the tracked speed
+    assert _dedup_spindle("M03 S12000", 18000) == ("M03 S12000", 12000)
+
+
+def test_dedup_spindle_passes_through_non_spindle_lines():
+    assert _dedup_spindle("G01 X50 Y50 Z-0.254", 18000) == ("G01 X50 Y50 Z-0.254", 18000)
+
+
+def test_dedup_spindle_strips_redundant_s_on_motion_line():
+    # redundant S on a motion line → strip just the S-word, keep the motion
+    assert _dedup_spindle("G01 X50 S18000", 18000) == ("G01 X50", 18000)
+
+
+def test_dedup_spindle_initial_current_none_keeps_line():
+    # no prior speed → cannot be redundant
+    assert _dedup_spindle("M03 S18000", None) == ("M03 S18000", 18000)
 
 
 # ── _transform_line ───────────────────────────────────────────────────────────
@@ -340,6 +399,24 @@ def test_output_single_tool_block_for_single_part():
     result = generate_master_gcode([p], SETTINGS)
     assert result.count("T2 M06") == 1
     assert result.count("M05") == 2  # one in tool block, one in park
+
+
+def test_output_drops_redundant_mid_pass_spindle():
+    # The block emits one M03 S18000 header; the source's redundant mid-region
+    # M03 S18000 must NOT survive into the master output.
+    p = _placed(MULTI_REGION_REDUNDANT, "A", 39)
+    result = generate_master_gcode([p], SETTINGS)
+    assert result.count("M03 S18000") == 1
+    # both cutting regions survive (each plunges to Z-0.254)
+    assert result.count("Z-0.254") == 2
+
+
+def test_output_preserves_genuine_spindle_change():
+    # A real mid-pass change to S12000 must be kept (in addition to the header).
+    p = _placed(MULTI_REGION_REAL_CHANGE, "A", 39)
+    result = generate_master_gcode([p], SETTINGS)
+    assert result.count("M03 S18000") == 1   # header
+    assert result.count("M03 S12000") == 1   # genuine change preserved
 
 
 # ── coordinate transformation in output ──────────────────────────────────────

@@ -17,6 +17,8 @@ _IJ = re.compile(r"([IJ])([+-]?\d*\.?\d+)")
 _N_CODE = re.compile(r"^N\d+\s*")
 _TOOL_CMT = re.compile(r"\(\s*Tool:\s*(.+?)\)", re.IGNORECASE)
 _SPINDLE = re.compile(r"\bM03\b.*\bS(\d+)\b", re.IGNORECASE)
+_S_WORD = re.compile(r"\bS(\d+(?:\.\d+)?)\b", re.IGNORECASE)
+_MOTION_WORD = re.compile(r"[XYZIJKR]", re.IGNORECASE)
 _G43_LINE = re.compile(r"\bG43\b", re.IGNORECASE)
 _Z_RETRACT = re.compile(r"^G0?0\s+Z[+-]?\d*\.?\d+\s*$", re.IGNORECASE)
 
@@ -94,12 +96,17 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
             N(f"G43 H{h_num} Z{job_safe_z:.4f}"),
             N(f"M03 S{block['spindle_speed']}"),
         ]
+        current_spindle = block["spindle_speed"]
         for seg_idx, seg in enumerate(segs):
             if seg_idx > 0:
                 out.append(N(f"G00 Z{job_safe_z:.4f}"))
             for ln in seg:
-                if ln.strip():
-                    out.append(N(ln.strip()))
+                s = ln.strip()
+                if not s:
+                    continue
+                kept, current_spindle = _dedup_spindle(s, current_spindle)
+                if kept:
+                    out.append(N(kept))
         out += [
             N("G53 G49 Z0"),
             N("M05"),
@@ -184,6 +191,30 @@ def _spindle_speed(lines: List[str]) -> Optional[int]:
         if m:
             return int(m.group(1))
     return None
+
+
+def _dedup_spindle(line: str, current: Optional[int]) -> Tuple[Optional[str], Optional[int]]:
+    """
+    Suppress redundant spindle-speed commands within a tool block.
+
+    `current` is the spindle speed already commanded (and still running) at this
+    point in the block. Returns (output_line, new_current):
+      - S-word equals `current` (redundant):
+          * spindle-only line (no motion words) -> drop entirely -> (None, current)
+          * motion line -> strip the redundant S-word, keep the motion
+      - S-word differs -> keep the line, update current to the new speed
+      - no S-word -> returned unchanged
+    """
+    m = _S_WORD.search(line)
+    if not m:
+        return line, current
+    speed = int(float(m.group(1)))
+    if current is not None and speed == current:
+        if not _MOTION_WORD.search(line):
+            return None, current
+        stripped = re.sub(r"\s{2,}", " ", _S_WORD.sub("", line)).strip()
+        return stripped, current
+    return line, speed
 
 
 def _extract_body(lines: List[str]) -> List[str]:
