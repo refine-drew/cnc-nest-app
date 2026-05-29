@@ -227,30 +227,24 @@ def test_transform_a_rail_adds_offset():
     assert "Z-0.254" in result      # Z unchanged
 
 
-def test_transform_b_rail_mirrors():
-    # B rail: b_x=True, b_y=True (both mirrored)
-    # file X → machine Y: x_const - vx → output Y word
-    # file Y → machine X: y_const - vy → output X word
-    params = {"b_x": True, "x": BED_X - RAIL_W, "b_y": True, "y": 2100.0}
+def test_transform_b_rail_one_axis_mirrored():
+    # B rail (true 180° rotation): b_x=False, b_y=True
+    # file X → machine Y: x_const + vx → output Y word (additive)
+    # file Y → machine X: y_const - vy → output X word (mirrored)
+    params = {"b_x": False, "x": 2057.4, "b_y": True, "y": BED_X - RAIL_W}
     result = _transform_line("G01 X50 Y30 Z-0.254", params)
-    assert "Y1391.4500" in result  # file X=50 → machine Y = (BED_X-RAIL_W) - 50
-    assert "X2070.0000" in result  # file Y=30 → machine X = 2100 - 30
+    assert "Y2107.4000" in result  # file X=50 → machine Y = 2057.4 + 50
+    assert "X1411.4500" in result  # file Y=30 → machine X = (BED_X-RAIL_W) - 30
 
 
-def test_transform_b_rail_swaps_g02_to_g03():
-    # B rail: both axes mirrored + axis-swap = 3 total flips (odd) → orientation reversed → swap
-    params = {"b_x": True, "x": 1441.45, "b_y": True, "y": 2100.0}
-    result = _transform_line("G02 X50 Y50 I10 J0 Z-0.254", params)
-    assert "G03" in result   # G02 swapped to G03 on B rail
-    assert "G02" not in result
-
-
-def test_transform_b_rail_swaps_g03_to_g02():
-    # B rail: orientation reversed → G03 becomes G02
-    params = {"b_x": True, "x": 1441.45, "b_y": True, "y": 2100.0}
-    result = _transform_line("G03 X50 Y50 I-10 J5 Z-0.254", params)
-    assert "G02" in result
-    assert "G03" not in result
+def test_transform_b_rail_no_arc_swap():
+    # B rail (b_x=False, b_y=True): one axis mirrored + axis-swap = even flips →
+    # proper rotation → arc direction preserved (no G02/G03 swap).
+    params = {"b_x": False, "x": 2057.4, "b_y": True, "y": BED_X - RAIL_W}
+    result_cw = _transform_line("G02 X50 Y50 I10 J0 Z-0.254", params)
+    result_ccw = _transform_line("G03 X50 Y50 I-10 J5 Z-0.254", params)
+    assert "G02" in result_cw and "G03" not in result_cw
+    assert "G03" in result_ccw and "G02" not in result_ccw
 
 
 def test_transform_a_rail_no_arc_swap():
@@ -264,12 +258,12 @@ def test_transform_a_rail_no_arc_swap():
 
 
 def test_transform_b_rail_negates_ij():
-    # Both axes mirrored.
-    # file I20 (VCarve-X direction) → machine-Y direction → output J, negated: J-20
+    # B rail: b_x=False (no negate on file-I), b_y=True (negate file-J).
+    # file I20 (VCarve-X direction) → machine-Y direction → output J, not negated: J20
     # file J-5 (VCarve-Y direction) → machine-X direction → output I, negated: I5
-    params = {"b_x": True, "x": 1441.45, "b_y": True, "y": 2100.0}
+    params = {"b_x": False, "x": 2057.4, "b_y": True, "y": BED_X - RAIL_W}
     result = _transform_line("G02 X50 Y50 I20 J-5 Z-0.254", params)
-    assert "J-20.0000" in result  # file I20, x_mirror → output J=-20
+    assert "J20.0000" in result   # file I20, no x_mirror → output J=20
     assert "I5.0000" in result    # file J-5, y_mirror → output I=5
 
 
@@ -307,9 +301,9 @@ def test_transform_params_b_rail():
     p = _placed(SINGLE_T2, "B", 39)
     params = _transform_params(p, RAIL_W, BED_X)
     slot_mark = (120 - 39) * 25.4
-    assert params["b_x"] is True
+    assert params["b_x"] is False
     assert params["b_y"] is True
-    assert params["x"] == pytest.approx(slot_mark + p.part.vcarve_x_span)
+    assert params["x"] == pytest.approx(slot_mark)
     assert params["y"] == pytest.approx(BED_X - RAIL_W)
 
 
@@ -434,32 +428,33 @@ def test_a_rail_coordinates_offset_in_output():
     assert f"X{RAIL_W:.4f}" in result      # file Y=0 → machine X
 
 
-def test_b_rail_coordinates_mirrored_in_output():
+def test_b_rail_coordinates_rotated_in_output():
     # SINGLE_T2: vcarve_x_span=200, vcarve_y_span=100
-    # B rail slot 39:
-    #   machine-Y const = slot_mark + vcarve_x_span = 2057.4+200 = 2257.4
-    #   machine-X const = BED_X - RAIL_W = 1441.45
+    # B rail slot 39 (true 180° rotation):
+    #   machine-Y const = slot_mark = 2057.4 (additive in file X)
+    #   machine-X const = BED_X - RAIL_W = 1441.45 (mirrored in file Y)
     # G00 X0 Y0 in file:
-    #   file X=0 → machine Y = 2257.4 - 0 = 2257.4 → output Y word
+    #   file X=0 → machine Y = 2057.4 + 0 = 2057.4 → output Y word
     #   file Y=0 → machine X = 1441.45 - 0 = 1441.45 → output X word
     p = _placed(SINGLE_T2, "B", 39)
     result = generate_master_gcode([p], SETTINGS)
     slot_mark = (120 - 39) * 25.4
-    vcarve_x_span = p.part.vcarve_x_span  # 200.0
-    mach_y_const = slot_mark + vcarve_x_span   # 2257.4
+    mach_y_const = slot_mark                   # 2057.4
     mach_x_const = BED_X - RAIL_W              # 1441.45
     assert f"Y{mach_y_const:.4f}" in result    # file X=0 → machine Y
     assert f"X{mach_x_const:.4f}" in result    # file Y=0 → machine X
 
 
-def test_b_rail_arcs_swapped_in_output():
+def test_b_rail_arcs_not_swapped_in_output():
+    # A true 180° rotation preserves arc handedness — G02/G03 are NOT swapped.
     p = _placed(ARC_NC, "B", 39)
     result = generate_master_gcode([p], SETTINGS)
-    # Original G02 should become G03 and vice versa in the output body
-    tool_block_start = result.index("T2 M06")
-    tool_block = result[tool_block_start:]
-    assert "G03" in tool_block  # G02 was flipped
-    assert "G02" in tool_block  # G03 was flipped
+    tool_block = result[result.index("T2 M06"):]
+    # The source G02 (CW, I20 J0) → J20 (file-I, not negated) and stays G02.
+    g02_line = next(ln for ln in tool_block.splitlines() if "J20.0000" in ln)
+    assert "G02" in g02_line and "G03" not in g02_line
+    # The source G03 (CCW) stays G03.
+    assert "G03" in tool_block
 
 
 # ── pass merging (order of operations) ───────────────────────────────────────

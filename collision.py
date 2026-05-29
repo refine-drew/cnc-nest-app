@@ -67,7 +67,7 @@ def toolpath_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float,
     on all four sides to account for the physical width of the cutter.
     VCarve X → machine Y,  VCarve Y → machine X
     A rail: machX = rail_w + vcarve_Y,   machY = slot_mark - vcarve_X
-    B rail: machX = (bed_x-rail_w) - vcarve_Y,  machY = (slot_mark + vcarve_x_span) - vcarve_X
+    B rail: machX = (bed_x-rail_w) - vcarve_Y,  machY = slot_mark + vcarve_X
     """
     p = placed.part
     my = _machine_y(placed.slot_inches, edge_margin_in)
@@ -83,8 +83,8 @@ def toolpath_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float,
         r = Rect(
             min_x=far_x - p.max_vy,
             max_x=far_x - p.min_vy,
-            min_y=my + p.vcarve_x_span - p.max_vx,
-            max_y=my + p.vcarve_x_span - p.min_vx,
+            min_y=my + p.min_vx,
+            max_y=my + p.max_vx,
         )
     if tool_radius_mm:
         r = Rect(

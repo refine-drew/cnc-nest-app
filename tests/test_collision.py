@@ -97,12 +97,12 @@ def test_toolpath_rect_a_rail_extents_beyond_blank():
 
 
 def test_toolpath_rect_b_rail_rotation():
-    # B rail: VCarve Y → machine X (mirrored), VCarve X → machine Y (mirrored)
+    # B rail (true 180° rotation): VCarve Y → machine X (mirrored), VCarve X → machine Y (additive)
     # Part: vcarve_x_span=100 (machine Y), vcarve_y_span=100 (machine X)
     # min_vx=0, max_vx=100, min_vy=0, max_vy=110 (toolpath extends 10mm in VCarve Y)
     # far_x = BED_X - RAIL_W = 1441.45
     # machine X: min_x = far_x - max_vy = 1441.45-110=1331.45, max_x = far_x - min_vy=1441.45
-    # machine Y: min_y = my + vcarve_x_span - max_vx = my+100-100=my, max_y = my+100-0=my+100
+    # machine Y: min_y = my + min_vx = my, max_y = my + max_vx = my+100
     part = make_part(100, 100, 0, 100, 0, 110)
     p = placed(part, "B", 39)
     tr = toolpath_rect(p, RAIL_W, BED_X)
@@ -111,27 +111,27 @@ def test_toolpath_rect_b_rail_rotation():
     far_x = BED_X - RAIL_W  # 1441.45
     assert tr.min_x == pytest.approx(far_x - 110)   # far_x - max_vy
     assert tr.max_x == pytest.approx(far_x)          # far_x - min_vy (0)
-    assert tr.min_y == pytest.approx(machine_y)      # my + 100 - 100
+    assert tr.min_y == pytest.approx(machine_y)      # my + min_vx (0)
     assert tr.max_y == pytest.approx(machine_y + 100)
 
 
 def test_toolpath_rect_b_rail_x_rotation():
-    # B rail VCarve X → machine Y (mirrored)
+    # B rail VCarve X → machine Y (additive, not mirrored — true 180° rotation)
     # vcarve_x_span=100, min_vx=0, max_vx=110 → toolpath extends 10mm in VCarve X
-    # machine Y: min_y = my + 100 - 110 = my - 10, max_y = my + 100 - 0 = my + 100
+    # machine Y: min_y = my + min_vx = my, max_y = my + max_vx = my + 110
     part = make_part(100, 100, 0, 110, 0, 100)
     p = placed(part, "B", 39)
     tr = toolpath_rect(p, RAIL_W, BED_X)
 
     machine_y = (120 - 39) * 25.4
-    assert tr.min_y == pytest.approx(machine_y - 10)  # extension flipped in Y
-    assert tr.max_y == pytest.approx(machine_y + 100)
+    assert tr.min_y == pytest.approx(machine_y)       # my + min_vx (0)
+    assert tr.max_y == pytest.approx(machine_y + 110) # extension on high-Y side
 
 
 # --- verified spec example: correct axis convention ---
 # VCarve X = along rail = machine Y; VCarve Y = across bed = machine X
 # A rail: machX = RAIL_W + VCarve_Y,  machY = slot_mark - VCarve_X
-# B rail: machX = (BED_X-RAIL_W) - VCarve_Y,  machY = (slot_mark + vcarve_x_span) - VCarve_X
+# B rail: machX = (BED_X-RAIL_W) - VCarve_Y,  machY = slot_mark + VCarve_X
 
 def test_spec_example_a_rail_notch_position():
     """
@@ -156,11 +156,11 @@ def test_spec_example_a_rail_notch_position():
 
 def test_spec_example_b_rail_notch_position():
     """
-    Correct axis convention: B rail at slot 36 (slot_mark=2133.6mm)
+    Correct axis convention (true 180° rotation): B rail at slot 36 (slot_mark=2133.6mm)
     Part vcarve_x_span=300 (along rail), vcarve_y_span=400 (across bed)
     Notch at file VCarve_X=20, VCarve_Y=380:
       machine X = (BED_X-RAIL_W) - 380 = 1441.45 - 380 = 1061.45
-      machine Y = (2133.6 + 300) - 20 = 2413.6
+      machine Y = 2133.6 + 20 = 2153.6
     """
     slot_inches = 120 - 2133.6 / 25.4  # ≈ 36.0
     # vcarve_x_span=300 (along rail), vcarve_y_span=400 (across bed)
@@ -171,9 +171,9 @@ def test_spec_example_b_rail_notch_position():
     far_x = BED_X - RAIL_W         # 1441.45
     # Notch at VCarve coords (20, 380)
     notch_machine_x = far_x - 380                  # far_x - VCarve_Y
-    notch_machine_y = my + 300 - 20                # (slot_mark + vcarve_x_span) - VCarve_X
+    notch_machine_y = my + 20                      # slot_mark + VCarve_X
     assert notch_machine_x == pytest.approx(1061.45, abs=0.01)
-    assert notch_machine_y == pytest.approx(2413.6, abs=0.1)
+    assert notch_machine_y == pytest.approx(2153.6, abs=0.1)
 
 
 def _machine_y(slot_inches):

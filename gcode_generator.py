@@ -254,20 +254,25 @@ def _transform_params(placed: PlacedPart, rail_w: float, bed_x: float,
     VCarve X → G-code X output → machine Y direction
     VCarve Y → G-code Y output → machine X direction
 
-    A rail (translate, mirror X only):
+    Both rails are a true 180°-class rotation of the VCarve geometry (proper
+    rotation, det(Jacobian) = +1) — each negates exactly one file axis so that
+    combined with the X/Y axis swap the handedness is preserved. The B rail is
+    the A rail turned a further 180° (both file-axis signs flip), NOT a mirror.
+
+    A rail (mirror X only):
       output_X = slot_mark - vcarve_X        (G-code X = machine Y, reversed)
       output_Y = rail_w + vcarve_Y           (G-code Y = machine X, additive)
 
-    B rail (mirror both):
-      output_X = (slot_mark + vcarve_x_span) - vcarve_X
-      output_Y = (bed_x - rail_w) - vcarve_Y
+    B rail (mirror Y only):
+      output_X = slot_mark + vcarve_X        (G-code X = machine Y, additive)
+      output_Y = (bed_x - rail_w) - vcarve_Y (G-code Y = machine X, reversed)
     """
     slot_mark = (120.0 - placed.slot_inches - edge_margin_in) * 25.4
     if placed.rail == "A":
         return {"b_x": True,  "x": slot_mark,
                 "b_y": False, "y": rail_w}
-    return {"b_x": True, "x": slot_mark + placed.part.vcarve_x_span,
-            "b_y": True, "y": bed_x - rail_w}
+    return {"b_x": False, "x": slot_mark,
+            "b_y": True,  "y": bed_x - rail_w}
 
 
 def _transform_line(line: str, p: dict) -> str:
@@ -296,8 +301,8 @@ def _transform_line(line: str, p: dict) -> str:
     # Arc direction: the axis swap (file X→output Y, file Y→output X) contributes one
     # orientation flip. Combined with the per-axis mirrors, det(Jacobian) < 0 (swap
     # needed) when x_mirror == y_mirror (both same sign → product positive → det negative).
-    # A rail (b_x=True, b_y=False): det > 0 → no swap.
-    # B rail (b_x=True, b_y=True): det < 0 → swap.
+    # Both rails are proper rotations (exactly one axis mirrored → det > 0 → no swap):
+    #   A rail (b_x=True,  b_y=False), B rail (b_x=False, b_y=True).
     if x_mirror == y_mirror:
         if re.search(r"\bG02\b", result, re.IGNORECASE):
             result = re.sub(r"\bG02\b", "G03", result, flags=re.IGNORECASE)

@@ -93,29 +93,31 @@ def _part_dict(part: GcodePart, rel_path: str = "") -> dict:
 
 def _transform_segments(
     segs: list, rail: str, slot_inches: float,
-    vcarve_x_span: float, rail_width_mm: float, bed_x_mm: float,
+    rail_width_mm: float, bed_x_mm: float,
     edge_margin_in: float = 0.0,
 ) -> list:
     """
     Convert file-coordinate segments to machine coordinates for canvas rendering.
+    Mirrors the generator transform (gcode_generator._transform_params): both rails
+    are proper rotations (one file axis mirrored each).
     file_Y → machine X (vertical),  file_X → machine Y (horizontal)
-    A rail:  machX = rail_w + fileY              machY = (slot_mark - vcarve_x_span) + fileX
-    B rail:  machX = (BED_X-rail_w) - fileY     machY = (slot_mark + vcarve_x_span) - fileX
+    A rail:  machX = rail_w + fileY             machY = slot_mark - fileX
+    B rail:  machX = (BED_X-rail_w) - fileY     machY = slot_mark + fileX
     """
     slot_mark = (120.0 - slot_inches - edge_margin_in) * 25.4
     result = []
     for s in segs:
         if rail == "A":
             x1 = rail_width_mm + s["y1"]
-            y1 = (slot_mark - vcarve_x_span) + s["x1"]
+            y1 = slot_mark - s["x1"]
             x2 = rail_width_mm + s["y2"]
-            y2 = (slot_mark - vcarve_x_span) + s["x2"]
+            y2 = slot_mark - s["x2"]
         else:
             far_x = bed_x_mm - rail_width_mm
             x1 = far_x - s["y1"]
-            y1 = (slot_mark + vcarve_x_span) - s["x1"]
+            y1 = slot_mark + s["x1"]
             x2 = far_x - s["y2"]
-            y2 = (slot_mark + vcarve_x_span) - s["x2"]
+            y2 = slot_mark + s["x2"]
         result.append({
             "x1": round(x1, 3), "y1": round(y1, 3),
             "x2": round(x2, 3), "y2": round(y2, 3),
@@ -131,7 +133,6 @@ def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
         placed.part.segments,
         placed.rail,
         placed.slot_inches,
-        placed.part.vcarve_x_span,    # was blank_width
         _rail_width(),
         _bed_x(),
         _edge_margin_in(),
