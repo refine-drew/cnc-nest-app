@@ -9,11 +9,24 @@ var LibraryPanel = (() => {
     document.getElementById("lib-search-input").addEventListener("input", e => {
       _filterTree(e.target.value.trim().toLowerCase());
     });
+
+    const btnRefresh = document.getElementById("btn-refresh-library");
+    btnRefresh.addEventListener("click", () => {
+      btnRefresh.style.opacity = "0.4";
+      btnRefresh.disabled = true;
+      load().finally(() => {
+        btnRefresh.style.opacity = "";
+        btnRefresh.disabled = false;
+      });
+    });
+
+    setInterval(load, 60 * 60 * 1000);
+
     load();
   }
 
   function load() {
-    fetch("/api/library").then(r => r.json()).then(data => {
+    return fetch("/api/library").then(r => r.json()).then(data => {
       allEntries = [];
       const tree = document.getElementById("lib-tree");
       tree.innerHTML = "";
