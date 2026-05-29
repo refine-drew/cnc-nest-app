@@ -294,7 +294,8 @@ def test_output_has_required_header_lines():
     assert "(Job: test_job)" in result
     assert "(Parts: part.nc)" in result
     assert "G00 G17 G71 G40 G49 G80 G90" in result
-    assert "G21 (metric)" in result
+    # The controller rejects G21; metric is set by G71 in the safety line above.
+    assert "G21" not in result
     assert "G54" in result
 
 

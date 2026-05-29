@@ -35,17 +35,29 @@ def test_format_duration(seconds, expected):
 
 # ── G0 rapid moves ────────────────────────────────────────────────────────────
 
-def test_rapid_move_inches_default_units():
-    # 100 inches at 1800 in/min = 100/1800 min = 3.333... s
+def test_rapid_move_metric_default_units():
+    # No unit code → default mm. 100 mm at DEFAULT_RAPID_MM_PER_MIN.
     result = estimate_lines_runtime(["G00 X100 Y0"])
-    assert result["rapid"] == pytest.approx(100 / 1800 * 60, rel=1e-6)
+    assert result["rapid"] == pytest.approx(100 / DEFAULT_RAPID_MM_PER_MIN * 60, rel=1e-6)
     assert result["cutting"] == 0
     assert result["tool_changes"] == 0
+
+
+def test_rapid_move_inches_after_g70():
+    # G70 → inches. 100 in = 2540 mm at 1800 in/min = 100/1800 min = 3.333... s
+    result = estimate_lines_runtime(["G70", "G00 X100 Y0"])
+    assert result["rapid"] == pytest.approx(100 / 1800 * 60, rel=1e-6)
 
 
 def test_rapid_move_metric_after_g21():
     # 25.4 mm = 1 inch. Rapid = 25.4 mm / (1800 * 25.4 mm/min) * 60 = 1/1800 * 60 = 0.0333... s
     result = estimate_lines_runtime(["G21", "G00 X25.4 Y0"])
+    assert result["rapid"] == pytest.approx(60 / 1800, rel=1e-6)
+
+
+def test_rapid_move_metric_after_g71():
+    # G71 is the controller's metric code (Fanuc/ISO dialect) — same effect as G21.
+    result = estimate_lines_runtime(["G71", "G00 X25.4 Y0"])
     assert result["rapid"] == pytest.approx(60 / 1800, rel=1e-6)
 
 
@@ -118,12 +130,12 @@ def test_comments_ignored():
         "(another)",
         "G00 X10",
     ])
-    assert result["rapid"] == pytest.approx(10 / 1800 * 60, rel=1e-6)
+    assert result["rapid"] == pytest.approx(10 / DEFAULT_RAPID_MM_PER_MIN * 60, rel=1e-6)
 
 
 def test_blank_and_misc_lines_skipped():
     result = estimate_lines_runtime(["", "M03 S18000", "G54", "G00 X10"])
-    assert result["rapid"] == pytest.approx(10 / 1800 * 60, rel=1e-6)
+    assert result["rapid"] == pytest.approx(10 / DEFAULT_RAPID_MM_PER_MIN * 60, rel=1e-6)
 
 
 # ── Composition ───────────────────────────────────────────────────────────────
@@ -136,7 +148,7 @@ def test_combined_estimate_sums_buckets():
         "T2 M06",         # +30s
     ]
     r = estimate_lines_runtime(lines)
-    expected = 60 + 10 + 10 / 1800 * 60
+    expected = 60 + 10 + 10 / DEFAULT_RAPID_MM_PER_MIN * 60
     assert r["seconds"] == pytest.approx(expected, rel=1e-6)
     assert r["seconds"] == pytest.approx(
         r["cutting"] + r["rapid"] + r["tool_changes"], rel=1e-9

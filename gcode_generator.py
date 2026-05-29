@@ -71,7 +71,6 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
         f"(Safe Z: {job_safe_z}mm — driven by {safe_z_driver})",
         "",
         N("G00 G17 G71 G40 G49 G80 G90"),
-        N("G21 (metric)"),
         N("G54"),
         N("G53 Z0"),
     ]

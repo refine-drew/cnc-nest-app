@@ -1,7 +1,7 @@
 """
 Runtime estimator for VCarve-style G-code.
 
-Walks a line stream tracking modal units (G20/G21), modal feedrate (F-words),
+Walks a line stream tracking modal units (G20/G70 inch, G21/G71 mm), modal feedrate (F-words),
 and current XYZ. Sums cutting time (distance / feedrate) and rapid time
 (distance / rapid rate), plus a fixed seconds-per-tool-change cost.
 
@@ -10,9 +10,10 @@ Per project convention:
   - Default tool change: 30 s per T# M06.
   - Z-only G1 plunges are ignored (treated as zero time).
   - F-words and coordinates are interpreted under the currently-modal units;
-    G20 lines switch to inches, G21 lines switch to mm.
-  - VCarve default is inches (G20), so estimator defaults to inches if no
-    units directive is seen.
+    G20/G70 lines switch to inches, G21/G71 lines switch to mm.
+  - VCarve output here is metric (G71), and the rest of the app treats
+    coordinates as mm, so the estimator defaults to mm if no units
+    directive is seen.
 """
 from math import atan2, hypot, pi
 from typing import Iterable, List
@@ -30,6 +31,8 @@ _G2_PATTERN = re.compile(r"\bG0?2\b")
 _G3_PATTERN = re.compile(r"\bG0?3\b")
 _G20_PATTERN = re.compile(r"\bG20\b")
 _G21_PATTERN = re.compile(r"\bG21\b")
+_G70_PATTERN = re.compile(r"\bG70\b")
+_G71_PATTERN = re.compile(r"\bG71\b")
 
 MM_PER_INCH = 25.4
 DEFAULT_RAPID_MM_PER_MIN = 1800.0 * MM_PER_INCH   # 1800 in/min
@@ -50,8 +53,9 @@ def estimate_lines_runtime(
     rapid_s = 0.0
     change_s = 0.0
 
-    # Default to inches — VCarve standard. Flip to mm if we see G21.
-    unit_scale = MM_PER_INCH
+    # Default to mm — matches gcode_parser (mm everywhere) and VCarve G71 output.
+    # Flip to inches if we see G20/G70.
+    unit_scale = 1.0
     cur_x = cur_y = cur_z = 0.0
     cur_f = 0.0  # mm/min when used; converted on the fly via unit_scale
 
@@ -62,9 +66,9 @@ def estimate_lines_runtime(
         if not s or s.startswith("("):
             continue
 
-        if _G20_PATTERN.search(s):
+        if _G20_PATTERN.search(s) or _G70_PATTERN.search(s):
             unit_scale = MM_PER_INCH
-        elif _G21_PATTERN.search(s):
+        elif _G21_PATTERN.search(s) or _G71_PATTERN.search(s):
             unit_scale = 1.0
 
         if TOOL_CHANGE_PATTERN.search(s):
