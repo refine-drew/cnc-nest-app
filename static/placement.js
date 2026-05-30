@@ -129,12 +129,36 @@ var Placement = (() => {
       _canvasDragOrigin = null;
       return;
     }
-    const { instance_id, path } = _canvasDragOrigin;
+    const { instance_id, rail: origRail, slot_inches: origSlot, path } = _canvasDragOrigin;
     _canvasDragOrigin = null;
 
     if (targetSlot.rail && targetSlot.slot_inches !== undefined) {
       await remove(instance_id);
-      await place(path, targetSlot.rail, targetSlot.slot_inches);
+      const r = await fetch("/api/place", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, rail: targetSlot.rail, slot_inches: targetSlot.slot_inches }),
+      });
+      const data = await r.json();
+
+      if (r.status === 409) {
+        App.setMessage("Collision: " + data.message, true);
+        // Snap back to original position
+        await fetch("/api/place", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path, rail: origRail, slot_inches: origSlot }),
+        });
+      } else if (!data.ok) {
+        App.setMessage(data.error || "Placement failed", true);
+        await fetch("/api/place", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path, rail: origRail, slot_inches: origSlot }),
+        });
+      }
+
+      await _refreshPlacements();
     }
   }
 
