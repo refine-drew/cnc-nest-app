@@ -19,6 +19,12 @@ var BedCanvas = (() => {
   // slot data loaded from /api/slots
   let SLOTS = [];
 
+  // corporate logo watermark
+  let _logoImg = null;
+  const _logoEl = new Image();
+  _logoEl.src = '/static/logo.png';
+  _logoEl.onload = () => { _logoImg = _logoEl; render(); };
+
   // ── canvas state ──────────────────────────────────────────────────────────
   let canvas, ctx, area;
   let baseScale = 1;        // px/mm at zoom=1 (fit-to-window)
@@ -109,6 +115,7 @@ var BedCanvas = (() => {
     ctx.clearRect(0, 0, w, h);
 
     _drawBed(w, h);
+    _drawLogo();
     _drawSlotMarks();
     _drawRuler();
     _drawParts();
@@ -175,6 +182,24 @@ var BedCanvas = (() => {
       ctx.lineTo(p2.x, p2.y);
       ctx.stroke();
     }
+  }
+
+  // ── logo watermark ────────────────────────────────────────────────────────
+  function _drawLogo() {
+    if (!_logoImg) return;
+    const tl = toCanvas(BED_X_MM, 0);
+    const br = toCanvas(0, BED_Y_MM);
+    const bw = br.x - tl.x;
+    const bh = br.y - tl.y;
+    const logoW = bw * 0.18;
+    const logoH = logoW / 2.49;
+    const cx = tl.x + bw / 2;
+    const cy = tl.y + bh / 2;
+    ctx.save();
+    ctx.filter = 'invert(1) brightness(1.8)';
+    ctx.globalAlpha = 0.22;
+    ctx.drawImage(_logoImg, cx - logoW / 2, cy - logoH / 2, logoW, logoH);
+    ctx.restore();
   }
 
   // ── slot marks ────────────────────────────────────────────────────────────

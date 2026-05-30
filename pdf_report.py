@@ -17,12 +17,19 @@ This module does no coordinate math beyond that final mapping — callers pass p
 blanks and toolpath segments already in machine coordinates.
 """
 
+from pathlib import Path
+
 from reportlab.lib.colors import HexColor, black
 from reportlab.lib.pagesizes import letter, landscape
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas as pdfcanvas
 
 PAGE = landscape(letter)          # (792, 612) pt
 MARGIN = 36                       # 0.5"
+
+_LOGO_PATH = Path(__file__).parent / "static" / "logo.png"
+_LOGO_H = 32    # pt
+_LOGO_W = 80    # pt (~2.5:1 aspect ratio)
 
 # Same palette as static/bed.js so PDF colors match the screen.
 PALETTE = [
@@ -103,6 +110,11 @@ def generate_layout_pdf(out_path, meta: dict, parts: list, geom: dict) -> None:
 
 def _draw_header(c, meta: dict, pw: float, ph: float) -> float:
     top = ph - MARGIN
+    if _LOGO_PATH.exists():
+        c.drawImage(ImageReader(str(_LOGO_PATH)),
+                    pw - MARGIN - _LOGO_W, top - _LOGO_H,
+                    width=_LOGO_W, height=_LOGO_H,
+                    preserveAspectRatio=True, mask="auto")
     c.setFillColor(black)
     c.setFont("Helvetica-Bold", 16)
     c.drawString(MARGIN, top - 14, "LAGUNA SMARTSHOP 2 LAYOUT TOOL — LAYOUT SHEET")
@@ -375,6 +387,13 @@ _COLS = [
 
 
 def _table_header(c, x, y, pw) -> float:
+    if _LOGO_PATH.exists():
+        logo_h = 20
+        logo_w = logo_h * 2.49
+        c.drawImage(ImageReader(str(_LOGO_PATH)),
+                    pw - MARGIN - logo_w, y - logo_h,
+                    width=logo_w, height=logo_h,
+                    preserveAspectRatio=True, mask="auto")
     c.setFillColor(black)
     c.setFont("Helvetica-Bold", 10)
     c.drawString(x, y, "Placement table")
