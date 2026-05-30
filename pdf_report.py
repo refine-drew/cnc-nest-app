@@ -1,0 +1,437 @@
+"""Operator layout PDF.
+
+Replaces the old plain-text sidecar report. The centerpiece is a scale,
+top-down picture of the CNC bed showing every placed part as a labeled,
+color-coded blank at its exact location (with a faint toolpath preview inside
+each blank to confirm orientation). A placement table + job summary carry over
+every field the old .txt report contained.
+
+Orientation matches the on-screen canvas (static/bed.js): the operator stands at
+the right (machine Y = 0), the A rail runs along the bottom (machine X = 0), the
+B rail along the top. Machine→page mapping (PDF origin is lower-left):
+
+    page_x = ox + (BED_Y - machine_y) * s     # operator (Y=0) at right
+    page_y = oy + machine_x * s               # A rail (X=0) at bottom
+
+This module does no coordinate math beyond that final mapping — callers pass part
+blanks and toolpath segments already in machine coordinates.
+"""
+
+from reportlab.lib.colors import HexColor, black
+from reportlab.lib.pagesizes import letter, landscape
+from reportlab.pdfgen import canvas as pdfcanvas
+
+PAGE = landscape(letter)          # (792, 612) pt
+MARGIN = 36                       # 0.5"
+
+# Same palette as static/bed.js so PDF colors match the screen.
+PALETTE = [
+    "#4dabf7", "#69db7c", "#ffd43b", "#f783ac", "#a9e34b",
+    "#74c0fc", "#63e6be", "#ffa94d", "#da77f2", "#4dabf7",
+]
+
+# ATC graphic: 8-position tool holder carousel
+_ATC_SLOTS    = 8
+_ATC_SLOT_W   = 86          # width of each holder slot (pt)
+_ATC_SLOT_GAP = 4           # gap between slots (pt)
+_ATC_TITLE_H  = 16          # height reserved for section title
+_ATC_RACK_H   = 10          # horizontal mounting rail bar
+_ATC_COLLAR_H = 14          # flange collar at top of each holder
+_ATC_BODY_H   = 58          # main holder body
+_ATC_TIP_H    = 9           # shank tip line below body
+_ATC_PAD      = 5           # bottom padding below tip
+
+_ROW_H = 14                 # table row height
+
+
+def palette_color(index: int) -> str:
+    """Hex color for the Nth distinct part (cycles), matching bed.js."""
+    return PALETTE[index % len(PALETTE)]
+
+
+def _strip_ext(name: str) -> str:
+    return name.rsplit(".", 1)[0] if "." in name else name
+
+
+def _tools_str(tools: list) -> str:
+    parts = []
+    for t in tools or []:
+        dia = t.get("diameter_inches")
+        num = t.get("tool_number", "")
+        parts.append(f'{num} ({dia:g}")' if dia else num)
+    return ", ".join(p for p in parts if p) or "—"
+
+
+def _atc_section_height() -> float:
+    return _ATC_TITLE_H + _ATC_RACK_H + _ATC_COLLAR_H + _ATC_BODY_H + _ATC_TIP_H + _ATC_PAD
+
+
+def generate_layout_pdf(out_path, meta: dict, parts: list, geom: dict) -> None:
+    """Render the layout PDF to out_path.
+
+    meta:  job_name, date, bed_x_mm, bed_y_mm, safe_z {value, driven_by},
+           rail_note, tool_sequence (list), tool_changes, parts_count, runtime (str|None)
+    parts: per-part dicts in machine coords —
+           {index, label, name, rail, slot_inches, size_mm:(x,y),
+            blank:(min_x,max_x,min_y,max_y), segments:[{x1,y1,x2,y2,cutting}],
+            tools:[{tool_number,description,diameter_inches}], color}
+    geom:  bed_x_mm, bed_y_mm, rail_width_mm, slots (inches), edge_margin_in
+    """
+    c = pdfcanvas.Canvas(str(out_path), pagesize=PAGE)
+    pw, ph = PAGE
+
+    # ── Page 1: condensed header + maximised bed diagram + ATC graphic ──────
+    header_bottom = _draw_header(c, meta, pw, ph)
+
+    atc_h = _atc_section_height()
+    diagram_bottom = MARGIN + atc_h + 6       # 6 pt gap between diagram and ATC
+
+    _draw_diagram(
+        c, MARGIN, diagram_bottom,
+        pw - 2 * MARGIN, header_bottom - diagram_bottom - 8,
+        parts, geom,
+    )
+    _draw_atc(c, parts, pw, MARGIN + atc_h)   # y_top = top edge of ATC section
+
+    # ── Page 2: full placement table ────────────────────────────────────────
+    c.showPage()
+    _draw_table(c, meta, parts, pw, ph, ph - MARGIN)
+    c.save()
+
+
+# ── header ────────────────────────────────────────────────────────────────────
+
+def _draw_header(c, meta: dict, pw: float, ph: float) -> float:
+    top = ph - MARGIN
+    c.setFillColor(black)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(MARGIN, top - 14, "LAGUNA SMARTSHOP 2 LAYOUT TOOL — LAYOUT SHEET")
+
+    by, bx = meta["bed_y_mm"], meta["bed_x_mm"]
+    sz = meta.get("safe_z") or {}
+    safe_z_str = (
+        f'{sz.get("value") / 25.4:.2f}"'
+        if sz.get("value") is not None else "—"
+    )
+    fields = [
+        f'Job: {meta["job_name"]}',
+        f'Date: {meta["date"]}',
+        f'Bed: {by/25.4:.0f}" × {bx/25.4:.0f}"',
+        f'Safe Z: {safe_z_str}',
+        f'Parts: {meta.get("parts_count", 0)}',
+    ]
+    if meta.get("runtime"):
+        fields.append(f'Est. runtime: {meta["runtime"]}')
+
+    c.setFont("Helvetica", 9)
+    y = top - 30
+    c.drawString(MARGIN, y, "    |    ".join(fields))
+    y -= 12
+    c.setLineWidth(0.5)
+    c.line(MARGIN, y - 2, pw - MARGIN, y - 2)
+    return y - 8
+
+
+# ── bed diagram ───────────────────────────────────────────────────────────────
+
+def _draw_diagram(c, x0, y0, w, h, parts, geom) -> None:
+    BED_Y = float(geom["bed_y_mm"])
+    BED_X = float(geom["bed_x_mm"])
+    rail_w = float(geom["rail_width_mm"])
+    edge_margin_in = float(geom.get("edge_margin_in", 0.0))
+
+    ruler_room = 30
+    s = min(w / BED_Y, (h - ruler_room) / BED_X)
+    draw_w, draw_h = BED_Y * s, BED_X * s
+    ox = x0 + (w - draw_w) / 2
+    oy = y0 + ruler_room + ((h - ruler_room) - draw_h) / 2
+
+    def P(mach_x, mach_y):
+        return (ox + (BED_Y - mach_y) * s, oy + mach_x * s)
+
+    # Rail zones.
+    c.saveState()
+    c.setFillColor(HexColor("#1e50b4"))
+    c.setFillAlpha(0.16)
+    c.rect(ox, oy, draw_w, rail_w * s, fill=1, stroke=0)
+    c.setFillColor(HexColor("#1ea03c"))
+    c.setFillAlpha(0.15)
+    c.rect(ox, oy + draw_h - rail_w * s, draw_w, rail_w * s, fill=1, stroke=0)
+    c.restoreState()
+
+    c.setFillColor(HexColor("#1e50b4"))
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(ox + 3, oy + 3, "A")
+    c.setFillColor(HexColor("#1ea03c"))
+    c.drawString(ox + 3, oy + draw_h - 13, "B")
+
+    c.setStrokeColor(black)
+    c.setLineWidth(1.0)
+    c.rect(ox, oy, draw_w, draw_h, fill=0, stroke=1)
+
+    # Slot ruler.
+    c.setFont("Helvetica", 6)
+    c.setStrokeColor(HexColor("#888888"))
+    c.setLineWidth(0.4)
+    c.setFillColor(HexColor("#555555"))
+    for slot in geom.get("slots", []):
+        slot = float(slot)
+        mach_y = (120.0 - slot - edge_margin_in) * 25.4
+        px = ox + (BED_Y - mach_y) * s
+        c.line(px, oy - 3, px, oy - 9)
+        c.drawCentredString(px, oy - 17, f"{slot:g}")
+    c.drawRightString(ox + draw_w, oy - 26, "slot inches from left")
+
+    for part in parts:
+        _draw_part(c, P, part)
+
+
+def _draw_part(c, P, part) -> None:
+    min_x, max_x, min_y, max_y = part["blank"]
+    color = HexColor(part["color"])
+
+    ax, ay = P(min_x, max_y)
+    bx, by = P(max_x, min_y)
+    rx, ry = min(ax, bx), min(ay, by)
+    rw, rh = abs(bx - ax), abs(by - ay)
+
+    c.saveState()
+    c.setFillColor(color)
+    c.setFillAlpha(0.18)
+    c.rect(rx, ry, rw, rh, fill=1, stroke=0)
+    c.restoreState()
+    c.setStrokeColor(color)
+    c.setLineWidth(1.2)
+    c.rect(rx, ry, rw, rh, fill=0, stroke=1)
+
+    c.saveState()
+    c.setStrokeColor(color)
+    c.setStrokeAlpha(0.5)
+    c.setLineWidth(0.4)
+    path = c.beginPath()
+    for seg in part.get("segments", []):
+        if not seg.get("cutting"):
+            continue
+        sx, sy = P(seg["x1"], seg["y1"])
+        ex, ey = P(seg["x2"], seg["y2"])
+        path.moveTo(sx, sy)
+        path.lineTo(ex, ey)
+    c.drawPath(path, stroke=1, fill=0)
+    c.restoreState()
+
+    cx_p, cy_p = rx + rw / 2, ry + rh / 2
+    r = 7
+    c.setFillColor(color)
+    c.circle(cx_p, cy_p, r, fill=1, stroke=0)
+    c.setFillColor(black)
+    c.setFont("Helvetica-Bold", 8)
+    c.drawCentredString(cx_p, cy_p - 3, str(part["index"]))
+
+    if rw > 36:
+        c.setFillColor(black)
+        c.setFont("Helvetica", 6.5)
+        label = f'{_strip_ext(part["name"])} · {part["label"]}'
+        c.drawString(rx + 2, ry + rh - 8, label[:int(rw / 3.4)])
+
+
+# ── ATC tool holder graphic ───────────────────────────────────────────────────
+
+def _draw_atc(c, parts, pw: float, y_top: float) -> None:
+    """8-position ATC carousel graphic. y_top is the top edge of the section."""
+    tools: dict = {}
+    for part in parts:
+        for t in part.get("tools") or []:
+            num = t.get("tool_number")
+            if num and num not in tools:
+                tools[num] = t
+
+    # Section title
+    c.setFillColor(black)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(MARGIN, y_top - 12, "Tool Setup — Load into ATC before running")
+
+    total_w = _ATC_SLOTS * _ATC_SLOT_W + (_ATC_SLOTS - 1) * _ATC_SLOT_GAP
+    gx = MARGIN + (pw - 2 * MARGIN - total_w) / 2   # centre the graphic
+
+    # Y positions for each graphic element (ReportLab: y increases upward)
+    rack_bottom   = y_top - _ATC_TITLE_H - _ATC_RACK_H
+    collar_bottom = rack_bottom - _ATC_COLLAR_H
+    body_bottom   = collar_bottom - _ATC_BODY_H
+    tip_bottom    = body_bottom - _ATC_TIP_H
+
+    # Mounting rack bar spans all slots with a small overhang
+    overhang = 14
+    c.setFillColor(HexColor("#1e1e1e"))
+    c.rect(gx - overhang, rack_bottom,
+           total_w + 2 * overhang, _ATC_RACK_H, fill=1, stroke=0)
+    # Subtle highlight stripe on rack
+    c.saveState()
+    c.setFillColor(HexColor("#ffffff"))
+    c.setFillAlpha(0.12)
+    c.rect(gx - overhang, rack_bottom + _ATC_RACK_H - 3,
+           total_w + 2 * overhang, 3, fill=1, stroke=0)
+    c.restoreState()
+
+    def _sort_key(n):
+        digits = "".join(ch for ch in n if ch.isdigit())
+        return int(digits) if digits else 9999
+
+    for i in range(_ATC_SLOTS):
+        slot_key = f"T{i + 1}"
+        t = tools.get(slot_key)
+        sx = gx + i * (_ATC_SLOT_W + _ATC_SLOT_GAP)
+        cx = sx + _ATC_SLOT_W / 2
+        loaded = t is not None
+
+        # ── Collar (flange that locks into carousel) ─────────────────────
+        collar_color = HexColor("#14408a") if loaded else HexColor("#5a5a5a")
+        c.setFillColor(collar_color)
+        c.rect(sx, collar_bottom, _ATC_SLOT_W, _ATC_COLLAR_H, fill=1, stroke=0)
+        # Thin highlight at top of collar
+        c.saveState()
+        c.setFillColor(HexColor("#ffffff"))
+        c.setFillAlpha(0.20)
+        c.rect(sx, collar_bottom + _ATC_COLLAR_H - 2, _ATC_SLOT_W, 2, fill=1, stroke=0)
+        c.restoreState()
+
+        # Position label centred in collar
+        c.setFillColor(HexColor("#d8e8ff") if loaded else HexColor("#aaaaaa"))
+        c.setFont("Helvetica-Bold", 9)
+        c.drawCentredString(cx, collar_bottom + 4, slot_key)
+
+        # ── Body (holder tube) ───────────────────────────────────────────
+        bx = sx + 5
+        bw = _ATC_SLOT_W - 10
+        body_color = HexColor("#2662b8") if loaded else HexColor("#c0c0c0")
+        c.setFillColor(body_color)
+        c.roundRect(bx, body_bottom, bw, _ATC_BODY_H, 3, fill=1, stroke=0)
+        # Subtle left-edge highlight for 3-D feel
+        c.saveState()
+        c.setFillColor(HexColor("#ffffff"))
+        c.setFillAlpha(0.14)
+        c.roundRect(bx, body_bottom, 6, _ATC_BODY_H, 3, fill=1, stroke=0)
+        c.restoreState()
+
+        # ── Shank / tool tip ─────────────────────────────────────────────
+        shank_color = HexColor("#0d0d0d") if loaded else HexColor("#aaaaaa")
+        c.setStrokeColor(shank_color)
+        c.setLineWidth(2.2 if loaded else 0.8)
+        c.line(cx, body_bottom, cx, tip_bottom)
+        if loaded:
+            # Cutting-edge indicator (horizontal line at tip)
+            c.setLineWidth(1.5)
+            c.line(cx - 5, tip_bottom, cx + 5, tip_bottom)
+
+        # ── Tool info inside body ────────────────────────────────────────
+        if loaded:
+            dia = t.get("diameter_inches")
+            dia_str = f'{dia:g}"' if dia else "—"
+            desc = t.get("description") or "—"
+            max_chars = int(bw / 3.6)
+
+            # Word-wrap description into up to 2 lines
+            words = desc.split()
+            line1, line2 = "", ""
+            for w in words:
+                candidate = (line1 + " " + w).strip()
+                if len(candidate) <= max_chars:
+                    line1 = candidate
+                elif not line2:
+                    candidate2 = (line2 + " " + w).strip()
+                    if len(candidate2) <= max_chars:
+                        line2 = candidate2
+                    else:
+                        break
+                else:
+                    break
+
+            c.setFillColor(HexColor("#b8d0f8"))
+            c.setFont("Helvetica", 7)
+            desc_y = collar_bottom - 14 if not line2 else collar_bottom - 11
+            c.drawCentredString(cx, desc_y, line1)
+            if line2:
+                c.drawCentredString(cx, desc_y - 9, line2)
+
+            # Diameter at bottom of body
+            c.setFillColor(HexColor("#ffffff"))
+            c.setFont("Helvetica-Bold", 9)
+            c.drawCentredString(cx, body_bottom + 8, dia_str)
+        else:
+            c.setFillColor(HexColor("#999999"))
+            c.setFont("Helvetica", 8)
+            c.drawCentredString(cx, body_bottom + _ATC_BODY_H / 2 - 4, "empty")
+
+
+# ── placement table ───────────────────────────────────────────────────────────
+
+_COLS = [
+    ("#",          24),
+    ("Slot",       46),
+    ("Part",      210),
+    ("Blank (in)", 90),
+    ("Pos",        64),
+    ("Tools",     186),
+]
+
+
+def _table_header(c, x, y, pw) -> float:
+    c.setFillColor(black)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(x, y, "Placement table")
+    y -= 16
+    cx = x
+    c.setFont("Helvetica-Bold", 8)
+    for title, width in _COLS:
+        c.drawString(cx, y, title)
+        cx += width
+    y -= 4
+    c.setStrokeColor(HexColor("#999999"))
+    c.setLineWidth(0.5)
+    c.line(x, y, pw - MARGIN, y)
+    return y - _ROW_H + 4
+
+
+def _draw_table(c, meta, parts, pw, ph, top_y) -> None:
+    x = MARGIN
+    y = _table_header(c, x, top_y, pw)
+
+    for part in parts:
+        if y < MARGIN + 40:
+            c.showPage()
+            y = _table_header(c, x, ph - MARGIN, pw)
+
+        c.setFillColor(HexColor(part["color"]))
+        c.rect(x, y - 1, 7, 7, fill=1, stroke=0)
+
+        sx, sy = part["size_mm"]
+        tlist = _tools_str(part.get("tools"))
+        cells = [
+            str(part["index"]),
+            part["label"],
+            _strip_ext(part["name"]),
+            f'{sx/25.4:.2f}×{sy/25.4:.2f}"',
+            f'{part["slot_inches"]:.1f}"',
+            tlist,
+        ]
+        c.setFillColor(black)
+        c.setFont("Helvetica", 8)
+        cx = x
+        for (title, width), text in zip(_COLS, cells):
+            avail = int(width / 4.2)
+            c.drawString(cx + (10 if title == "#" else 0), y,
+                         text if len(text) <= avail else text[: avail - 1] + "…")
+            cx += width
+        y -= _ROW_H
+
+    # Summary footer
+    y -= 8
+    seq = " → ".join(meta.get("tool_sequence") or []) or "—"
+    c.setFont("Helvetica-Oblique", 8)
+    c.setFillColor(HexColor("#333333"))
+    summary = (
+        f"Tool sequence: {seq}    Tool changes: {meta.get('tool_changes', 0)}"
+        f"    Parts placed: {meta.get('parts_count', 0)}"
+    )
+    if meta.get("runtime"):
+        summary += f"    Estimated runtime: {meta['runtime']}"
+    c.drawString(x, y, summary)

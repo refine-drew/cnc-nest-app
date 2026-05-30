@@ -70,7 +70,7 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
         f"(Job: {job_name})",
         f"(Parts: {', '.join(filenames)})",
         f"(Instances: {len(placements)}  Tools: {', '.join(all_tools)})",
-        f"(Safe Z: {job_safe_z}mm — driven by {safe_z_driver})",
+        f"(Safe Z: {job_safe_z / 25.4:.3f}\" — driven by {safe_z_driver})",
         "",
         N("G00 G17 G71 G40 G49 G80 G90"),
         N("G54"),

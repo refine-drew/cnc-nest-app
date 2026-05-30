@@ -9,8 +9,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const cfg = await fetch("/api/config").then(r => r.json());
     document.getElementById("cfg-library-path").value = cfg.library_path || "";
     document.getElementById("cfg-output-path").value  = cfg.output_path  || "";
-    document.getElementById("cfg-rail-width").value   = cfg.advanced?.rail_width_mm || "";
-    document.getElementById("cfg-safe-z").value       = cfg.advanced?.safe_z_clearance_mm || "";
+    const mmToIn = mm => Math.round(mm / 25.4 * 100) / 100;
+    document.getElementById("cfg-rail-width").value   = cfg.advanced?.rail_width_mm ? mmToIn(cfg.advanced.rail_width_mm) : "";
+    document.getElementById("cfg-safe-z").value       = cfg.advanced?.safe_z_clearance_mm ? mmToIn(cfg.advanced.safe_z_clearance_mm) : "";
     panel.classList.add("open");
   });
 
@@ -27,8 +28,10 @@ document.addEventListener("DOMContentLoaded", () => {
       library_path: document.getElementById("cfg-library-path").value.trim(),
       output_path:  document.getElementById("cfg-output-path").value.trim(),
       advanced: {
-        rail_width_mm:       parseFloat(document.getElementById("cfg-rail-width").value) || undefined,
-        safe_z_clearance_mm: parseFloat(document.getElementById("cfg-safe-z").value)     || undefined,
+        rail_width_mm:       parseFloat(document.getElementById("cfg-rail-width").value)
+          ? parseFloat(document.getElementById("cfg-rail-width").value) * 25.4 : undefined,
+        safe_z_clearance_mm: parseFloat(document.getElementById("cfg-safe-z").value)
+          ? parseFloat(document.getElementById("cfg-safe-z").value) * 25.4 : undefined,
       },
     };
     const r = await fetch("/api/config", {

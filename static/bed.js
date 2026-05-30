@@ -35,7 +35,7 @@ var BedCanvas = (() => {
   let dragState   = null;   // set by placement.js via BedCanvas.beginDrag()
   let hoverSlot   = null;   // {rail, slot_inches} during drag
   let hoverPart   = null;   // instance_id under cursor
-  let viewMode    = "bounds"; // "bounds" | "cuts" | "all"
+  let viewMode    = "all"; // "bounds" | "cuts" | "all"
 
   // ── part colors ───────────────────────────────────────────────────────────
   const PALETTE = [

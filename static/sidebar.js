@@ -75,12 +75,15 @@ var LibraryPanel = (() => {
 
     const zIcon = e.z_status === "ok" ? "✓" : e.z_status === "warning" ? "⚠" : "✕";
     const zClass = "z-" + (e.z_status || "ok");
-    const dims = e.vcarve_x_span ? `${e.vcarve_x_span}×${e.vcarve_y_span}mm · ${e.material_thickness || "?"}mm` : "";
+    const mmToIn = mm => Math.round(mm / 25.4 * 10) / 10;
+    const dims = e.vcarve_x_span
+      ? `${mmToIn(e.vcarve_x_span)}×${mmToIn(e.vcarve_y_span)}" · ${e.material_thickness ? mmToIn(e.material_thickness) + '"' : "?"}`
+      : "";
     const tooltip = [e.path, dims].filter(Boolean).join(" — ");
 
     div.innerHTML = `
       <span class="${zClass}" title="${(e.z_messages||[]).join('; ')}">${zIcon}</span>
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${tooltip}">${e.name}</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${tooltip}">${e.name.replace(/\.[^.]+$/, "")}</span>
     `;
 
     div.addEventListener("click", () => TrayPanel.add(e));

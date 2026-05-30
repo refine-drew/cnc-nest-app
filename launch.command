@@ -31,6 +31,14 @@ if ! python3 -c "import flask" &>/dev/null; then
     echo ""
 fi
 
+# Kill anything already on port 5001
+EXISTING_PID=$(lsof -ti tcp:5001 2>/dev/null)
+if [ -n "$EXISTING_PID" ]; then
+    echo "Stopping existing process on port 5001 (PID $EXISTING_PID)..."
+    kill -9 $EXISTING_PID 2>/dev/null
+    sleep 0.5
+fi
+
 echo "Starting server..."
 python3 app.py &
 SERVER_PID=$!

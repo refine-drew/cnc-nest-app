@@ -10,6 +10,7 @@ from collision import PlacedPart, blank_rect, check_placement, slot_label
 from config import load_config, save_config
 from gcode_generator import generate_master_gcode
 from gcode_parser import GcodePart, parse_vcarve_text
+from pdf_report import generate_layout_pdf, palette_color as pdf_palette_color
 from runtime_estimator import estimate_lines_runtime, format_duration
 from tool_library import ToolLibrary
 
@@ -266,58 +267,68 @@ def _tool_compatibility() -> dict:
     return {"matrix": matrix, "has_conflict": has_conflict}
 
 
-def _generate_report(
-    job_name: str,
-    placements: list,
-    settings: dict,
-    gcode: str = "",
-) -> str:
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    safe_z = settings.get("job_safe_z", {})
-    bed_y = settings["advanced"]["bed_y_mm"]
-    bed_x = settings["advanced"]["bed_x_mm"]
+def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
+    """Assemble (meta, parts, geom) for pdf_report.generate_layout_pdf.
 
+    Parts are emitted in placement order with blanks and toolpaths already in
+    machine coordinates (via blank_rect / _transform_segments), and a stable
+    per-filename color matching the on-screen canvas palette.
+    """
+    rail_w, bed_x, edge = _rail_width(), _bed_x(), _edge_margin_in()
+
+    # Stable color per unique filename, assigned in first-seen order (bed.js).
+    color_idx: Dict[str, int] = {}
+
+    parts = []
     tools_seen: Dict[str, bool] = {}
-    for entry in placements:
-        for num in entry["part"].get("tool_sequence", []):
+    for i, placed in enumerate(_placements.values(), start=1):
+        fn = placed.part.filename
+        if fn not in color_idx:
+            color_idx[fn] = len(color_idx)
+        br = blank_rect(placed, rail_w, bed_x, edge)
+        for num in (gp.tool_number for gp in placed.part.passes):
             tools_seen[num] = True
-    tool_seq = " → ".join(tools_seen) or "—"
+        parts.append({
+            "index": i,
+            "label": slot_label(placed.rail, placed.slot_inches),
+            "name": fn,
+            "rail": placed.rail,
+            "slot_inches": placed.slot_inches,
+            "size_mm": (placed.part.vcarve_x_span, placed.part.vcarve_y_span),
+            "blank": (br.min_x, br.max_x, br.min_y, br.max_y),
+            "segments": _transform_segments(
+                placed.part.segments, placed.rail, placed.slot_inches,
+                rail_w, bed_x, edge,
+            ),
+            "tools": [
+                {"tool_number": num,
+                 "description": info.get("description", ""),
+                 "diameter_inches": info.get("diameter_inches")}
+                for num, info in placed.part.tools.items()
+            ],
+            "color": pdf_palette_color(color_idx[fn]),
+        })
 
-    lines = [
-        "=" * 52,
-        "  CNC NEST LAYOUT REPORT",
-        f"  Job: {job_name}",
-        f"  Date: {now}",
-        "=" * 52,
-        f"  Bed: {bed_y:.0f}mm × {bed_x:.0f}mm "
-        f"({bed_y/25.4:.0f}\" × {bed_x/25.4:.0f}\")",
-        f"  Safe Z: {safe_z.get('value')}mm "
-        f"(driven by {safe_z.get('driven_by')})",
-        "  Rail: Dual-pitch (13\" + 19.5\") — install A side + B side",
-        "",
-        f"  {'Slot':<8}{'Part':<26}{'Size mm':<16}Pos",
-        "  " + "-" * 60,
-    ]
-    for entry in placements:
-        p = entry["part"]
-        lines.append(
-            f"  {entry['slot']:<8}"
-            f"{p['filename'][:25]:<26}"
-            f"{p['vcarve_x_span']:.0f}×{p['vcarve_y_span']:.0f}{'':>6}"
-            f"{entry['slot_inches']:.1f}\" from left"
-        )
-    changes = max(0, len(tools_seen) - 1)
     runtime = estimate_lines_runtime(gcode.splitlines()) if gcode else None
-    lines += [
-        "",
-        f"  Tool sequence: {tool_seq}",
-        f"  Tool changes: {changes}",
-        f"  Parts placed: {len(placements)}",
-    ]
-    if runtime:
-        lines.append(f"  Estimated runtime: {format_duration(runtime['seconds'])}")
-    lines.append("=" * 52)
-    return "\n".join(lines) + "\n"
+    meta = {
+        "job_name": job_name,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "bed_x_mm": float(settings["advanced"]["bed_x_mm"]),
+        "bed_y_mm": float(settings["advanced"]["bed_y_mm"]),
+        "safe_z": settings.get("job_safe_z", {}),
+        "tool_sequence": list(tools_seen.keys()),
+        "tool_changes": max(0, len(tools_seen) - 1),
+        "parts_count": len(parts),
+        "runtime": format_duration(runtime["seconds"]) if runtime else None,
+    }
+    geom = {
+        "bed_x_mm": bed_x,
+        "bed_y_mm": float(settings["advanced"]["bed_y_mm"]),
+        "rail_width_mm": rail_w,
+        "slots": settings["advanced"].get("slots", []),
+        "edge_margin_in": edge,
+    }
+    return meta, parts, geom
 
 
 def _output_dir() -> Path:
@@ -596,17 +607,6 @@ def api_generate():
     data = request.get_json(force=True) or {}
     job_name = _job_name(data)
     safe_z = _compute_job_safe_z()
-
-    placement_dicts = [
-        {
-            "part": _part_dict(p.part, _placement_paths.get(iid, "")),
-            "rail": p.rail,
-            "slot_inches": p.slot_inches,
-            "slot": slot_label(p.rail, p.slot_inches),
-            "instance_id": iid,
-        }
-        for iid, p in _placements.items()
-    ]
     settings = {**config, "job_name": job_name, "job_safe_z": safe_z}
 
     try:
@@ -616,15 +616,17 @@ def api_generate():
 
     out = _output_dir()
     nc_path = out / f"{job_name}.nc"
-    report_path = out / f"{job_name}.txt"
+    pdf_path = out / f"{job_name}.pdf"
 
     nc_path.write_text(gcode, encoding="utf-8")
-    report_path.write_text(
-        _generate_report(job_name, placement_dicts, settings, gcode),
-        encoding="utf-8",
-    )
+    try:
+        meta, parts, geom = _build_pdf_model(job_name, settings, gcode)
+        generate_layout_pdf(pdf_path, meta, parts, geom)
+    except Exception as e:
+        return jsonify({"error": f"PDF generation failed: {e}"}), 500
 
-    return jsonify({"ok": True, "job_name": job_name, "nc_path": str(nc_path), "report_path": str(report_path)})
+    return jsonify({"ok": True, "job_name": job_name,
+                    "nc_path": str(nc_path), "pdf_path": str(pdf_path)})
 
 
 @app.route("/api/save-job", methods=["POST"])

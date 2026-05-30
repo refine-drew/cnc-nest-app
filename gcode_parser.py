@@ -256,7 +256,7 @@ def validate_z(
         return ZValidation(
             status="blocked",
             messages=[
-                f"This file uses top-of-material Z reference (min Z = {min_z:.3f}mm). "
+                f"This file uses top-of-material Z reference (min Z = {min_z / 25.4:.3f}\"). "
                 "The Smartshop 2 expects spoilboard Z reference. "
                 "Re-export through VCarve with 'Z origin = top of spoilboard' selected. "
                 "Running this file as-is would crash the cutter into the spoilboard."
@@ -268,8 +268,8 @@ def validate_z(
         return ZValidation(
             status="blocked",
             messages=[
-                f"Cut depth ({min_z:.3f}mm) exceeds material thickness ({material_thickness:.3f}mm) "
-                f"by more than 0.03 inches. This would cut deeply into the spoilboard "
+                f"Cut depth ({min_z / 25.4:.3f}\") exceeds material thickness ({material_thickness / 25.4:.3f}\") "
+                f"by more than 0.03\". This would cut deeply into the spoilboard "
                 "and could damage the machine. Verify Z reference and material thickness "
                 "in VCarve, then re-export."
             ],
@@ -282,8 +282,8 @@ def validate_z(
     max_cut_depth_from_top = material_thickness - min_z
     if max_cut_depth_from_top < material_thickness * 0.5:
         messages.append(
-            f"Deepest cut ({max_cut_depth_from_top:.3f}mm) reaches less than half the "
-            f"material thickness ({material_thickness:.3f}mm). If this part should cut "
+            f"Deepest cut ({max_cut_depth_from_top / 25.4:.3f}\") reaches less than half the "
+            f"material thickness ({material_thickness / 25.4:.3f}\"). If this part should cut "
             "through, verify the toolpath in VCarve. Dadoes, pockets, and engraving "
             "are valid reasons for shallow cuts."
         )
@@ -292,9 +292,9 @@ def validate_z(
     # Check 4: Safe Z too low to clear material
     if safe_z is not None and safe_z < material_thickness:
         messages.append(
-            f"Safe Z height ({safe_z:.3f}mm) is below the material top "
-            f"({material_thickness:.3f}mm). Rapid moves would crash into the material. "
-            f"Increase the safe Z setting in VCarve to at least {material_thickness + 6.35:.3f}mm "
+            f"Safe Z height ({safe_z / 25.4:.3f}\") is below the material top "
+            f"({material_thickness / 25.4:.3f}\"). Rapid moves would crash into the material. "
+            f"Increase the safe Z setting in VCarve to at least {material_thickness / 25.4 + 0.25:.3f}\" "
             "and re-export."
         )
         return ZValidation(status="blocked", messages=messages)

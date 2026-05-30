@@ -16,7 +16,7 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       const data = await r.json();
       if (data.ok) {
-        App.setMessage(`Saved: ${data.nc_path}`, false);
+        App.setMessage(`Saved: ${data.nc_path} (+ layout PDF)`, false);
       } else {
         App.setMessage(data.error || "Generation failed", true);
       }

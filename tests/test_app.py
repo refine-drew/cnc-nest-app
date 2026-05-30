@@ -315,7 +315,7 @@ def test_generate_no_parts_returns_400(client):
     assert r.status_code == 400
 
 
-def test_generate_writes_nc_and_report(client, tmp_path, monkeypatch):
+def test_generate_writes_nc_and_pdf(client, tmp_path, monkeypatch):
     _seed_library(tmp_path, monkeypatch)
     monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
     client.post("/api/place", json={"path": "part.nc", "rail": "A", "slot_inches": 39})
@@ -324,7 +324,10 @@ def test_generate_writes_nc_and_report(client, tmp_path, monkeypatch):
     data = r.get_json()
     assert data["ok"] is True
     assert os.path.isfile(data["nc_path"])
-    assert os.path.isfile(data["report_path"])
+    assert data["pdf_path"].endswith(".pdf")
+    assert os.path.isfile(data["pdf_path"])
+    with open(data["pdf_path"], "rb") as f:
+        assert f.read(5) == b"%PDF-"
 
 
 def test_generate_blocked_by_tool_conflict(client, tmp_path, monkeypatch):

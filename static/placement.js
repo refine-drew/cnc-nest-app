@@ -225,8 +225,9 @@ var JobPanel = (() => {
     const el = document.getElementById("safe-z-info");
     if (!el) return;
     const z = App.jobSafeZ;
+    const mmToIn = mm => Math.round(mm / 25.4 * 100) / 100;
     el.textContent = z && z.value
-      ? `Safe Z: ${z.value}mm (${z.driven_by})`
+      ? `Safe Z: ${mmToIn(z.value)}" (${z.driven_by})`
       : "Safe Z: —";
   }
 

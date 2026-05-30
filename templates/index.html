@@ -160,9 +160,9 @@ body.resizing{user-select:none;cursor:col-resize}
     <canvas id="bed-canvas"></canvas>
     <div id="zoom-indicator">100%</div>
     <div id="view-toggle">
-      <button class="active" data-view="bounds">Bounds</button>
+      <button data-view="bounds">Bounds</button>
       <button data-view="cuts">Cut moves</button>
-      <button data-view="all">All moves</button>
+      <button class="active" data-view="all">All moves</button>
     </div>
   </div>
 
@@ -223,8 +223,8 @@ body.resizing{user-select:none;cursor:col-resize}
     <h3>Settings</h3>
     <div class="settings-row"><label>Library path</label><input type="text" id="cfg-library-path"/></div>
     <div class="settings-row"><label>Output path</label><input type="text" id="cfg-output-path"/></div>
-    <div class="settings-row"><label>Rail width (mm)</label><input type="text" id="cfg-rail-width"/></div>
-    <div class="settings-row"><label>Safe Z clearance (mm)</label><input type="text" id="cfg-safe-z"/></div>
+    <div class="settings-row"><label>Rail width (in)</label><input type="text" id="cfg-rail-width"/></div>
+    <div class="settings-row"><label>Safe Z clearance (in)</label><input type="text" id="cfg-safe-z"/></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
       <button id="cfg-cancel">Cancel</button>
       <button id="cfg-save" class="primary">Save</button>
