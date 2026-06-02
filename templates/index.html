@@ -121,6 +121,30 @@ body.resizing{user-select:none;cursor:col-resize}
 .settings-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #333;font-size:12px}
 .settings-row label{color:#aaa}
 .settings-row input{width:120px;text-align:right}
+
+/* ── audit panel ── */
+#audit-panel{display:none;position:fixed;inset:0;z-index:95;background:rgba(0,0,0,.55);align-items:center;justify-content:center}
+#audit-panel.open{display:flex}
+.audit-box{background:#2c2c2e;border:1px solid #444;border-radius:8px;padding:18px;width:92vw;max-width:1180px;max-height:88vh;display:flex;flex-direction:column}
+.audit-box h3{font-size:14px;margin-bottom:8px}
+.audit-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+.audit-summary{font-size:13px;color:#ccc}
+.audit-summary b{color:#fff}
+.audit-summary .ok{color:#30d158}.audit-summary .warning{color:#ffd60a}.audit-summary .blocked{color:#ff453a}
+.audit-paths{font-size:11px;color:#777;margin:2px 0 10px;word-break:break-all}
+.audit-table-wrap{overflow:auto;flex:1;border:1px solid #333;border-radius:4px}
+table.audit{border-collapse:collapse;width:100%;font-size:11px}
+table.audit th{position:sticky;top:0;background:#242426;color:#888;text-align:left;padding:6px 8px;border-bottom:1px solid #333;white-space:nowrap;font-weight:600;cursor:pointer;user-select:none}
+table.audit th:hover{color:#ccc}
+table.audit td{padding:4px 8px;border-bottom:1px solid #2a2a2a;color:#bbb;vertical-align:top;white-space:nowrap}
+table.audit tr:hover td{background:#2a2a2c}
+table.audit td.flags{white-space:normal;color:#d6a; max-width:340px}
+table.audit td.feed-varies{color:#ffd60a}
+.badge{padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;text-transform:uppercase}
+.badge.ok{background:#13361f;color:#30d158}
+.badge.warning{background:#3a3413;color:#ffd60a}
+.badge.blocked{background:#3a1414;color:#ff453a}
+.audit-empty{padding:24px;text-align:center;color:#888}
 </style>
 </head>
 <body>
@@ -137,6 +161,7 @@ body.resizing{user-select:none;cursor:col-resize}
   <button id="btn-save" disabled>Save Job</button>
   <button id="btn-load">Load Job</button>
   <div class="sep"></div>
+  <button id="btn-audit" title="Audit all library files for best-practice issues">Audit Library</button>
   <button id="btn-settings" title="Settings">⚙</button>
 </div>
 
@@ -228,6 +253,24 @@ body.resizing{user-select:none;cursor:col-resize}
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
       <button id="cfg-cancel">Cancel</button>
       <button id="cfg-save" class="primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── audit panel ── -->
+<div id="audit-panel">
+  <div class="audit-box">
+    <div class="audit-head">
+      <h3 style="margin:0">Library Audit</h3>
+      <div class="audit-summary" id="audit-summary">Scanning…</div>
+      <div style="flex:1"></div>
+      <button id="audit-refresh">Re-run</button>
+      <button id="audit-close">Close</button>
+    </div>
+    <div class="audit-paths" id="audit-paths"></div>
+    <div class="audit-table-wrap">
+      <div class="audit-empty" id="audit-loading">Scanning library…</div>
+      <table class="audit" id="audit-table" style="display:none"></table>
     </div>
   </div>
 </div>
@@ -399,5 +442,6 @@ function _set(id, val) {
 <script src="/static/placement.js"></script>
 <script src="/static/job.js"></script>
 <script src="/static/config.js"></script>
+<script src="/static/audit.js"></script>
 </body>
 </html>

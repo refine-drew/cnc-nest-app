@@ -6,6 +6,14 @@ from typing import Dict
 
 from flask import Flask, abort, jsonify, render_template, request
 
+from audit_library import (
+    FILE_COLUMNS,
+    TOOL_COLUMNS,
+    TOOLPATH_COLUMNS,
+    build_thresholds,
+    scan_library,
+    write_csv,
+)
 from collision import PlacedPart, blank_rect, check_placement, slot_label
 from config import load_config, save_config
 from gcode_generator import generate_master_gcode
@@ -627,6 +635,43 @@ def api_generate():
 
     return jsonify({"ok": True, "job_name": job_name,
                     "nc_path": str(nc_path), "pdf_path": str(pdf_path)})
+
+
+@app.route("/api/audit")
+def api_audit():
+    """Audit every library file against best practices, write CSVs, and return the rows."""
+    root = _library_root()
+    if not os.path.isdir(root):
+        return jsonify({"error": f"Library path does not exist: {root}"}), 400
+
+    tool_lib = ToolLibrary(config.get("tools", {}))
+    thresholds = build_thresholds(config)
+    file_rows, tool_rows, toolpath_rows = scan_library(root, tool_lib, thresholds)
+
+    out = _output_dir()
+    stamp = _timestamp()
+    file_csv = out / f"library_audit_{stamp}.csv"
+    tool_csv = out / f"library_audit_tools_{stamp}.csv"
+    toolpath_csv = out / f"library_audit_toolpaths_{stamp}.csv"
+    write_csv(file_csv, FILE_COLUMNS, file_rows)
+    write_csv(tool_csv, TOOL_COLUMNS, tool_rows)
+    write_csv(toolpath_csv, TOOLPATH_COLUMNS, toolpath_rows)
+
+    summary = {"ok": 0, "warning": 0, "blocked": 0}
+    for r in file_rows:
+        status = r.get("status", "ok")
+        summary[status] = summary.get(status, 0) + 1
+    summary["total"] = len(file_rows)
+    summary["feed_varies"] = sum(1 for r in file_rows if r.get("feed_varies"))
+
+    return jsonify({
+        "ok": True,
+        "file_csv": str(file_csv),
+        "tool_csv": str(tool_csv),
+        "toolpath_csv": str(toolpath_csv),
+        "summary": summary,
+        "files": file_rows,
+    })
 
 
 @app.route("/api/save-job", methods=["POST"])
