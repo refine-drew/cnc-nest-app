@@ -1,5 +1,7 @@
+import math
+
 import pytest
-from gcode_parser import parse_vcarve_text, validate_z, GcodePass
+from gcode_parser import GcodePass, _arc_points, extract_file_segments, parse_vcarve_text, validate_z
 
 # --- fixtures ---
 
@@ -297,6 +299,94 @@ def test_extract_passes_empty_when_no_tool_change():
     part = parse_vcarve_text(SAMPLE_VCARVE)
 
     assert part.passes == []
+
+
+def test_arc_points_flatten_r_arc_into_multiple_segments():
+    points = _arc_points(1.0, 0.0, 0.0, 1.0, r=1.0, clockwise=False)
+
+    assert len(points) >= 4
+    assert points[-1] == pytest.approx((0.0, 1.0))
+    assert all(math.hypot(x, y) <= 1.0 + 1e-9 for x, y in points)
+
+
+def test_arc_points_negative_r_selects_major_arc():
+    minor = _arc_points(1.0, 0.0, 0.0, 1.0, r=1.0, clockwise=False)
+    major = _arc_points(1.0, 0.0, 0.0, 1.0, r=-1.0, clockwise=False)
+
+    # Major arc sweeps further, so it is flattened into more points.
+    assert len(major) > len(minor)
+    # Minor-arc points lie on the origin circle (center (0,0)).
+    assert all(math.hypot(x, y) == pytest.approx(1.0) for x, y in minor)
+    # Major-arc points lie on the other radius-1 circle (center (1,1)).
+    assert all(math.hypot(x - 1.0, y - 1.0) == pytest.approx(1.0) for x, y in major)
+
+
+def test_arc_points_degenerate_returns_single_chord():
+    pts = _arc_points(5.0, 5.0, 5.0, 5.0, r=2.0, clockwise=False)
+    assert pts == [(5.0, 5.0)]
+
+
+def test_extract_file_segments_flattens_arc_moves():
+    passes = [GcodePass(pass_index=0, tool_number="T2", lines=[
+        "G00 X0 Y0",
+        "G03 X10 Y0 R5",
+    ])]
+
+    segments = extract_file_segments(passes, material_thickness=10.0)
+
+    assert len(segments) > 1
+    assert segments[0]["x1"] == pytest.approx(0.0)
+    assert segments[0]["y1"] == pytest.approx(0.0)
+    assert segments[-1]["x2"] == pytest.approx(10.0)
+    assert segments[-1]["y2"] == pytest.approx(0.0)
+    # Arc sub-segments must chain continuously: each seg's end is the next's start.
+    for prev, nxt in zip(segments, segments[1:]):
+        assert (prev["x2"], prev["y2"]) == pytest.approx((nxt["x1"], nxt["y1"]))
+
+
+def test_extract_file_segments_linear_move_unaffected():
+    passes = [GcodePass(pass_index=0, tool_number="T2", lines=[
+        "G00 X0 Y0",
+        "G01 X10 Y10 Z-1",
+    ])]
+
+    segments = extract_file_segments(passes, material_thickness=10.0)
+
+    assert len(segments) == 1
+    assert segments[0]["x2"] == pytest.approx(10.0)
+    assert segments[0]["y2"] == pytest.approx(10.0)
+
+
+def test_extract_file_segments_arc_inherits_missing_axis():
+    # G03 with no Y inherits the current Y (modal), and still flattens.
+    passes = [GcodePass(pass_index=0, tool_number="T2", lines=[
+        "G00 X0 Y5",
+        "G03 X10 R5",
+    ])]
+
+    segments = extract_file_segments(passes, material_thickness=10.0)
+
+    # segments[0] is the rapid lead-in (0,0)->(0,5); the arc starts after it.
+    assert len(segments) > 2
+    assert segments[1]["x1"] == pytest.approx(0.0)
+    assert segments[1]["y1"] == pytest.approx(5.0)
+    assert segments[-1]["x2"] == pytest.approx(10.0)
+    assert segments[-1]["y2"] == pytest.approx(5.0)
+
+
+def test_extract_file_segments_full_circle_spans_diameter():
+    # Two semicircles forming a full circle must not collapse to a flat line.
+    passes = [GcodePass(pass_index=0, tool_number="T2", lines=[
+        "G00 X0 Y0",
+        "G02 X10 Y0 R5",
+        "G02 X0 Y0 R5",
+    ])]
+
+    segments = extract_file_segments(passes, material_thickness=10.0)
+
+    ys = [s["y1"] for s in segments] + [s["y2"] for s in segments]
+    # The circle bulges off the chord — must span roughly the full diameter.
+    assert max(ys) - min(ys) == pytest.approx(10.0, abs=0.5)
 
 
 # --- tool header format tests ---

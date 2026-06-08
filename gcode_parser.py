@@ -1,8 +1,10 @@
 import re
 from dataclasses import dataclass, field
+from math import atan2, ceil, cos, hypot, pi, radians, sin
 from typing import Dict, List, Optional, Tuple
 
 COORD_PATTERN = re.compile(r"([XYZ])\s*([+-]?\d*\.?\d+)")
+ARC_PARAM_PATTERN = re.compile(r"([IJR])\s*([+-]?\d*\.?\d+)", re.IGNORECASE)
 HEADER_SIZE_PATTERN = re.compile(
     r"\(\s*X\s*=\s*([0-9.+-]+)\s*,\s*Y\s*=\s*([0-9.+-]+)\s*,\s*Z\s*=\s*([0-9.+-]+)\s*\)",
     re.IGNORECASE,
@@ -302,6 +304,68 @@ def validate_z(
     return ZValidation(status=status, messages=messages)
 
 
+def _arc_points(
+    x0: float, y0: float, x1: float, y1: float,
+    *, r: Optional[float] = None,
+    i: Optional[float] = None, j: Optional[float] = None,
+    clockwise: bool,
+) -> List[Tuple[float, float]]:
+    """
+    Flatten a G02/G03 arc into interpolated points, EXCLUDING the start and
+    INCLUDING the exact end. Returns [(x1, y1)] (a single straight chord) for
+    degenerate inputs. Center is taken from I/J when supplied, else derived from
+    the chord + radius R. Mirrors the arc geometry in
+    runtime_estimator._arc_length (center/radius/sweep via atan2).
+    """
+    if i is not None or j is not None:
+        # I/J form: center is an offset from the start point.
+        cx, cy = x0 + (i or 0.0), y0 + (j or 0.0)
+        radius = hypot(cx - x0, cy - y0)
+        if radius == 0:
+            return [(x1, y1)]
+    elif r is not None:
+        radius = abs(r)
+        d = hypot(x1 - x0, y1 - y0)
+        # R-format can't express a full circle (d==0), and a zero radius is a no-op.
+        if d == 0 or radius == 0:
+            return [(x1, y1)]
+        mx, my = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        # Unit perpendicular to the chord.
+        px, py = -(y1 - y0) / d, (x1 - x0) / d
+        h = (max(0.0, radius * radius - (d / 2.0) ** 2)) ** 0.5
+        cand = [(mx + px * h, my + py * h), (mx - px * h, my - py * h)]
+        # Pick the center whose swept angle matches R's sign: R>0 -> minor arc
+        # (sweep <= pi), R<0 -> major arc (sweep > pi).
+        def _sweep(c):
+            a0 = atan2(y0 - c[1], x0 - c[0])
+            a1 = atan2(y1 - c[1], x1 - c[0])
+            s = (a0 - a1) if clockwise else (a1 - a0)
+            while s <= 1e-9:
+                s += 2 * pi
+            return s
+        # R<0 -> major arc (largest sweep); R>0 -> minor arc (smallest sweep).
+        cx, cy = max(cand, key=_sweep) if r < 0 else min(cand, key=_sweep)
+    else:
+        return [(x1, y1)]
+
+    a0 = atan2(y0 - cy, x0 - cx)
+    a1 = atan2(y1 - cy, x1 - cx)
+    sweep = (a0 - a1) if clockwise else (a1 - a0)
+    # Normalize into (0, 2*pi]; a coincident start/end (I/J) is a full circle.
+    while sweep <= 1e-9:
+        sweep += 2 * pi
+
+    n = min(64, max(2, ceil(sweep / radians(6))))
+    direction = -1.0 if clockwise else 1.0
+    pts: List[Tuple[float, float]] = []
+    for k in range(1, n + 1):
+        theta = a0 + direction * sweep * (k / n)
+        pts.append((cx + radius * cos(theta), cy + radius * sin(theta)))
+    # Force the exact endpoint to avoid rounding drift.
+    pts[-1] = (x1, y1)
+    return pts
+
+
 def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[float] = None) -> List[dict]:
     """
     Walk tool passes and extract lateral moves as file-coordinate segments.
@@ -312,6 +376,8 @@ def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[
     segments: List[dict] = []
     rapid_pat = re.compile(r"\bG0?0\b", re.IGNORECASE)
     move_pat  = re.compile(r"\bG0?[0-3]\b", re.IGNORECASE)
+    g2_pat = re.compile(r"\bG0?2\b", re.IGNORECASE)
+    g3_pat = re.compile(r"\bG0?3\b", re.IGNORECASE)
 
     for pass_ in passes:
         cur_x, cur_y, cur_z = 0.0, 0.0, 0.0
@@ -334,11 +400,33 @@ def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[
                     new_z = float(val)
             if new_x != cur_x or new_y != cur_y:
                 cutting = (not is_rapid) and (new_z < (material_thickness if material_thickness else 0))
-                segments.append({
-                    "x1": cur_x, "y1": cur_y,
-                    "x2": new_x, "y2": new_y,
-                    "cutting": cutting,
-                })
+                is_g2 = bool(g2_pat.search(line))
+                is_g3 = bool(g3_pat.search(line))
+                arc_params: Dict[str, float] = {}
+                if is_g2 or is_g3:
+                    for p, val in ARC_PARAM_PATTERN.findall(line):
+                        arc_params[p.upper()] = float(val)
+                if (is_g2 or is_g3) and arc_params:
+                    points = _arc_points(
+                        cur_x, cur_y, new_x, new_y,
+                        r=arc_params.get("R"),
+                        i=arc_params.get("I"), j=arc_params.get("J"),
+                        clockwise=is_g2,
+                    )
+                    px, py = cur_x, cur_y
+                    for qx, qy in points:
+                        segments.append({
+                            "x1": px, "y1": py,
+                            "x2": qx, "y2": qy,
+                            "cutting": cutting,
+                        })
+                        px, py = qx, qy
+                else:
+                    segments.append({
+                        "x1": cur_x, "y1": cur_y,
+                        "x2": new_x, "y2": new_y,
+                        "cutting": cutting,
+                    })
             cur_x, cur_y, cur_z = new_x, new_y, new_z
 
     return segments
