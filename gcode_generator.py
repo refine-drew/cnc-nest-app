@@ -42,6 +42,13 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
     bed_y = float(adv["bed_y_mm"])
     edge_margin_in = float(adv.get("slot_edge_margin_in", 0.0))
     tool_capacity = int(adv.get("tool_capacity", 8))
+    # Fence-origin offset: the machine's fence 00 differs from its working-area 00.
+    # Shift every cut coordinate by this constant so cuts land in the right physical
+    # place. x_off_mm → machine X (across bed); y_off_mm → machine Y (along rail).
+    # NOT applied to the park move below: that is a G53 in absolute machine
+    # coordinates, which the work/fence origin does not affect.
+    x_off_mm = float(adv.get("fence_offset_x_in", 0.0)) * 25.4
+    y_off_mm = float(adv.get("fence_offset_y_in", 0.0)) * 25.4
     park_x = float(adv.get("park_x", 0.0))
     park_y = float(adv.get("park_y", 3048.0))
     job_name = settings.get("job_name", "master_job")
@@ -90,7 +97,8 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
     ]
 
     # ── tool blocks ───────────────────────────────────────────────────────────
-    blocks = _build_blocks(placements, rail_w, bed_x, bed_y, edge_margin_in)
+    blocks = _build_blocks(placements, rail_w, bed_x, bed_y, edge_margin_in,
+                           x_off_mm, y_off_mm)
 
     for block_num, block in enumerate(blocks, start=1):
         tool = block["tool"]
@@ -140,7 +148,8 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
 # ── block building ────────────────────────────────────────────────────────────
 
 def _build_blocks(placements: List[PlacedPart], rail_w: float, bed_x: float,
-                  bed_y: float, edge_margin_in: float = 0.0) -> list:
+                  bed_y: float, edge_margin_in: float = 0.0,
+                  x_off_mm: float = 0.0, y_off_mm: float = 0.0) -> list:
     """
     Produce an ordered list of tool blocks from all placements.
 
@@ -171,7 +180,8 @@ def _build_blocks(placements: List[PlacedPart], rail_w: float, bed_x: float,
                 if spd:
                     spindle_speed = spd
                 body = _extract_body(raw_lines)
-                params = _transform_params(placed, rail_w, bed_x, bed_y, edge_margin_in)
+                params = _transform_params(placed, rail_w, bed_x, bed_y, edge_margin_in,
+                                           x_off_mm, y_off_mm)
                 segs.append([_transform_line(ln, params) for ln in body])
 
             if blocks and blocks[-1]["tool"] == tool:
@@ -259,7 +269,8 @@ def _extract_body(lines: List[str]) -> List[str]:
 # ── coordinate transformation ─────────────────────────────────────────────────
 
 def _transform_params(placed: PlacedPart, rail_w: float, bed_x: float,
-                      bed_y: float, edge_margin_in: float = 0.0) -> dict:
+                      bed_y: float, edge_margin_in: float = 0.0,
+                      x_off_mm: float = 0.0, y_off_mm: float = 0.0) -> dict:
     """
     Pre-compute per-placement transform constants.
 
@@ -278,13 +289,24 @@ def _transform_params(placed: PlacedPart, rail_w: float, bed_x: float,
     B rail (mirror Y only):
       output_X = slot_mark + vcarve_X        (G-code X = machine Y, additive)
       output_Y = (bed_x - rail_w) - vcarve_Y (G-code Y = machine X, reversed)
+
+    NOTE on the 'x'/'y' keys: they are named for the VCarve axis each transforms,
+    not the output word. _transform_line swaps the axes, so the 'x' constant
+    (slot_mark, machine Y) is emitted in the output Y word and the 'y' constant
+    (rail, machine X) in the output X word.
+
+    x_off_mm / y_off_mm are the fence-origin offsets in machine X / machine Y.
+    y_off_mm therefore folds into the slot_mark constant ('x') and x_off_mm into
+    the rail constant ('y'), which lands each one in the matching output word.
+    _transform_line computes `const ± vcarve`, so adding to the constant shifts
+    that axis by a fixed amount on BOTH rails regardless of the mirror flag.
     """
     slot_mark = bed_y - (placed.slot_inches + edge_margin_in) * 25.4
     if placed.rail == "A":
-        return {"b_x": True,  "x": slot_mark,
-                "b_y": False, "y": rail_w}
-    return {"b_x": False, "x": slot_mark,
-            "b_y": True,  "y": bed_x - rail_w}
+        return {"b_x": True,  "x": slot_mark + y_off_mm,
+                "b_y": False, "y": rail_w + x_off_mm}
+    return {"b_x": False, "x": slot_mark + y_off_mm,
+            "b_y": True,  "y": (bed_x - rail_w) + x_off_mm}
 
 
 def _transform_line(line: str, p: dict) -> str:

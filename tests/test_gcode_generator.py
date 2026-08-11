@@ -329,6 +329,65 @@ def test_generate_honors_non_default_bed_y():
     assert default_out != short_out
 
 
+# ── fence-origin offset ───────────────────────────────────────────────────────
+
+def _fence(x_in, y_in):
+    return {**SETTINGS, "advanced": {
+        **SETTINGS["advanced"],
+        "fence_offset_x_in": x_in,
+        "fence_offset_y_in": y_in,
+    }}
+
+
+def test_fence_offset_absent_leaves_output_unchanged():
+    """Missing keys must behave exactly like no offset."""
+    p = _placed(SINGLE_T2, "A", 39)
+    adv = {k: v for k, v in SETTINGS["advanced"].items()
+           if not k.startswith("fence_offset_")}
+    bare = generate_master_gcode([p], {**SETTINGS, "advanced": adv})
+    zeroed = generate_master_gcode([p], _fence(0.0, 0.0))
+    assert bare == zeroed
+
+
+def test_fence_offset_zero_is_identity():
+    p = _placed(SINGLE_T2, "B", 26)
+    assert generate_master_gcode([p], SETTINGS) == generate_master_gcode([p], _fence(0.0, 0.0))
+
+
+@pytest.mark.parametrize("rail", ["A", "B"])
+def test_fence_offset_shifts_transform_constants_on_both_rails(rail):
+    p = _placed(SINGLE_T2, rail, 39)
+    base = _transform_params(p, RAIL_W, BED_X, BED_Y)
+    off = _transform_params(p, RAIL_W, BED_X, BED_Y, 0.0, x_off_mm=2.0, y_off_mm=3.0)
+    # 'x'/'y' are named for the VCarve axis, not the output word: the machine-Y
+    # offset folds into 'x' (slot_mark) and the machine-X offset into 'y' (rail).
+    assert off["x"] == pytest.approx(base["x"] + 3.0)
+    assert off["y"] == pytest.approx(base["y"] + 2.0)
+    # Mirror flags must be untouched — the offset is a translation, not a flip.
+    assert off["b_x"] == base["b_x"] and off["b_y"] == base["b_y"]
+
+
+def test_fence_offset_shifts_cut_coordinates():
+    """Each offset must move its own machine axis in the matching output word."""
+    p = _placed(SINGLE_T2, "A", 39)
+    # X word = machine X = RAIL_W + vcarve_Y + x_off; at vcarve (0,0):
+    #   82.55 + 0.1*25.4 = 85.09
+    assert "X85.0900" in generate_master_gcode([p], _fence(0.1, 0.0))
+    # Y word = machine Y = slot_mark + y_off. SETTINGS sets no slot_edge_margin_in,
+    # so margin is 0: 3048 - 39*25.4 = 2057.4, + 0.1*25.4 = 2059.94
+    assert "Y2059.9400" in generate_master_gcode([p], _fence(0.0, 0.1))
+
+
+def test_fence_offset_does_not_move_the_g53_park():
+    """The park is G53 (absolute machine coords) — the fence origin cannot shift it."""
+    p = _placed(SINGLE_T2, "A", 39)
+    park_line = f"G00 G53 X{SETTINGS['advanced']['park_x']:.4f} " \
+                f"Y{SETTINGS['advanced']['park_y']:.4f} M05"
+    for x_in, y_in in [(0.0, 0.0), (0.1, 0.2), (-0.059, 0.026)]:
+        out = generate_master_gcode([p], _fence(x_in, y_in))
+        assert park_line in out, f"park line moved with offset ({x_in}, {y_in})"
+
+
 # ── tool capacity ─────────────────────────────────────────────────────────────
 
 NINE_TOOL_NC = _nc([(f"T{n}", f"Tool {n}", 0.25) for n in range(1, 10)])
