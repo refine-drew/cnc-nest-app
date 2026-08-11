@@ -15,7 +15,10 @@ from audit_library import (
     write_csv,
 )
 from collision import PlacedPart, blank_rect, check_placement, slot_label
-from config import load_config, save_config
+from config import (
+    load_config, save_config,
+    _sanitize_path_str, normalize_library_paths, resolve_library_root,
+)
 from gcode_generator import generate_master_gcode
 from gcode_parser import GcodePart, parse_vcarve_text
 from pdf_report import generate_layout_pdf, palette_color as pdf_palette_color
@@ -42,12 +45,12 @@ _PITCH_195 = {0, 19.5, 39, 58.5, 78, 97.5, 117}
 # ── private helpers ───────────────────────────────────────────────────────────
 
 def _library_root() -> str:
-    return str(Path(config["library_path"]).expanduser().resolve())
+    return str(resolve_library_root(config["library_path"]))
 
 
 def _resolve_library_path(rel: str) -> str:
     """Resolve a library-relative path and abort 400 on any traversal attempt."""
-    root = Path(config["library_path"]).expanduser().resolve()
+    root = resolve_library_root(config["library_path"])
     full = (root / rel).resolve()
     if root != full and root not in full.parents:
         abort(400, description="Invalid path")
@@ -354,7 +357,7 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
 
 
 def _output_dir() -> Path:
-    d = Path(config["output_path"]).expanduser()
+    d = Path(_sanitize_path_str(config["output_path"])).expanduser()
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -385,9 +388,12 @@ def api_config_post():
     data = request.get_json(force=True) or {}
     if not data:
         return jsonify({"error": "Empty body"}), 400
-    for key in ("library_path", "output_path", "job_name_format"):
-        if key in data:
-            config[key] = data[key]
+    if "library_path" in data:
+        config["library_path"] = normalize_library_paths(data["library_path"])
+    if "output_path" in data:
+        config["output_path"] = _sanitize_path_str(data["output_path"])
+    if "job_name_format" in data:
+        config["job_name_format"] = data["job_name_format"]
     if "tools" in data:
         config["tools"].update(data["tools"])
     if "advanced" in data:

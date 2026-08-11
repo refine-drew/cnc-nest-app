@@ -7,7 +7,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("btn-settings").addEventListener("click", async () => {
     const cfg = await fetch("/api/config").then(r => r.json());
-    document.getElementById("cfg-library-path").value = cfg.library_path || "";
+    // library_path may be a single string (older config) or a list of candidates.
+    const libs = Array.isArray(cfg.library_path) ? cfg.library_path : [cfg.library_path || ""];
+    document.getElementById("cfg-library-path").value = libs.filter(Boolean).join("\n");
     document.getElementById("cfg-output-path").value  = cfg.output_path  || "";
     const mmToIn = mm => Math.round(mm / 25.4 * 100) / 100;
     document.getElementById("cfg-rail-width").value   = cfg.advanced?.rail_width_mm ? mmToIn(cfg.advanced.rail_width_mm) : "";
@@ -23,10 +25,21 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.target === panel) panel.classList.remove("open");
   });
 
+  // Pasting a shell-quoted path keeps the quotes, which breaks resolution.
+  const stripQuotes = s => {
+    s = (s || "").trim();
+    while (s.length >= 2 && s[0] === s[s.length - 1] && (s[0] === "'" || s[0] === '"')) {
+      s = s.slice(1, -1).trim();
+    }
+    return s;
+  };
+
   document.getElementById("cfg-save").addEventListener("click", async () => {
     const body = {
-      library_path: document.getElementById("cfg-library-path").value.trim(),
-      output_path:  document.getElementById("cfg-output-path").value.trim(),
+      // One path per line; each machine uses whichever exists locally.
+      library_path: document.getElementById("cfg-library-path").value
+        .split("\n").map(stripQuotes).filter(Boolean),
+      output_path:  stripQuotes(document.getElementById("cfg-output-path").value),
       advanced: {
         rail_width_mm:       parseFloat(document.getElementById("cfg-rail-width").value)
           ? parseFloat(document.getElementById("cfg-rail-width").value) * 25.4 : undefined,

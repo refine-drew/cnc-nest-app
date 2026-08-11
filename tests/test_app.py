@@ -58,6 +58,50 @@ def test_post_config_updates_tool(client, tmp_path, monkeypatch):
     assert "T99" in data["tools"]
 
 
+def test_post_config_normalizes_library_paths(client, monkeypatch):
+    """A pasted quoted path is stored clean, and a bare string becomes a list."""
+    import config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "save_config", lambda data: None)
+    monkeypatch.setattr(app_module, "save_config", lambda data: None)
+
+    r = client.post("/api/config", json={"library_path": "  '/tmp/quoted lib'  "})
+    assert r.status_code == 200
+    assert r.get_json()["library_path"] == ["/tmp/quoted lib"]
+
+    r = client.post("/api/config", json={
+        "library_path": ["'/tmp/a'", "  ", '"/tmp/b"'],
+        "output_path": "'/tmp/out'",
+    })
+    body = r.get_json()
+    assert body["library_path"] == ["/tmp/a", "/tmp/b"]
+    assert body["output_path"] == "/tmp/out"
+
+
+def test_library_root_picks_first_existing_candidate(client, tmp_path, monkeypatch):
+    """A shared config can list several paths; the local one wins."""
+    real = tmp_path / "lib"
+    real.mkdir()
+    (real / "part.nc").write_text(NC_CONTENT)
+    monkeypatch.setitem(app_module.config, "library_path",
+                        ["/definitely/not/here", str(real)])
+
+    r = client.get("/api/library")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["library_path"] == str(real.resolve())
+    assert body["exists"] is True
+    assert any(e["name"] == "part.nc" for e in body["entries"])
+
+
+def test_library_root_accepts_legacy_string(client, tmp_path, monkeypatch):
+    """Older configs stored a single string — that must keep working."""
+    (tmp_path / "part.nc").write_text(NC_CONTENT)
+    monkeypatch.setitem(app_module.config, "library_path", str(tmp_path))
+    body = client.get("/api/library").get_json()
+    assert body["exists"] is True
+    assert body["library_path"] == str(tmp_path.resolve())
+
+
 # ── /api/slots ────────────────────────────────────────────────────────────────
 
 def test_slots_returns_all_positions(client):

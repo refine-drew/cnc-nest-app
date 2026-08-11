@@ -1,5 +1,7 @@
 {
-  "library_path": "~/Documents/cnc_library",
+  "library_path": [
+    "~/Documents/cnc_library"
+  ],
   "output_path": "~/Downloads",
   "job_name_format": "nest_{timestamp}",
   "tools": {
