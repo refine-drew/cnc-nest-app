@@ -17,14 +17,14 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
-# Check / install Flask
-if ! python3 -c "import flask" &>/dev/null; then
-    echo "Flask not found. Installing..."
-    pip3 install flask
+# Check / install dependencies (Flask, reportlab, etc.)
+if ! python3 -c "import flask, reportlab" &>/dev/null; then
+    echo "Dependencies not found. Installing..."
+    pip3 install -r requirements.txt
     if [ $? -ne 0 ]; then
         echo ""
-        echo "ERROR: Failed to install Flask."
-        echo "Try running: pip3 install flask"
+        echo "ERROR: Failed to install dependencies."
+        echo "Try running: pip3 install -r requirements.txt"
         read -p "Press Enter to exit..."
         exit 1
     fi

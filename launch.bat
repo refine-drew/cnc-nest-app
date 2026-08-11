@@ -19,15 +19,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Check / install Flask
-python -c "import flask" >nul 2>&1
+REM Check / install dependencies (Flask, reportlab, etc.)
+python -c "import flask, reportlab" >nul 2>&1
 if errorlevel 1 (
-    echo Flask not found. Installing...
-    python -m pip install flask
+    echo Dependencies not found. Installing...
+    python -m pip install -r requirements.txt
     if errorlevel 1 (
         echo.
-        echo ERROR: Failed to install Flask.
-        echo Try running: pip install flask
+        echo ERROR: Failed to install dependencies.
+        echo Try running: pip install -r requirements.txt
         pause
         exit /b 1
     )
