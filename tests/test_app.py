@@ -115,28 +115,48 @@ def test_slots_returns_all_positions(client):
     assert 19.5 in inches
 
 
-def test_slots_machine_y_calculation(client):
-    r = client.get("/api/slots")
-    slots = {s["inches"]: s for s in r.get_json()["slots"]}
-    # Slots are shifted inward by slot_edge_margin_in (default 1.5") for overtravel.
-    # A0 → (120 - 0 - 1.5) * 25.4 = 3009.9
-    assert slots[0]["machine_y"] == pytest.approx(3009.9)
-    # A39 → (120 - 39 - 1.5) * 25.4 = 2019.3
-    assert slots[39]["machine_y"] == pytest.approx(2019.3)
+def test_slots_report_a_and_b_machine_y_separately(client):
+    """The rails run in opposite directions, so each slot has two machine Y values.
+
+    Regression: /api/slots reported one Y for both rails, which put every B-rail
+    slot marker on the canvas up to ~3 m from where it actually is.
+    """
+    body = client.get("/api/slots").get_json()
+    slots = {s["inches"]: s for s in body["slots"]}
+    a0 = body["rails"]["A"]["slot0_y_mm"]
+    b0 = body["rails"]["B"]["slot0_y_mm"]
+
+    assert slots[0]["machine_y_a"] == pytest.approx(a0)
+    assert slots[0]["machine_y_b"] == pytest.approx(b0)
+    # A counts down, B counts up, both at exactly 13" per slot inch
+    assert slots[39]["machine_y_a"] == pytest.approx(a0 - 39 * 25.4)
+    assert slots[39]["machine_y_b"] == pytest.approx(b0 + 39 * 25.4)
+    # machine_y stays as an A-rail alias for older callers
+    assert slots[39]["machine_y"] == pytest.approx(slots[39]["machine_y_a"])
+    # and the two rails never coincide
+    for s in body["slots"]:
+        assert s["machine_y_a"] != pytest.approx(s["machine_y_b"])
 
 
-def test_slots_machine_y_honors_bed_y_config(client):
-    """/api/slots must measure from configured bed_y_mm, not a hardcoded 120"."""
+def test_slots_honor_rail_config_override(client):
+    """Moving one rail's datum must move only that rail's slot positions."""
     adv = app_module.config["advanced"]
-    original = adv["bed_y_mm"]
+    original = adv.get("rails")
     try:
-        adv["bed_y_mm"] = 2000.0
-        slots = {s["inches"]: s for s in client.get("/api/slots").get_json()["slots"]}
-        margin = adv.get("slot_edge_margin_in", 1.5)
-        assert slots[0]["machine_y"] == pytest.approx(2000.0 - margin * 25.4)
-        assert slots[39]["machine_y"] == pytest.approx(2000.0 - (39 + margin) * 25.4)
+        adv["rails"] = {
+            "A": {"x_mm": 100.0, "slot0_y_mm": 2000.0, "slot_dir": -1, "x_dir": 1},
+        }
+        body = client.get("/api/slots").get_json()
+        slots = {s["inches"]: s for s in body["slots"]}
+        assert slots[39]["machine_y_a"] == pytest.approx(2000.0 - 39 * 25.4)
+        # B falls back to RAIL_DEFAULTS and is unaffected
+        assert slots[39]["machine_y_b"] == pytest.approx(
+            body["rails"]["B"]["slot0_y_mm"] + 39 * 25.4)
     finally:
-        adv["bed_y_mm"] = original
+        if original is None:
+            adv.pop("rails", None)
+        else:
+            adv["rails"] = original
 
 
 def test_slots_pitch_labels(client):

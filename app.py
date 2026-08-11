@@ -14,7 +14,9 @@ from audit_library import (
     scan_library,
     write_csv,
 )
-from collision import PlacedPart, blank_rect, check_placement, slot_label
+from collision import (
+    PlacedPart, blank_rect, check_placement, slot_label, rail_geom, slot_mark_y,
+)
 from config import (
     load_config, save_config,
     _sanitize_path_str, normalize_library_paths, resolve_library_root,
@@ -57,10 +59,6 @@ def _resolve_library_path(rel: str) -> str:
     return str(full)
 
 
-def _rail_width() -> float:
-    return float(config["advanced"]["rail_width_mm"])
-
-
 def _bed_x() -> float:
     return float(config["advanced"]["bed_x_mm"])
 
@@ -69,13 +67,14 @@ def _bed_y() -> float:
     return float(config["advanced"]["bed_y_mm"])
 
 
+def _rails() -> dict:
+    """Per-rail geometry overrides from config; None falls back to RAIL_DEFAULTS."""
+    return config["advanced"].get("rails")
+
+
 def _tool_capacity() -> int:
     """How many tools the Smartshop 2 tool changer holds (default 8)."""
     return int(config["advanced"].get("tool_capacity", 8))
-
-
-def _edge_margin_in() -> float:
-    return float(config["advanced"].get("slot_edge_margin_in", 1.5))
 
 
 def _make_instance_id(filename: str) -> str:
@@ -114,31 +113,25 @@ def _part_dict(part: GcodePart, rel_path: str = "") -> dict:
 
 def _transform_segments(
     segs: list, rail: str, slot_inches: float,
-    rail_width_mm: float, bed_x_mm: float, bed_y_mm: float,
-    edge_margin_in: float = 0.0,
+    rails: dict = None,
 ) -> list:
     """
     Convert file-coordinate segments to machine coordinates for canvas rendering.
-    Mirrors the generator transform (gcode_generator._transform_params): both rails
-    are proper rotations (one file axis mirrored each).
-    file_Y → machine X (vertical),  file_X → machine Y (horizontal)
-    A rail:  machX = rail_w + fileY             machY = slot_mark - fileX
-    B rail:  machX = (BED_X-rail_w) - fileY     machY = slot_mark + fileX
+
+    Uses the same per-rail datum/direction as the generator and collision
+    detection (collision.rail_geom / slot_mark_y):
+        machine X = x_mm      + x_dir    * file_Y
+        machine Y = slot_mark + slot_dir * file_X
     """
-    slot_mark = bed_y_mm - (slot_inches + edge_margin_in) * 25.4
+    g = rail_geom(rail, rails)
+    x0, xd = float(g["x_mm"]), float(g["x_dir"])
+    slot_mark, sd = slot_mark_y(rail, slot_inches, rails), float(g["slot_dir"])
     result = []
     for s in segs:
-        if rail == "A":
-            x1 = rail_width_mm + s["y1"]
-            y1 = slot_mark - s["x1"]
-            x2 = rail_width_mm + s["y2"]
-            y2 = slot_mark - s["x2"]
-        else:
-            far_x = bed_x_mm - rail_width_mm
-            x1 = far_x - s["y1"]
-            y1 = slot_mark + s["x1"]
-            x2 = far_x - s["y2"]
-            y2 = slot_mark + s["x2"]
+        x1 = x0 + xd * s["y1"]
+        y1 = slot_mark + sd * s["x1"]
+        x2 = x0 + xd * s["y2"]
+        y2 = slot_mark + sd * s["x2"]
         result.append({
             "x1": round(x1, 3), "y1": round(y1, 3),
             "x2": round(x2, 3), "y2": round(y2, 3),
@@ -148,16 +141,13 @@ def _transform_segments(
 
 
 def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
-    br = blank_rect(placed, _rail_width(), _bed_x(), _bed_y(), _edge_margin_in())
+    br = blank_rect(placed, _rails())
     rel = _placement_paths.get(instance_id, placed.part.filename)
     segments = _transform_segments(
         placed.part.segments,
         placed.rail,
         placed.slot_inches,
-        _rail_width(),
-        _bed_x(),
-        _bed_y(),
-        _edge_margin_in(),
+        _rails(),
     )
     tools_list = [
         {
@@ -176,6 +166,9 @@ def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
         "slot": slot_label(placed.rail, placed.slot_inches),
         "machine_x": br.min_x,
         "machine_y": br.min_y,
+        # Full blank extent in machine coords so the canvas never re-derives it —
+        # blank_rect is the single source of truth for where a part sits.
+        "blank": [br.min_x, br.max_x, br.min_y, br.max_y],
         "vcarve_x_span": placed.part.vcarve_x_span,
         "vcarve_y_span": placed.part.vcarve_y_span,
         "tools": tools_list,
@@ -299,7 +292,7 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
     machine coordinates (via blank_rect / _transform_segments), and a stable
     per-filename color matching the on-screen canvas palette.
     """
-    rail_w, bed_x, bed_y, edge = _rail_width(), _bed_x(), _bed_y(), _edge_margin_in()
+    bed_x, bed_y, rails = _bed_x(), _bed_y(), _rails()
 
     # Stable color per unique filename, assigned in first-seen order (bed.js).
     color_idx: Dict[str, int] = {}
@@ -310,7 +303,7 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
         fn = placed.part.filename
         if fn not in color_idx:
             color_idx[fn] = len(color_idx)
-        br = blank_rect(placed, rail_w, bed_x, bed_y, edge)
+        br = blank_rect(placed, rails)
         for num in (gp.tool_number for gp in placed.part.passes):
             tools_seen[num] = True
         parts.append({
@@ -322,8 +315,7 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
             "size_mm": (placed.part.vcarve_x_span, placed.part.vcarve_y_span),
             "blank": (br.min_x, br.max_x, br.min_y, br.max_y),
             "segments": _transform_segments(
-                placed.part.segments, placed.rail, placed.slot_inches,
-                rail_w, bed_x, bed_y, edge,
+                placed.part.segments, placed.rail, placed.slot_inches, rails,
             ),
             "tools": [
                 {"tool_number": num,
@@ -349,9 +341,8 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
     geom = {
         "bed_x_mm": bed_x,
         "bed_y_mm": float(settings["advanced"]["bed_y_mm"]),
-        "rail_width_mm": rail_w,
         "slots": settings["advanced"].get("slots", []),
-        "edge_margin_in": edge,
+        "rails": {r: rail_geom(r, rails) for r in ("A", "B")},
     }
     return meta, parts, geom
 
@@ -397,14 +388,25 @@ def api_config_post():
     if "tools" in data:
         config["tools"].update(data["tools"])
     if "advanced" in data:
-        config["advanced"].update(data["advanced"])
+        adv_in = dict(data["advanced"])
+        # `rails` is nested, so a shallow update would drop the rail the caller
+        # didn't send and silently wipe slot_dir/x_dir. Merge it per rail instead.
+        rails_in = adv_in.pop("rails", None)
+        config["advanced"].update(adv_in)
+        if rails_in:
+            current = config["advanced"].setdefault("rails", {})
+            for rail, values in rails_in.items():
+                if rail not in ("A", "B") or not isinstance(values, dict):
+                    continue
+                merged = {**rail_geom(rail, config["advanced"].get("rails")), **values}
+                current[rail] = merged
     save_config(config)
     return jsonify(config)
 
 
 @app.route("/api/slots")
 def api_slots():
-    edge_margin = _edge_margin_in()
+    rails = _rails()
     result = []
     for s in config["advanced"]["slots"]:
         s = float(s)
@@ -414,14 +416,21 @@ def api_slots():
         if s in _PITCH_195:
             pitches.append("19.5")
         label = int(s) if s == int(s) else s
+        y_a = round(slot_mark_y("A", s, rails), 4)
+        y_b = round(slot_mark_y("B", s, rails), 4)
         result.append({
             "inches": s,
             "label_a": f"A{label}",
             "label_b": f"B{label}",
-            "machine_y": round(_bed_y() - (s + edge_margin) * 25.4, 4),
+            # The rails run in opposite directions, so a slot number is at a
+            # different machine Y on each. machine_y is kept as an alias for
+            # machine_y_a for older callers.
+            "machine_y_a": y_a,
+            "machine_y_b": y_b,
+            "machine_y": y_a,
             "pitch": pitches,
         })
-    return jsonify({"slots": result})
+    return jsonify({"slots": result, "rails": {r: rail_geom(r, rails) for r in ("A", "B")}})
 
 
 @app.route("/api/library")
@@ -545,8 +554,7 @@ def api_place():
     instance_id = _make_instance_id(part.filename)
     new_placed = PlacedPart(part=part, rail=rail, slot_inches=slot_inches, instance_id=instance_id)
 
-    result = check_placement(new_placed, list(_placements.values()), _rail_width(), _bed_x(),
-                             _bed_y(), _edge_margin_in())
+    result = check_placement(new_placed, list(_placements.values()), _rails())
     if result.collides:
         # Roll back the instance counter
         stem = os.path.splitext(part.filename)[0]

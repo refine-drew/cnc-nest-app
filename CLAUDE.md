@@ -43,7 +43,7 @@ No build step, linter, or type checker is configured.
 
 **`tool_library.py`** — simple tool registry. Resolves tool diameters from file headers or user-supplied overrides.
 
-**`config.py`** — loads/saves `config.json`. Config defines library path, output path, tool definitions, bed dimensions (default 1524×3048 mm / 60×120 in), rail width, safe Z, and slot positions.
+**`config.py`** — loads/saves `config.json`. Config defines library paths (a list of candidates; the first that exists locally wins), output path, tool definitions, bed dimensions, per-rail geometry (`advanced.rails` — see Coordinate Systems), `tool_capacity` (generation is blocked above it), fence-origin offsets, safe Z, and slot positions.
 
 ### Frontend (Vanilla JS + Canvas)
 
@@ -64,8 +64,42 @@ No framework, no bundler. Files in `/static/`:
 
 ### Coordinate Systems
 
-This is the trickiest part of the codebase. A rail and B rail have different transforms:
-- **A rail**: part origin is translated by `(slot_x_offset, rail_a_y_offset)` — additive
-- **B rail**: part is rotated 180° (X and Y flipped relative to blank size) then translated — used for cutting the other side of a workpiece without re-fixturing
+This is the trickiest part of the codebase.
 
-Both `collision.py` and `gcode_generator.py` must apply identical transforms or placements will collide in reality but not in simulation.
+The A and B rails are **independent fixturing systems** at opposite ends of the
+machine, loaded separately by the operator. They are not two views of one formula:
+measured on the SS2, slot numbers count toward machine Y **max** on B and toward
+Y **min** on A. Each rail therefore carries its own datum and directions in
+`collision.RAIL_DEFAULTS` (overridable per rail via `config.advanced.rails`):
+
+| key | meaning |
+|---|---|
+| `x_mm` | machine X of the rail corner the blank registers against |
+| `slot0_y_mm` | machine Y of the slot-0 edge (the blank's datum edge) |
+| `slot_dir` | `+1` if increasing slot number moves toward machine Y max, else `-1` |
+| `x_dir` | `+1` if the blank extends from `x_mm` toward machine X max, else `-1` |
+
+The transform, for both rails:
+
+```
+machine X = x_mm      + x_dir    * vcarve_Y      (vcarve_Y = across the bed)
+machine Y = slot_mark + slot_dir * vcarve_X      (vcarve_X = along the rail)
+slot_mark = slot0_y_mm + slot_dir * slot_inches * 25.4
+```
+
+**`collision.slot_mark_y` / `collision.rail_geom` are the single source of truth.**
+`collision.py`, `gcode_generator._transform_params`, `app._transform_segments`,
+`app.api_slots` and `static/bed.js` all derive from them. Do not re-derive slot
+positions anywhere else — a part simulated somewhere it does not cut is how you
+crash a cutter. (`bed.js` gets the resolved geometry from `/api/slots`; placement
+blanks arrive pre-computed as `placement.blank` so the canvas never recomputes them.)
+
+Slot positions are deliberately **independent of `bed_x_mm` / `bed_y_mm`**, which
+now only drive canvas/PDF extents and the utilization figure. Those two are
+currently provisional — derived by assuming the rails are 180°-symmetric, not
+measured — and should be replaced with real table dimensions.
+
+Collision detection compares **both rails against each other**, not just parts
+sharing a rail: everything is in machine coordinates. The rail datums are 1399.5 mm
+(55.1") apart, so two parts whose across-bed dimensions sum to more than that
+overlap in X and can genuinely interfere.

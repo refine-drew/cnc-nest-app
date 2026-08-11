@@ -413,7 +413,6 @@ def build_thresholds(cfg):
     advanced = cfg.get("advanced", {}) or {}
     thresholds["bed_x_mm"] = advanced.get("bed_x_mm", 1524.0)
     thresholds["bed_y_mm"] = advanced.get("bed_y_mm", 3048.0)
-    thresholds["rail_width_mm"] = advanced.get("rail_width_mm", 82.55)
     return thresholds
 
 

@@ -82,7 +82,7 @@ def generate_layout_pdf(out_path, meta: dict, parts: list, geom: dict) -> None:
            {index, label, name, rail, slot_inches, size_mm:(x,y),
             blank:(min_x,max_x,min_y,max_y), segments:[{x1,y1,x2,y2,cutting}],
             tools:[{tool_number,description,diameter_inches}], color}
-    geom:  bed_x_mm, bed_y_mm, rail_width_mm, slots (inches), edge_margin_in
+    geom:  bed_x_mm, bed_y_mm, slots (inches), rails {A,B: x_mm/slot0_y_mm/slot_dir/x_dir}
     """
     c = pdfcanvas.Canvas(str(out_path), pagesize=PAGE)
     pw, ph = PAGE
@@ -149,8 +149,15 @@ def _draw_header(c, meta: dict, pw: float, ph: float) -> float:
 def _draw_diagram(c, x0, y0, w, h, parts, geom) -> None:
     BED_Y = float(geom["bed_y_mm"])
     BED_X = float(geom["bed_x_mm"])
-    rail_w = float(geom["rail_width_mm"])
-    edge_margin_in = float(geom.get("edge_margin_in", 0.0))
+    rails = geom.get("rails") or {}
+    geom_a = rails.get("A") or {}
+    geom_b = rails.get("B") or {}
+    # Rail band thickness: distance from the rail datum to the near bed edge.
+    rail_a_w = abs(float(geom_a.get("x_mm", 0.0)))
+    rail_b_w = abs(BED_X - float(geom_b.get("x_mm", BED_X)))
+
+    def _slot_y(rg, slot):
+        return float(rg.get("slot0_y_mm", 0.0)) + float(rg.get("slot_dir", -1)) * slot * 25.4
 
     ruler_room = 30
     s = min(w / BED_Y, (h - ruler_room) / BED_X)
@@ -165,10 +172,10 @@ def _draw_diagram(c, x0, y0, w, h, parts, geom) -> None:
     c.saveState()
     c.setFillColor(HexColor("#1e50b4"))
     c.setFillAlpha(0.16)
-    c.rect(ox, oy, draw_w, rail_w * s, fill=1, stroke=0)
+    c.rect(ox, oy, draw_w, rail_a_w * s, fill=1, stroke=0)
     c.setFillColor(HexColor("#1ea03c"))
     c.setFillAlpha(0.15)
-    c.rect(ox, oy + draw_h - rail_w * s, draw_w, rail_w * s, fill=1, stroke=0)
+    c.rect(ox, oy + draw_h - rail_b_w * s, draw_w, rail_b_w * s, fill=1, stroke=0)
     c.restoreState()
 
     c.setFillColor(HexColor("#1e50b4"))
@@ -181,18 +188,27 @@ def _draw_diagram(c, x0, y0, w, h, parts, geom) -> None:
     c.setLineWidth(1.0)
     c.rect(ox, oy, draw_w, draw_h, fill=0, stroke=1)
 
-    # Slot ruler.
+    # Slot rulers — one per rail. The rails run in OPPOSITE directions, so a slot
+    # number sits at a different machine Y on each and needs its own scale:
+    # A below the diagram, B above it.
     c.setFont("Helvetica", 6)
     c.setStrokeColor(HexColor("#888888"))
     c.setLineWidth(0.4)
     c.setFillColor(HexColor("#555555"))
     for slot in geom.get("slots", []):
         slot = float(slot)
-        mach_y = BED_Y - (slot + edge_margin_in) * 25.4
-        px = ox + (BED_Y - mach_y) * s
+        px = ox + (BED_Y - _slot_y(geom_a, slot)) * s
         c.line(px, oy - 3, px, oy - 9)
         c.drawCentredString(px, oy - 17, f"{slot:g}")
-    c.drawRightString(ox + draw_w, oy - 26, "slot inches from left")
+    c.drawRightString(ox + draw_w, oy - 26, "A rail slot inches")
+
+    top = oy + draw_h
+    for slot in geom.get("slots", []):
+        slot = float(slot)
+        px = ox + (BED_Y - _slot_y(geom_b, slot)) * s
+        c.line(px, top + 3, px, top + 9)
+        c.drawCentredString(px, top + 12, f"{slot:g}")
+    c.drawRightString(ox + draw_w, top + 21, "B rail slot inches")
 
     for part in parts:
         _draw_part(c, P, part)

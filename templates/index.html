@@ -123,6 +123,7 @@ body.resizing{user-select:none;cursor:col-resize}
 .settings-row input{width:120px;text-align:right}
 .settings-row textarea{width:220px;font:inherit;font-size:11px;resize:vertical;white-space:pre;overflow-x:auto}
 .settings-row label small{color:#777;font-size:10px}
+.settings-sub{margin:14px 0 2px;color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
 
 /* ── audit panel ── */
 #audit-panel{display:none;position:fixed;inset:0;z-index:95;background:rgba(0,0,0,.55);align-items:center;justify-content:center}
@@ -250,8 +251,14 @@ table.audit td.feed-varies{color:#ffd60a}
     <h3>Settings</h3>
     <div class="settings-row"><label>Library path<br/><small>one per line</small></label><textarea id="cfg-library-path" rows="3"></textarea></div>
     <div class="settings-row"><label>Output path</label><input type="text" id="cfg-output-path"/></div>
-    <div class="settings-row"><label>Rail width (in)</label><input type="text" id="cfg-rail-width"/></div>
     <div class="settings-row"><label>Safe Z clearance (in)</label><input type="text" id="cfg-safe-z"/></div>
+
+    <div class="settings-sub">Rail geometry (mm, machine coords)</div>
+    <div class="settings-row"><label>A rail X<br/><small>rail corner</small></label><input type="text" id="cfg-rail-a-x"/></div>
+    <div class="settings-row"><label>A slot 0 Y<br/><small>slot edge</small></label><input type="text" id="cfg-rail-a-y"/></div>
+    <div class="settings-row"><label>B rail X<br/><small>rail corner</small></label><input type="text" id="cfg-rail-b-x"/></div>
+    <div class="settings-row"><label>B slot 0 Y<br/><small>slot edge</small></label><input type="text" id="cfg-rail-b-y"/></div>
+    <div class="settings-row"><label>Bed X / Y (mm)</label><span><input type="text" id="cfg-bed-x" style="width:56px"/> <input type="text" id="cfg-bed-y" style="width:56px"/></span></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
       <button id="cfg-cancel">Cancel</button>
       <button id="cfg-save" class="primary">Save</button>

@@ -11,10 +11,21 @@
 
 var BedCanvas = (() => {
   // ── machine constants (overwritten from /api/config on init) ──────────────
-  let BED_X_MM = 1524.0;   // 60"
-  let BED_Y_MM = 3048.0;   // 120"
-  let RAIL_W   = 82.55;    // A/B rail machine-X position
-  let EDGE_MARGIN_IN = 1.5; // overtravel margin: slot 0 sits this far inside the bed edge
+  let BED_X_MM = 1668.788;
+  let BED_Y_MM = 3123.0;
+
+  // Per-rail geometry — the two rails are independent fixturing systems at
+  // opposite ends of the machine and run in OPPOSITE slot directions, so each
+  // carries its own datum. Overwritten from /api/config on init; must stay in
+  // step with collision.RAIL_DEFAULTS on the backend.
+  let RAILS = {
+    A: { x_mm:  134.628, slot0_y_mm: 3034.700, slot_dir: -1, x_dir:  1 },
+    B: { x_mm: 1534.160, slot0_y_mm:   88.300, slot_dir:  1, x_dir: -1 },
+  };
+
+  const railX    = rail => RAILS[rail].x_mm;
+  const slotMarkY = (rail, slotInches) =>
+    RAILS[rail].slot0_y_mm + RAILS[rail].slot_dir * slotInches * 25.4;
 
   // slot data loaded from /api/slots
   let SLOTS = [];
@@ -135,32 +146,32 @@ var BedCanvas = (() => {
     ctx.fillStyle = "#1a1a1a";
     ctx.fillRect(tl.x, tl.y, bw, bh);
 
-    // A rail zone (bottom) — blue tint, machine X 0..RAIL_W
-    const aTop = toCanvas(RAIL_W, 0);
+    // A rail zone (bottom) — blue tint, machine X 0..railX("A")
+    const aTop = toCanvas(railX("A"), 0);
     const aBot = toCanvas(0, BED_Y_MM);
     ctx.fillStyle = "rgba(30, 80, 180, 0.18)";
     ctx.fillRect(tl.x, aTop.y, bw, aBot.y - aTop.y);
 
-    // B rail zone (top) — green tint, machine X (BED_X - RAIL_W)..BED_X
+    // B rail zone (top) — green tint, machine X railX("B")..BED_X
     const bTop = toCanvas(BED_X_MM, 0);
-    const bBot = toCanvas(BED_X_MM - RAIL_W, BED_Y_MM);
+    const bBot = toCanvas(railX("B"), BED_Y_MM);
     ctx.fillStyle = "rgba(30, 160, 60, 0.15)";
     ctx.fillRect(tl.x, bTop.y, bw, bBot.y - bTop.y);
 
-    // Rail face lines
+    // Rail face lines — the machine-X datum each rail's blanks register against
     ctx.strokeStyle = "rgba(60, 120, 255, 0.5)";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    const aLine = toCanvas(RAIL_W, 0);
-    const aLine2 = toCanvas(RAIL_W, BED_Y_MM);
+    const aLine = toCanvas(railX("A"), 0);
+    const aLine2 = toCanvas(railX("A"), BED_Y_MM);
     ctx.moveTo(aLine.x, aLine.y);
     ctx.lineTo(aLine2.x, aLine2.y);
     ctx.stroke();
 
     ctx.strokeStyle = "rgba(50, 200, 80, 0.5)";
     ctx.beginPath();
-    const bLine = toCanvas(BED_X_MM - RAIL_W, 0);
-    const bLine2 = toCanvas(BED_X_MM - RAIL_W, BED_Y_MM);
+    const bLine = toCanvas(railX("B"), 0);
+    const bLine2 = toCanvas(railX("B"), BED_Y_MM);
     ctx.moveTo(bLine.x, bLine.y);
     ctx.lineTo(bLine2.x, bLine2.y);
     ctx.stroke();
@@ -170,17 +181,21 @@ var BedCanvas = (() => {
     ctx.lineWidth = 1;
     ctx.strokeRect(tl.x, tl.y, bw, bh);
 
-    // Slot grid lines (faint vertical)
+    // Slot grid lines (faint) — drawn per rail across that rail's half of the
+    // bed only, because a slot number sits at a different Y on each rail.
     ctx.strokeStyle = "rgba(255,255,255,0.06)";
     ctx.lineWidth = 1;
+    const midX = BED_X_MM / 2;
     for (const slot of SLOTS) {
-      const machY = slot.machine_y;
-      const p1 = toCanvas(0, machY);
-      const p2 = toCanvas(BED_X_MM, machY);
-      ctx.beginPath();
-      ctx.moveTo(p1.x, p1.y);
-      ctx.lineTo(p2.x, p2.y);
-      ctx.stroke();
+      for (const rail of ["A", "B"]) {
+        const machY = slotMarkY(rail, slot.inches);
+        const p1 = toCanvas(rail === "A" ? 0 : midX, machY);
+        const p2 = toCanvas(rail === "A" ? midX : BED_X_MM, machY);
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+      }
     }
   }
 
@@ -209,9 +224,8 @@ var BedCanvas = (() => {
     const size = Math.min(Math.max(4, s * 8), 12);
 
     for (const slot of SLOTS) {
-      const machY = slot.machine_y;
-      const aPos = toCanvas(RAIL_W, machY);
-      const bPos = toCanvas(BED_X_MM - RAIL_W, machY);
+      const aPos = toCanvas(railX("A"), slotMarkY("A", slot.inches));
+      const bPos = toCanvas(railX("B"), slotMarkY("B", slot.inches));
 
       if (slot.pitch.includes("13")) {
         _drawTriangle(ctx, aPos.x, aPos.y, size, "up",   "#4dabf7");
@@ -316,22 +330,9 @@ var BedCanvas = (() => {
     const color = colorForPart(p.filename);
     const s = baseScale * zoom;
 
-    let machX0, machX1, machY0, machY1;
-    if (p.rail === "A") {
-      // vcarve_y_span spans machine X (canvas vertical), vcarve_x_span spans machine Y (canvas horizontal).
-      // machine_y = slot_mark - vcarve_x_span; recover slot_mark to anchor the high-Y edge.
-      const slotMark = p.machine_y + p.vcarve_x_span;
-      machX0 = RAIL_W;
-      machX1 = RAIL_W + p.vcarve_y_span;
-      machY0 = slotMark - p.vcarve_x_span;
-      machY1 = slotMark;
-    } else {
-      // B rail: vcarve_y_span = machine X extent, vcarve_x_span = machine Y extent.
-      machX0 = BED_X_MM - RAIL_W - p.vcarve_y_span;
-      machX1 = BED_X_MM - RAIL_W;
-      machY0 = p.machine_y;
-      machY1 = p.machine_y + p.vcarve_x_span;
-    }
+    // Blank extent comes straight from the backend (collision.blank_rect) so the
+    // canvas cannot disagree with collision detection or the generator.
+    const [machX0, machX1, machY0, machY1] = p.blank;
 
     const tl = toCanvas(machX1, machY1);  // true top-left: high machX (up), high machY (left)
     const br = toCanvas(machX0, machY0);  // true bottom-right: low machX (down), low machY (right)
@@ -427,7 +428,7 @@ var BedCanvas = (() => {
     // Glow on rail face during drag
     const rail = dragState.targetRail || dragState.nearestRail;
     if (rail) {
-      const machX = rail === "A" ? RAIL_W : BED_X_MM - RAIL_W;
+      const machX = railX(rail);
       const p1 = toCanvas(machX, 0);
       const p2 = toCanvas(machX, BED_Y_MM);
       ctx.shadowColor = rail === "A" ? "#4dabf7" : "#30d158";
@@ -444,9 +445,8 @@ var BedCanvas = (() => {
     // Highlight target slot
     if (hoverSlot) {
       const { rail: hr, slot_inches } = hoverSlot;
-      const machY = BED_Y_MM - (slot_inches + EDGE_MARGIN_IN) * 25.4;
-      const slotMachX = hr === "A" ? RAIL_W : BED_X_MM - RAIL_W;
-      const pos = toCanvas(slotMachX, machY);
+      const machY = slotMarkY(hr, slot_inches);
+      const pos = toCanvas(railX(hr), machY);
       ctx.strokeStyle = hr === "A" ? "#4dabf7" : "#30d158";
       ctx.lineWidth = 2;
       ctx.setLineDash([4, 3]);
@@ -461,16 +461,13 @@ var BedCanvas = (() => {
         const color = colorForPart(dragState.part.filename);
         const bw = dragState.part.vcarve_x_span;
         const bh = dragState.part.vcarve_y_span;
-        let gTL, gBR;
-        if (hr === "A") {
-          // vcarve_y_span for machine X, vcarve_x_span for machine Y. slot_mark at high-Y.
-          gTL = toCanvas(RAIL_W + bh, machY);
-          gBR = toCanvas(RAIL_W, machY - bw);
-        } else {
-          // B rail: unchanged.
-          gTL = toCanvas(BED_X_MM - RAIL_W, machY);
-          gBR = toCanvas(BED_X_MM - RAIL_W - bh, machY + bw);
-        }
+        // Mirrors collision.blank_rect: the blank runs from each rail's datum in
+        // that rail's own direction (vcarve_y_span across X, vcarve_x_span along Y).
+        const g = RAILS[hr];
+        const xA = g.x_mm, xB = g.x_mm + g.x_dir * bh;
+        const yA = machY,  yB = machY + g.slot_dir * bw;
+        const gTL = toCanvas(Math.max(xA, xB), Math.max(yA, yB));
+        const gBR = toCanvas(Math.min(xA, xB), Math.min(yA, yB));
         ctx.strokeStyle = hexToRgba(color, 0.6);
         ctx.lineWidth = 1.5;
         ctx.setLineDash([5, 4]);
@@ -581,19 +578,7 @@ var BedCanvas = (() => {
   function _hitTestPart(cx, cy) {
     const placements = App?.placements ?? [];
     for (const p of [...placements].reverse()) {
-      let machX0, machX1, machY0, machY1;
-      if (p.rail === "A") {
-        const slotMark = p.machine_y + p.vcarve_x_span;
-        machX0 = RAIL_W;
-        machX1 = RAIL_W + p.vcarve_y_span;
-        machY0 = slotMark - p.vcarve_x_span;
-        machY1 = slotMark;
-      } else {
-        machX0 = BED_X_MM - RAIL_W - p.vcarve_y_span;
-        machX1 = BED_X_MM - RAIL_W;
-        machY0 = p.machine_y;
-        machY1 = p.machine_y + p.vcarve_x_span;
-      }
+      const [machX0, machX1, machY0, machY1] = p.blank;
       const tl = toCanvas(machX1, machY1);
       const br = toCanvas(machX0, machY0);
       if (cx >= tl.x && cx <= br.x && cy >= tl.y && cy <= br.y) {
@@ -610,10 +595,11 @@ var BedCanvas = (() => {
     const midX = BED_X_MM / 2;
     const rail = mach.x < midX ? "A" : "B";
 
+    // Measure against the slot positions of the rail we're actually over — the
+    // two rails put the same slot number at different machine Y.
     let best = null, bestD = Infinity;
     for (const slot of SLOTS) {
-      const machY = slot.machine_y;
-      const d = Math.abs(mach.y - machY);
+      const d = Math.abs(mach.y - slotMarkY(rail, slot.inches));
       if (d < bestD) { bestD = d; best = slot; }
     }
     if (!best) return null;
@@ -721,9 +707,13 @@ var BedCanvas = (() => {
     ]).then(([cfg, slotData]) => {
       BED_X_MM = parseFloat(cfg.advanced.bed_x_mm);
       BED_Y_MM = parseFloat(cfg.advanced.bed_y_mm);
-      RAIL_W   = parseFloat(cfg.advanced.rail_width_mm);
-      if (cfg.advanced.slot_edge_margin_in != null) {
-        EDGE_MARGIN_IN = parseFloat(cfg.advanced.slot_edge_margin_in);
+      // Prefer the resolved geometry /api/slots returns (defaults already merged
+      // in on the backend) so the canvas can't drift from collision detection.
+      const resolved = slotData.rails || cfg.advanced.rails;
+      if (resolved) {
+        for (const rail of ["A", "B"]) {
+          if (resolved[rail]) RAILS[rail] = { ...RAILS[rail], ...resolved[rail] };
+        }
       }
       SLOTS    = slotData.slots;
       resize();

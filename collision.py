@@ -31,62 +31,87 @@ def slot_label(rail: str, slot_inches: float) -> str:
     return f"{rail}{n}"
 
 
-def _machine_y(slot_inches: float, bed_y_mm: float, edge_margin_in: float = 0.0) -> float:
-    return bed_y_mm - (slot_inches + edge_margin_in) * 25.4
+MM_PER_IN = 25.4
+
+# ── per-rail geometry ─────────────────────────────────────────────────────────
+#
+# The two rails are independent fixturing systems at opposite ends of the
+# machine, loaded separately by the operator. They are NOT two views of one
+# formula: measured on the SS2, slot numbers run toward machine Y max on one
+# rail and toward Y min on the other, so each rail carries its own datum and
+# direction and either can be re-measured without disturbing the other.
+#
+#   x_mm       machine X of the rail corner the blank registers against
+#   slot0_y_mm machine Y of the slot-0 edge (the blank's datum edge)
+#   slot_dir   +1 if increasing slot number moves toward machine Y max, else -1
+#   x_dir      +1 if the blank extends from x_mm toward machine X max, else -1
+#
+# Values below are measured from the machine (A0/B0 corner+slot-edge readouts,
+# 13" pitch confirmed via B0→B13 = 330.200 mm).
+RAIL_DEFAULTS = {
+    "A": {"x_mm":  134.628, "slot0_y_mm": 3034.700, "slot_dir": -1, "x_dir":  1},
+    "B": {"x_mm": 1534.160, "slot0_y_mm":   88.300, "slot_dir":  1, "x_dir": -1},
+}
 
 
-def blank_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float,
-               bed_y_mm: float, edge_margin_in: float = 0.0) -> Rect:
-    """Blank boundary in machine coordinates."""
+def rail_geom(rail: str, rails: Optional[dict] = None) -> dict:
+    """Geometry for one rail, with any config overrides layered over the defaults."""
+    if rail not in RAIL_DEFAULTS:
+        raise ValueError(f"Unknown rail {rail!r}; expected one of {sorted(RAIL_DEFAULTS)}")
+    geom = dict(RAIL_DEFAULTS[rail])
+    if rails:
+        geom.update(rails.get(rail) or {})
+    return geom
+
+
+def slot_mark_y(rail: str, slot_inches: float, rails: Optional[dict] = None) -> float:
+    """Machine Y of a slot's datum edge. Single source of truth for slot position.
+
+    collision.py, gcode_generator.py, app.py and static/bed.js must all derive slot
+    positions from this, or a part will be simulated somewhere it does not cut.
+    """
+    g = rail_geom(rail, rails)
+    return float(g["slot0_y_mm"]) + float(g["slot_dir"]) * float(slot_inches) * MM_PER_IN
+
+
+def _span_from(datum: float, direction: float, span: float) -> tuple:
+    """Low/high edge of an extent starting at datum and running in `direction`."""
+    far = datum + direction * span
+    return (min(datum, far), max(datum, far))
+
+
+def blank_rect(placed: PlacedPart, rails: Optional[dict] = None) -> Rect:
+    """Blank boundary in machine coordinates.
+
+    vcarve_y_span = dim across the bed  = machine X extent
+    vcarve_x_span = dim along the rail  = machine Y extent
+    """
     p = placed.part
-    my = _machine_y(placed.slot_inches, bed_y_mm, edge_margin_in)
-    if placed.rail == "A":
-        # vcarve_y_span = dim across bed = machine X extent
-        # vcarve_x_span = dim along rail = machine Y extent
-        # slot mark (my) = HIGH machine-Y edge
-        return Rect(
-            min_x=rail_width_mm,
-            max_x=rail_width_mm + p.vcarve_y_span,
-            min_y=my - p.vcarve_x_span,
-            max_y=my,
-        )
-    else:  # B rail
-        min_x = bed_x_mm - rail_width_mm - p.vcarve_y_span
-        return Rect(
-            min_x=min_x,
-            max_x=min_x + p.vcarve_y_span,
-            min_y=my,
-            max_y=my + p.vcarve_x_span,
-        )
+    g = rail_geom(placed.rail, rails)
+    min_x, max_x = _span_from(float(g["x_mm"]), float(g["x_dir"]), p.vcarve_y_span)
+    my = slot_mark_y(placed.rail, placed.slot_inches, rails)
+    min_y, max_y = _span_from(my, float(g["slot_dir"]), p.vcarve_x_span)
+    return Rect(min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
 
 
-def toolpath_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float,
-                  bed_y_mm: float, tool_radius_mm: float = 0.0,
-                  edge_margin_in: float = 0.0) -> Rect:
+def toolpath_rect(placed: PlacedPart, rails: Optional[dict] = None,
+                  tool_radius_mm: float = 0.0) -> Rect:
     """
     Toolpath extents in machine coordinates, optionally expanded by tool_radius_mm
     on all four sides to account for the physical width of the cutter.
-    VCarve X → machine Y,  VCarve Y → machine X
-    A rail: machX = rail_w + vcarve_Y,   machY = slot_mark - vcarve_X
-    B rail: machX = (bed_x-rail_w) - vcarve_Y,  machY = slot_mark + vcarve_X
+
+    VCarve X → machine Y,  VCarve Y → machine X:
+        machine X = x_mm      + x_dir    * vcarve_Y
+        machine Y = slot_mark + slot_dir * vcarve_X
     """
     p = placed.part
-    my = _machine_y(placed.slot_inches, bed_y_mm, edge_margin_in)
-    if placed.rail == "A":
-        r = Rect(
-            min_x=rail_width_mm + p.min_vy,
-            max_x=rail_width_mm + p.max_vy,
-            min_y=my - p.max_vx,
-            max_y=my - p.min_vx,
-        )
-    else:  # B rail
-        far_x = bed_x_mm - rail_width_mm
-        r = Rect(
-            min_x=far_x - p.max_vy,
-            max_x=far_x - p.min_vy,
-            min_y=my + p.min_vx,
-            max_y=my + p.max_vx,
-        )
+    g = rail_geom(placed.rail, rails)
+    x0, xd = float(g["x_mm"]), float(g["x_dir"])
+    my, sd = slot_mark_y(placed.rail, placed.slot_inches, rails), float(g["slot_dir"])
+
+    xs = (x0 + xd * p.min_vy, x0 + xd * p.max_vy)
+    ys = (my + sd * p.min_vx, my + sd * p.max_vx)
+    r = Rect(min_x=min(xs), max_x=max(xs), min_y=min(ys), max_y=max(ys))
     if tool_radius_mm:
         r = Rect(
             min_x=r.min_x - tool_radius_mm,
@@ -130,10 +155,7 @@ def rects_overlap(a: Rect, b: Rect) -> bool:
 def check_placement(
     new_placed: PlacedPart,
     existing: List[PlacedPart],
-    rail_width_mm: float,
-    bed_x_mm: float,
-    bed_y_mm: float,
-    edge_margin_in: float = 0.0,
+    rails: Optional[dict] = None,
 ) -> CollisionResult:
     """
     Check whether new_placed collides with any already-placed part.
@@ -146,18 +168,22 @@ def check_placement(
 
     Toolpath extents overlapping each other is NOT a collision — the cutter can
     swing freely in clearance zones between blanks.
+
+    Both rails are checked against each other, not just parts sharing a rail:
+    everything is compared in machine coordinates, so an A-rail part and a
+    B-rail part that would physically interfere are caught.
     """
     new_radius = _max_tool_radius(new_placed)
     new_tool_str = _largest_tool_str(new_placed)
-    new_tp = toolpath_rect(new_placed, rail_width_mm, bed_x_mm, bed_y_mm, new_radius, edge_margin_in)
-    new_blank = blank_rect(new_placed, rail_width_mm, bed_x_mm, bed_y_mm, edge_margin_in)
+    new_tp = toolpath_rect(new_placed, rails, new_radius)
+    new_blank = blank_rect(new_placed, rails)
     new_slot = slot_label(new_placed.rail, new_placed.slot_inches)
 
     for placed in existing:
         ex_radius = _max_tool_radius(placed)
         ex_tool_str = _largest_tool_str(placed)
-        ex_tp = toolpath_rect(placed, rail_width_mm, bed_x_mm, bed_y_mm, ex_radius, edge_margin_in)
-        ex_blank = blank_rect(placed, rail_width_mm, bed_x_mm, bed_y_mm, edge_margin_in)
+        ex_tp = toolpath_rect(placed, rails, ex_radius)
+        ex_blank = blank_rect(placed, rails)
         ex_slot = slot_label(placed.rail, placed.slot_inches)
 
         if rects_overlap(new_tp, ex_blank):

@@ -9,7 +9,7 @@ import re
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-from collision import PlacedPart
+from collision import PlacedPart, rail_geom, slot_mark_y
 
 # ── compiled patterns ─────────────────────────────────────────────────────────
 
@@ -37,10 +37,7 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
       minimise rapid-travel distance without violating per-part operation order.
     """
     adv = settings["advanced"]
-    rail_w = float(adv["rail_width_mm"])
-    bed_x = float(adv["bed_x_mm"])
-    bed_y = float(adv["bed_y_mm"])
-    edge_margin_in = float(adv.get("slot_edge_margin_in", 0.0))
+    rails = adv.get("rails")
     tool_capacity = int(adv.get("tool_capacity", 8))
     # Fence-origin offset: the machine's fence 00 differs from its working-area 00.
     # Shift every cut coordinate by this constant so cuts land in the right physical
@@ -97,8 +94,7 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
     ]
 
     # ── tool blocks ───────────────────────────────────────────────────────────
-    blocks = _build_blocks(placements, rail_w, bed_x, bed_y, edge_margin_in,
-                           x_off_mm, y_off_mm)
+    blocks = _build_blocks(placements, rails, x_off_mm, y_off_mm)
 
     for block_num, block in enumerate(blocks, start=1):
         tool = block["tool"]
@@ -147,8 +143,7 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
 
 # ── block building ────────────────────────────────────────────────────────────
 
-def _build_blocks(placements: List[PlacedPart], rail_w: float, bed_x: float,
-                  bed_y: float, edge_margin_in: float = 0.0,
+def _build_blocks(placements: List[PlacedPart], rails: Optional[dict] = None,
                   x_off_mm: float = 0.0, y_off_mm: float = 0.0) -> list:
     """
     Produce an ordered list of tool blocks from all placements.
@@ -180,8 +175,7 @@ def _build_blocks(placements: List[PlacedPart], rail_w: float, bed_x: float,
                 if spd:
                     spindle_speed = spd
                 body = _extract_body(raw_lines)
-                params = _transform_params(placed, rail_w, bed_x, bed_y, edge_margin_in,
-                                           x_off_mm, y_off_mm)
+                params = _transform_params(placed, rails, x_off_mm, y_off_mm)
                 segs.append([_transform_line(ln, params) for ln in body])
 
             if blocks and blocks[-1]["tool"] == tool:
@@ -268,8 +262,7 @@ def _extract_body(lines: List[str]) -> List[str]:
 
 # ── coordinate transformation ─────────────────────────────────────────────────
 
-def _transform_params(placed: PlacedPart, rail_w: float, bed_x: float,
-                      bed_y: float, edge_margin_in: float = 0.0,
+def _transform_params(placed: PlacedPart, rails: Optional[dict] = None,
                       x_off_mm: float = 0.0, y_off_mm: float = 0.0) -> dict:
     """
     Pre-compute per-placement transform constants.
@@ -277,18 +270,16 @@ def _transform_params(placed: PlacedPart, rail_w: float, bed_x: float,
     VCarve X → G-code X output → machine Y direction
     VCarve Y → G-code Y output → machine X direction
 
-    Both rails are a true 180°-class rotation of the VCarve geometry (proper
-    rotation, det(Jacobian) = +1) — each negates exactly one file axis so that
-    combined with the X/Y axis swap the handedness is preserved. The B rail is
-    the A rail turned a further 180° (both file-axis signs flip), NOT a mirror.
+    Each rail's datum and direction come from collision.rail_geom / slot_mark_y so
+    the generator, collision detection and the canvas cannot drift apart:
 
-    A rail (mirror X only):
-      output_X = slot_mark - vcarve_X        (G-code X = machine Y, reversed)
-      output_Y = rail_w + vcarve_Y           (G-code Y = machine X, additive)
+      machine X = x_mm      + x_dir    * vcarve_Y
+      machine Y = slot_mark + slot_dir * vcarve_X
 
-    B rail (mirror Y only):
-      output_X = slot_mark + vcarve_X        (G-code X = machine Y, additive)
-      output_Y = (bed_x - rail_w) - vcarve_Y (G-code Y = machine X, reversed)
+    A negative direction is a mirrored axis (b_x / b_y True). With exactly one of
+    the two mirrored the transform is a proper rotation, which is the normal case
+    for both rails; _transform_line detects the reflection case from these flags
+    and swaps arc direction accordingly.
 
     NOTE on the 'x'/'y' keys: they are named for the VCarve axis each transforms,
     not the output word. _transform_line swaps the axes, so the 'x' constant
@@ -301,12 +292,12 @@ def _transform_params(placed: PlacedPart, rail_w: float, bed_x: float,
     _transform_line computes `const ± vcarve`, so adding to the constant shifts
     that axis by a fixed amount on BOTH rails regardless of the mirror flag.
     """
-    slot_mark = bed_y - (placed.slot_inches + edge_margin_in) * 25.4
-    if placed.rail == "A":
-        return {"b_x": True,  "x": slot_mark + y_off_mm,
-                "b_y": False, "y": rail_w + x_off_mm}
-    return {"b_x": False, "x": slot_mark + y_off_mm,
-            "b_y": True,  "y": (bed_x - rail_w) + x_off_mm}
+    g = rail_geom(placed.rail, rails)
+    slot_mark = slot_mark_y(placed.rail, placed.slot_inches, rails)
+    return {
+        "b_x": float(g["slot_dir"]) < 0, "x": slot_mark + y_off_mm,
+        "b_y": float(g["x_dir"]) < 0,    "y": float(g["x_mm"]) + x_off_mm,
+    }
 
 
 def _transform_line(line: str, p: dict) -> str:

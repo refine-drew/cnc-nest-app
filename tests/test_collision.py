@@ -1,13 +1,17 @@
 import pytest
 from gcode_parser import GcodePart, ZValidation
 from collision import (
-    PlacedPart, Rect,
+    PlacedPart, Rect, RAIL_DEFAULTS,
     blank_rect, toolpath_rect, rects_overlap, check_placement, slot_label,
+    rail_geom, slot_mark_y,
 )
 
-RAIL_W = 82.55
-BED_X = 1524.0
-BED_Y = 3048.0   # 120" along the rail
+# Measured SS2 rail geometry (collision.RAIL_DEFAULTS) — the two rails are
+# independent systems running in opposite slot directions.
+A_X  = RAIL_DEFAULTS["A"]["x_mm"]        # 134.628  rail corner
+A_Y0 = RAIL_DEFAULTS["A"]["slot0_y_mm"]  # 3034.700 slot-0 edge, counts down
+B_X  = RAIL_DEFAULTS["B"]["x_mm"]        # 1534.160 rail corner
+B_Y0 = RAIL_DEFAULTS["B"]["slot0_y_mm"]  # 88.300   slot-0 edge, counts up
 
 
 def make_part(vcarve_x_span, vcarve_y_span, min_vx, max_vx, min_vy, max_vy,
@@ -47,52 +51,56 @@ def test_blank_rect_a_rail():
     # vcarve_x_span=100 (along rail = machine Y), vcarve_y_span=200 (across bed = machine X)
     part = make_part(100, 200, 0, 100, 0, 200)
     p = placed(part, "A", 39)
-    r = blank_rect(p, RAIL_W, BED_X, BED_Y)
+    r = blank_rect(p)
 
-    machine_y = (120 - 39) * 25.4  # 2057.4
-    assert r.min_x == pytest.approx(RAIL_W)
-    assert r.max_x == pytest.approx(RAIL_W + 200)        # vcarve_y_span = machine X extent
-    assert r.min_y == pytest.approx(machine_y - 100)     # slot_mark - vcarve_x_span
-    assert r.max_y == pytest.approx(machine_y)            # slot_mark = high-Y edge
+    my = A_Y0 - 39 * 25.4                                # slot datum, A runs -Y
+    assert r.min_x == pytest.approx(A_X)                 # rail corner
+    assert r.max_x == pytest.approx(A_X + 200)           # extends toward +X
+    assert r.min_y == pytest.approx(my - 100)            # datum - vcarve_x_span
+    assert r.max_y == pytest.approx(my)                  # datum = high-Y edge
 
 
 def test_blank_rect_b_rail():
     # vcarve_x_span=100 (along rail = machine Y), vcarve_y_span=200 (across bed = machine X)
     part = make_part(100, 200, 0, 100, 0, 200)
     p = placed(part, "B", 39)
-    r = blank_rect(p, RAIL_W, BED_X, BED_Y)
+    r = blank_rect(p)
 
-    machine_y = (120 - 39) * 25.4
-    expected_min_x = BED_X - RAIL_W - 200               # vcarve_y_span = machine X extent
-    assert r.min_x == pytest.approx(expected_min_x)
-    assert r.max_x == pytest.approx(expected_min_x + 200)
-    assert r.min_y == pytest.approx(machine_y)            # slot_mark = low-Y edge for B
-    assert r.max_y == pytest.approx(machine_y + 100)     # + vcarve_x_span
+    my = B_Y0 + 39 * 25.4                                # slot datum, B runs +Y
+    assert r.max_x == pytest.approx(B_X)                 # rail corner
+    assert r.min_x == pytest.approx(B_X - 200)           # extends toward -X
+    assert r.min_y == pytest.approx(my)                  # datum = low-Y edge for B
+    assert r.max_y == pytest.approx(my + 100)
 
 
-def test_blank_rect_honors_non_default_bed_y():
-    """A shorter bed must move the slot mark.
+def test_rails_run_in_opposite_directions():
+    """The measured SS2 geometry: slot numbers count up toward +Y on B, -Y on A.
 
-    Regression: bed_y_mm was a config key the backend ignored in favour of a
-    hardcoded 120", so the canvas moved with config while collision detection,
-    the generated G-code and the PDF slot ruler did not.
+    Regression: a single shared formula put both rails' slot 0 at the same machine
+    Y, simulating B-rail parts ~2.9 m from where they actually cut and making
+    cross-rail collision detection meaningless.
     """
-    part = make_part(100, 200, 0, 100, 0, 200)
-    p = placed(part, "A", 39)
+    assert slot_mark_y("A", 0) == pytest.approx(A_Y0)
+    assert slot_mark_y("B", 0) == pytest.approx(B_Y0)
+    # 13" pitch, measured B0 -> B13 = 330.200 mm
+    assert slot_mark_y("B", 13) - slot_mark_y("B", 0) == pytest.approx(330.2)
+    assert slot_mark_y("A", 13) - slot_mark_y("A", 0) == pytest.approx(-330.2)
+    # opposite signs, and never equal for any slot
+    for s in (0, 13, 19.5, 39, 78, 117):
+        assert slot_mark_y("A", s) != pytest.approx(slot_mark_y("B", s))
 
-    short_bed = 2000.0
-    r = blank_rect(p, RAIL_W, BED_X, short_bed)
-    assert r.max_y == pytest.approx(short_bed - 39 * 25.4)
-    # ...and is genuinely different from the 120" default.
-    assert r.max_y != pytest.approx(blank_rect(p, RAIL_W, BED_X, BED_Y).max_y)
+
+def test_slot_mark_y_honors_config_override():
+    """Either rail must be re-measurable without disturbing the other."""
+    override = {"A": {"slot0_y_mm": 2000.0}}
+    assert slot_mark_y("A", 39, override) == pytest.approx(2000.0 - 39 * 25.4)
+    # B untouched by an A-only override
+    assert slot_mark_y("B", 39, override) == pytest.approx(slot_mark_y("B", 39))
 
 
-def test_machine_y_scales_with_bed_y():
-    from collision import _machine_y
-    assert _machine_y(39, 3048.0) == pytest.approx((120 - 39) * 25.4)
-    assert _machine_y(39, 2000.0) == pytest.approx(2000.0 - 39 * 25.4)
-    # edge margin is subtracted in the same inch-space as the slot
-    assert _machine_y(39, 2000.0, 1.5) == pytest.approx(2000.0 - (39 + 1.5) * 25.4)
+def test_rail_geom_rejects_unknown_rail():
+    with pytest.raises(ValueError, match="Unknown rail"):
+        rail_geom("C")
 
 
 # --- toolpath_rect ---
@@ -101,57 +109,48 @@ def test_toolpath_rect_a_rail_same_as_blank_when_extents_equal():
     part = make_part(100, 100, 0, 100, 0, 100)
     p = placed(part, "A", 39)
 
-    br = blank_rect(p, RAIL_W, BED_X, BED_Y)
-    tr = toolpath_rect(p, RAIL_W, BED_X, BED_Y)
+    br = blank_rect(p)
+    tr = toolpath_rect(p)
     assert tr == br
 
 
 def test_toolpath_rect_a_rail_extents_beyond_blank():
-    # Toolpath extends 10mm beyond blank on all sides
-    # vcarve_x_span=100 (machine Y), vcarve_y_span=100 (machine X)
-    # min_vx=-10,max_vx=110 → machine Y: min_y=my-110, max_y=my+10
-    # min_vy=-10,max_vy=110 → machine X: min_x=RAIL_W-10, max_x=RAIL_W+110
+    # Toolpath extends 10mm beyond blank on all sides.
+    # A rail: x_dir=+1 so machine X = A_X + vcarve_Y; slot_dir=-1 so machine Y = my - vcarve_X
     part = make_part(100, 100, -10, 110, -10, 110)
     p = placed(part, "A", 39)
-    tr = toolpath_rect(p, RAIL_W, BED_X, BED_Y)
+    tr = toolpath_rect(p)
 
-    machine_y = (120 - 39) * 25.4
-    assert tr.min_x == pytest.approx(RAIL_W - 10)
-    assert tr.max_x == pytest.approx(RAIL_W + 110)
-    assert tr.min_y == pytest.approx(machine_y - 110)
-    assert tr.max_y == pytest.approx(machine_y + 10)
+    my = A_Y0 - 39 * 25.4
+    assert tr.min_x == pytest.approx(A_X - 10)
+    assert tr.max_x == pytest.approx(A_X + 110)
+    assert tr.min_y == pytest.approx(my - 110)
+    assert tr.max_y == pytest.approx(my + 10)
 
 
 def test_toolpath_rect_b_rail_rotation():
-    # B rail (true 180° rotation): VCarve Y → machine X (mirrored), VCarve X → machine Y (additive)
-    # Part: vcarve_x_span=100 (machine Y), vcarve_y_span=100 (machine X)
-    # min_vx=0, max_vx=100, min_vy=0, max_vy=110 (toolpath extends 10mm in VCarve Y)
-    # far_x = BED_X - RAIL_W = 1441.45
-    # machine X: min_x = far_x - max_vy = 1441.45-110=1331.45, max_x = far_x - min_vy=1441.45
-    # machine Y: min_y = my + min_vx = my, max_y = my + max_vx = my+100
+    # B rail: x_dir=-1 so machine X = B_X - vcarve_Y (mirrored across the bed)
+    # min_vy=0, max_vy=110 → min_x = B_X-110, max_x = B_X
     part = make_part(100, 100, 0, 100, 0, 110)
     p = placed(part, "B", 39)
-    tr = toolpath_rect(p, RAIL_W, BED_X, BED_Y)
+    tr = toolpath_rect(p)
 
-    machine_y = (120 - 39) * 25.4
-    far_x = BED_X - RAIL_W  # 1441.45
-    assert tr.min_x == pytest.approx(far_x - 110)   # far_x - max_vy
-    assert tr.max_x == pytest.approx(far_x)          # far_x - min_vy (0)
-    assert tr.min_y == pytest.approx(machine_y)      # my + min_vx (0)
-    assert tr.max_y == pytest.approx(machine_y + 100)
+    my = B_Y0 + 39 * 25.4
+    assert tr.min_x == pytest.approx(B_X - 110)      # B_X - max_vy
+    assert tr.max_x == pytest.approx(B_X)             # B_X - min_vy (0)
+    assert tr.min_y == pytest.approx(my)              # my + min_vx (0)
+    assert tr.max_y == pytest.approx(my + 100)
 
 
 def test_toolpath_rect_b_rail_x_rotation():
-    # B rail VCarve X → machine Y (additive, not mirrored — true 180° rotation)
-    # vcarve_x_span=100, min_vx=0, max_vx=110 → toolpath extends 10mm in VCarve X
-    # machine Y: min_y = my + min_vx = my, max_y = my + max_vx = my + 110
+    # B rail: slot_dir=+1 so machine Y = my + vcarve_X (extends toward +Y)
     part = make_part(100, 100, 0, 110, 0, 100)
     p = placed(part, "B", 39)
-    tr = toolpath_rect(p, RAIL_W, BED_X, BED_Y)
+    tr = toolpath_rect(p)
 
-    machine_y = (120 - 39) * 25.4
-    assert tr.min_y == pytest.approx(machine_y)       # my + min_vx (0)
-    assert tr.max_y == pytest.approx(machine_y + 110) # extension on high-Y side
+    my = B_Y0 + 39 * 25.4
+    assert tr.min_y == pytest.approx(my)              # my + min_vx (0)
+    assert tr.max_y == pytest.approx(my + 110)        # extension on high-Y side
 
 
 # --- verified spec example: correct axis convention ---
@@ -159,51 +158,74 @@ def test_toolpath_rect_b_rail_x_rotation():
 # A rail: machX = RAIL_W + VCarve_Y,  machY = slot_mark - VCarve_X
 # B rail: machX = (BED_X-RAIL_W) - VCarve_Y,  machY = slot_mark + VCarve_X
 
-def test_spec_example_a_rail_notch_position():
-    """
-    Correct axis convention: A rail at slot 36 (slot_mark=2133.6mm)
-    Part vcarve_x_span=300 (along rail), vcarve_y_span=400 (across bed)
-    Notch at file VCarve_X=20, VCarve_Y=380:
-      machine X = RAIL_W + 380 = 462.55
-      machine Y = 2133.6 - 20 = 2113.6
-    """
-    slot_inches = 120 - 2133.6 / 25.4  # ≈ 36.0
-    # vcarve_x_span=300 (along rail), vcarve_y_span=400 (across bed)
-    part = make_part(300, 400, 0, 300, 0, 400)
-    p = placed(part, "A", slot_inches)
+def _notch_at(rail, slot_inches, vx, vy):
+    """Machine position of a single feature at file coords (vx, vy).
 
-    my = _machine_y(slot_inches)  # 2133.6
-    # Notch at VCarve coords (20, 380)
-    notch_machine_x = RAIL_W + 380      # RAIL_W + VCarve_Y
-    notch_machine_y = my - 20           # slot_mark - VCarve_X
-    assert notch_machine_x == pytest.approx(462.55, abs=0.01)
-    assert notch_machine_y == pytest.approx(2113.6, abs=0.1)
+    A degenerate toolpath (min==max on both axes) makes toolpath_rect collapse to
+    the point, so this asserts against the production transform rather than
+    re-doing the arithmetic in the test.
+    """
+    part = make_part(300, 400, vx, vx, vy, vy)
+    tr = toolpath_rect(placed(part, rail, slot_inches))
+    return tr.min_x, tr.min_y
+
+
+def test_spec_example_a_rail_notch_position():
+    """A rail: machine X = A_X + VCarve_Y, machine Y = slot datum - VCarve_X."""
+    nx, ny = _notch_at("A", 36, vx=20, vy=380)
+    assert nx == pytest.approx(A_X + 380, abs=0.01)
+    assert ny == pytest.approx(A_Y0 - 36 * 25.4 - 20, abs=0.1)
 
 
 def test_spec_example_b_rail_notch_position():
+    """B rail: machine X = B_X - VCarve_Y, machine Y = slot datum + VCarve_X.
+
+    Both file axes flip relative to the A rail, which is the 180° rotation.
     """
-    Correct axis convention (true 180° rotation): B rail at slot 36 (slot_mark=2133.6mm)
-    Part vcarve_x_span=300 (along rail), vcarve_y_span=400 (across bed)
-    Notch at file VCarve_X=20, VCarve_Y=380:
-      machine X = (BED_X-RAIL_W) - 380 = 1441.45 - 380 = 1061.45
-      machine Y = 2133.6 + 20 = 2153.6
-    """
-    slot_inches = 120 - 2133.6 / 25.4  # ≈ 36.0
-    # vcarve_x_span=300 (along rail), vcarve_y_span=400 (across bed)
-    part = make_part(300, 400, 0, 300, 0, 400)
-    p = placed(part, "B", slot_inches)
-
-    my = _machine_y(slot_inches)   # 2133.6
-    far_x = BED_X - RAIL_W         # 1441.45
-    # Notch at VCarve coords (20, 380)
-    notch_machine_x = far_x - 380                  # far_x - VCarve_Y
-    notch_machine_y = my + 20                      # slot_mark + VCarve_X
-    assert notch_machine_x == pytest.approx(1061.45, abs=0.01)
-    assert notch_machine_y == pytest.approx(2153.6, abs=0.1)
+    nx, ny = _notch_at("B", 36, vx=20, vy=380)
+    assert nx == pytest.approx(B_X - 380, abs=0.01)
+    assert ny == pytest.approx(B_Y0 + 36 * 25.4 + 20, abs=0.1)
 
 
-def _machine_y(slot_inches):
-    return BED_Y - slot_inches * 25.4
+# --- cross-rail collisions ---
+#
+# The rails are loaded independently, but the cutter is not: a part on A and a
+# part on B that overlap in machine X and Y will physically interfere. The rail
+# datums are 1399.5 mm (55.1") apart, so two parts whose across-bed dimensions
+# sum to more than that overlap in X — a real case, not a hypothetical.
+
+def test_collision_across_rails_wide_parts():
+    """A wide A-rail part and a wide B-rail part that overlap must be refused."""
+    # 800mm across the bed each: 800 + 800 = 1600 > 1399.5 → X ranges overlap.
+    wide = lambda: make_part(400, 800, 0, 400, 0, 800)
+    a = placed(wide(), "A", 39, "a1")     # Y 1644.1 .. 2044.1
+    b = placed(wide(), "B", 65, "b1")     # Y 1739.3 .. 2139.3  → overlaps A in Y
+
+    # Sanity: they really do overlap in both axes.
+    ra, rb = blank_rect(a), blank_rect(b)
+    assert ra.max_x > rb.min_x and rb.max_x > ra.min_x
+    assert ra.max_y > rb.min_y and rb.max_y > ra.min_y
+
+    result = check_placement(b, [a])
+    assert result.collides
+    assert result.conflicting_instance_id == "a1"
+
+
+def test_no_collision_across_rails_narrow_parts():
+    """Narrow parts on opposite rails leave the middle of the bed clear."""
+    narrow = lambda: make_part(400, 200, 0, 400, 0, 200)
+    a = placed(narrow(), "A", 39, "a1")
+    b = placed(narrow(), "B", 65, "b1")
+    assert not check_placement(b, [a]).collides
+
+
+def test_collision_across_rails_is_symmetric():
+    """Order of placement must not change the verdict."""
+    wide = lambda: make_part(400, 800, 0, 400, 0, 800)
+    a = placed(wide(), "A", 39, "a1")
+    b = placed(wide(), "B", 65, "b1")
+    assert check_placement(b, [a]).collides
+    assert check_placement(a, [b]).collides
 
 
 # --- rects_overlap ---
@@ -253,7 +275,7 @@ def test_rects_overlap_contained():
 def test_no_collision_when_no_existing_parts():
     part = make_part(100, 100, 0, 100, 0, 100)
     p = placed(part, "A", 39)
-    result = check_placement(p, [], RAIL_W, BED_X, BED_Y)
+    result = check_placement(p, [])
     assert not result.collides
 
 
@@ -263,7 +285,7 @@ def test_no_collision_parts_far_apart():
     existing = [placed(part_a, "A", 0, "i1")]
     new = placed(part_b, "A", 117, "i2")
 
-    result = check_placement(new, existing, RAIL_W, BED_X, BED_Y)
+    result = check_placement(new, existing)
     assert not result.collides
 
 
@@ -290,7 +312,7 @@ def test_collision_new_toolpath_into_existing_blank():
     existing = [placed(part_a, "A", 39, "i1")]
     new = placed(part_b, "A", 52, "i2")
 
-    result = check_placement(new, existing, RAIL_W, BED_X, BED_Y)
+    result = check_placement(new, existing)
     assert result.collides
     assert result.conflicting_instance_id == "i1"
     assert "b.nc" in result.message
@@ -305,7 +327,7 @@ def test_collision_existing_toolpath_into_new_blank():
     existing = [placed(part_existing, "A", 52, "i1")]
     new = placed(part_new, "A", 39, "i2")
 
-    result = check_placement(new, existing, RAIL_W, BED_X, BED_Y)
+    result = check_placement(new, existing)
     assert result.collides
     assert "existing.nc" in result.message
 
@@ -326,7 +348,7 @@ def test_no_collision_toolpath_vs_toolpath():
     existing = [placed(part_a, "A", 39, "i1")]
     new = placed(part_b, "A", 52, "i2")
 
-    result = check_placement(new, existing, RAIL_W, BED_X, BED_Y)
+    result = check_placement(new, existing)
     assert not result.collides
 
 
@@ -336,7 +358,7 @@ def test_no_collision_a_and_b_rail_same_slot():
     existing = [placed(part, "A", 39, "i1")]
     new = placed(part, "B", 39, "i2")
 
-    result = check_placement(new, existing, RAIL_W, BED_X, BED_Y)
+    result = check_placement(new, existing)
     assert not result.collides
 
 
@@ -348,7 +370,7 @@ def test_collision_message_contains_slot_labels():
     existing = [placed(part_a, "A", 52, "i1")]
     new = placed(part_b, "A", 39, "i2")
 
-    result = check_placement(new, existing, RAIL_W, BED_X, BED_Y)
+    result = check_placement(new, existing)
     assert "A39" in result.message
     assert "A52" in result.message
 
@@ -358,8 +380,8 @@ def test_collision_message_contains_slot_labels():
 def test_toolpath_rect_expands_by_tool_radius():
     part = make_part(100, 100, 0, 100, 0, 100)
     p = placed(part, "A", 39)
-    base = toolpath_rect(p, RAIL_W, BED_X, BED_Y, tool_radius_mm=0.0)
-    expanded = toolpath_rect(p, RAIL_W, BED_X, BED_Y, tool_radius_mm=10.0)
+    base = toolpath_rect(p, tool_radius_mm=0.0)
+    expanded = toolpath_rect(p, tool_radius_mm=10.0)
     assert expanded.min_x == pytest.approx(base.min_x - 10.0)
     assert expanded.max_x == pytest.approx(base.max_x + 10.0)
     assert expanded.min_y == pytest.approx(base.min_y - 10.0)
@@ -377,7 +399,7 @@ def test_check_placement_catches_tool_radius_collision():
                        tools={"T2": {"description": "End Mill", "diameter_inches": 1.0}})
 
     result = check_placement(placed(part_b, "A", 39, "i2"),
-                             [placed(part_a, "A", 26, "i1")], RAIL_W, BED_X, BED_Y)
+                             [placed(part_a, "A", 26, "i1")])
     assert result.collides
     assert "T2" in result.message
 
@@ -391,5 +413,5 @@ def test_check_placement_passes_when_radius_fits_in_gap():
                        tools={"T2": {"description": "End Mill", "diameter_inches": 0.25}})
 
     result = check_placement(placed(part_b, "A", 39, "i2"),
-                             [placed(part_a, "A", 26, "i1")], RAIL_W, BED_X, BED_Y)
+                             [placed(part_a, "A", 26, "i1")])
     assert not result.collides
