@@ -66,6 +66,11 @@ def _bed_y() -> float:
     return float(config["advanced"]["bed_y_mm"])
 
 
+def _tool_capacity() -> int:
+    """How many tools the Smartshop 2 tool changer holds (default 8)."""
+    return int(config["advanced"].get("tool_capacity", 8))
+
+
 def _edge_margin_in() -> float:
     return float(config["advanced"].get("slot_edge_margin_in", 1.5))
 
@@ -225,9 +230,13 @@ def _compute_job_stats() -> dict:
     # the actual merged G-code for the precise number.
     runtime_seconds = sum(p.part.runtime_seconds for p in _placements.values())
 
+    capacity = _tool_capacity()
     return {
         "tool_sequence": ordered_tools,
         "tool_changes": max(0, len(ordered_tools) - 1),
+        "tool_count": len(ordered_tools),
+        "tool_capacity": capacity,
+        "tools_over_capacity": len(ordered_tools) > capacity,
         "utilization": utilization,
         "runtime_seconds": round(runtime_seconds, 2),
     }
@@ -617,6 +626,18 @@ def api_generate():
     compat = _tool_compatibility()
     if compat["has_conflict"]:
         return jsonify({"error": "Resolve tool compatibility conflicts before generating"}), 422
+
+    distinct_tools = [m["tool_number"] for m in compat["matrix"]]
+    capacity = _tool_capacity()
+    if len(distinct_tools) > capacity:
+        return jsonify({
+            "error": "tool_capacity_exceeded",
+            "message": (
+                f"This job needs {len(distinct_tools)} tools "
+                f"({', '.join(distinct_tools)}) but the Smartshop 2 tool changer holds "
+                f"only {capacity}. Remove parts or reduce the number of distinct tools."
+            ),
+        }), 422
 
     data = request.get_json(force=True) or {}
     job_name = _job_name(data)

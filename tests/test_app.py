@@ -360,6 +360,44 @@ def test_generate_blocked_by_tool_conflict(client, tmp_path, monkeypatch):
     assert r.status_code == 422
 
 
+def test_generate_blocked_when_over_tool_capacity(client, tmp_path, monkeypatch):
+    """A job needing more distinct tools than the changer holds must be refused."""
+    header = "( Material Size)\n( X=100, Y=100, Z=19)\n"
+    files = {}
+    for n in range(1, 10):  # T1..T9 across nine parts = 9 distinct tools
+        files[f"p{n}.nc"] = (
+            f"{header}(T{n} = Tool {n} {{0.25 inches}})\n"
+            f"T{n} M06\nG01 X10 Y10 Z-0.254\nM30\n"
+        )
+    _seed_library(tmp_path, monkeypatch, files)
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    monkeypatch.setitem(app_module.config["advanced"], "tool_capacity", 8)
+
+    slots = [0, 13, 26, 39, 52, 65, 78, 91, 104]
+    for n, slot in zip(range(1, 10), slots):
+        client.post("/api/place", json={"path": f"p{n}.nc", "rail": "A", "slot_inches": slot})
+
+    r = client.post("/api/generate", json={})
+    assert r.status_code == 422
+    body = r.get_json()
+    assert body["error"] == "tool_capacity_exceeded"
+    assert "9 tools" in body["message"]
+    assert "holds only 8" in body["message"]
+    # Nothing should have been written.
+    assert not list(tmp_path.glob("*.nc")) or all(
+        p.name.startswith("p") for p in tmp_path.glob("*.nc")
+    )
+
+
+def test_placements_report_tool_capacity(client, tmp_path, monkeypatch):
+    _seed_library(tmp_path, monkeypatch)
+    client.post("/api/place", json={"path": "part.nc", "rail": "A", "slot_inches": 39})
+    info = client.get("/api/placements").get_json()
+    assert info["tool_capacity"] == app_module._tool_capacity()
+    assert info["tools_over_capacity"] is False
+    assert info["tool_count"] == len(info["tool_sequence"])
+
+
 # ── /api/save-job and /api/load-job ──────────────────────────────────────────
 
 def test_save_and_reload_job(client, tmp_path, monkeypatch):

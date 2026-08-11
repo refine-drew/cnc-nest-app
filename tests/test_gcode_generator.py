@@ -329,6 +329,34 @@ def test_generate_honors_non_default_bed_y():
     assert default_out != short_out
 
 
+# ── tool capacity ─────────────────────────────────────────────────────────────
+
+NINE_TOOL_NC = _nc([(f"T{n}", f"Tool {n}", 0.25) for n in range(1, 10)])
+
+
+def test_generate_raises_when_tools_exceed_capacity():
+    """9 distinct tools on an 8-position changer cannot be loaded — fail loudly."""
+    p = _placed(NINE_TOOL_NC, "A", 39)
+    settings = {**SETTINGS, "advanced": {**SETTINGS["advanced"], "tool_capacity": 8}}
+    with pytest.raises(ValueError, match="holds only 8"):
+        generate_master_gcode([p], settings)
+
+
+def test_generate_allows_tools_exactly_at_capacity():
+    p = _placed(_nc([(f"T{n}", f"Tool {n}", 0.25) for n in range(1, 9)]), "A", 39)
+    settings = {**SETTINGS, "advanced": {**SETTINGS["advanced"], "tool_capacity": 8}}
+    result = generate_master_gcode([p], settings)
+    assert "T8 M06" in result
+
+
+def test_tool_capacity_defaults_to_eight_when_absent():
+    """An older config.json without the key must still be gated at 8."""
+    adv = {k: v for k, v in SETTINGS["advanced"].items() if k != "tool_capacity"}
+    p = _placed(NINE_TOOL_NC, "A", 39)
+    with pytest.raises(ValueError, match="holds only 8"):
+        generate_master_gcode([p], {**SETTINGS, "advanced": adv})
+
+
 # ── _nearest_neighbor_sort ────────────────────────────────────────────────────
 
 def test_nearest_neighbor_single_segment():

@@ -41,6 +41,7 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
     bed_x = float(adv["bed_x_mm"])
     bed_y = float(adv["bed_y_mm"])
     edge_margin_in = float(adv.get("slot_edge_margin_in", 0.0))
+    tool_capacity = int(adv.get("tool_capacity", 8))
     park_x = float(adv.get("park_x", 0.0))
     park_y = float(adv.get("park_y", 3048.0))
     job_name = settings.get("job_name", "master_job")
@@ -54,6 +55,16 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
         for gp in p.part.passes:
             if gp.tool_number not in all_tools:
                 all_tools.append(gp.tool_number)
+
+    # The tool changer holds a fixed number of tools (default 8). A job needing
+    # more cannot be loaded on the machine, so fail loudly rather than emitting
+    # G-code that will stall mid-run at an unavailable tool.
+    if len(all_tools) > tool_capacity:
+        raise ValueError(
+            f"Job needs {len(all_tools)} tools ({', '.join(all_tools)}) but the "
+            f"Smartshop 2 tool changer holds only {tool_capacity}. "
+            "Remove parts or reduce distinct tools."
+        )
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     out: List[str] = []
