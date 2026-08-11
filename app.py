@@ -62,6 +62,10 @@ def _bed_x() -> float:
     return float(config["advanced"]["bed_x_mm"])
 
 
+def _bed_y() -> float:
+    return float(config["advanced"]["bed_y_mm"])
+
+
 def _edge_margin_in() -> float:
     return float(config["advanced"].get("slot_edge_margin_in", 1.5))
 
@@ -102,7 +106,7 @@ def _part_dict(part: GcodePart, rel_path: str = "") -> dict:
 
 def _transform_segments(
     segs: list, rail: str, slot_inches: float,
-    rail_width_mm: float, bed_x_mm: float,
+    rail_width_mm: float, bed_x_mm: float, bed_y_mm: float,
     edge_margin_in: float = 0.0,
 ) -> list:
     """
@@ -113,7 +117,7 @@ def _transform_segments(
     A rail:  machX = rail_w + fileY             machY = slot_mark - fileX
     B rail:  machX = (BED_X-rail_w) - fileY     machY = slot_mark + fileX
     """
-    slot_mark = (120.0 - slot_inches - edge_margin_in) * 25.4
+    slot_mark = bed_y_mm - (slot_inches + edge_margin_in) * 25.4
     result = []
     for s in segs:
         if rail == "A":
@@ -136,7 +140,7 @@ def _transform_segments(
 
 
 def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
-    br = blank_rect(placed, _rail_width(), _bed_x(), _edge_margin_in())
+    br = blank_rect(placed, _rail_width(), _bed_x(), _bed_y(), _edge_margin_in())
     rel = _placement_paths.get(instance_id, placed.part.filename)
     segments = _transform_segments(
         placed.part.segments,
@@ -144,6 +148,7 @@ def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
         placed.slot_inches,
         _rail_width(),
         _bed_x(),
+        _bed_y(),
         _edge_margin_in(),
     )
     tools_list = [
@@ -282,7 +287,7 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
     machine coordinates (via blank_rect / _transform_segments), and a stable
     per-filename color matching the on-screen canvas palette.
     """
-    rail_w, bed_x, edge = _rail_width(), _bed_x(), _edge_margin_in()
+    rail_w, bed_x, bed_y, edge = _rail_width(), _bed_x(), _bed_y(), _edge_margin_in()
 
     # Stable color per unique filename, assigned in first-seen order (bed.js).
     color_idx: Dict[str, int] = {}
@@ -293,7 +298,7 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
         fn = placed.part.filename
         if fn not in color_idx:
             color_idx[fn] = len(color_idx)
-        br = blank_rect(placed, rail_w, bed_x, edge)
+        br = blank_rect(placed, rail_w, bed_x, bed_y, edge)
         for num in (gp.tool_number for gp in placed.part.passes):
             tools_seen[num] = True
         parts.append({
@@ -306,7 +311,7 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
             "blank": (br.min_x, br.max_x, br.min_y, br.max_y),
             "segments": _transform_segments(
                 placed.part.segments, placed.rail, placed.slot_inches,
-                rail_w, bed_x, edge,
+                rail_w, bed_x, bed_y, edge,
             ),
             "tools": [
                 {"tool_number": num,
@@ -398,7 +403,7 @@ def api_slots():
             "inches": s,
             "label_a": f"A{label}",
             "label_b": f"B{label}",
-            "machine_y": round((120 - s - edge_margin) * 25.4, 4),
+            "machine_y": round(_bed_y() - (s + edge_margin) * 25.4, 4),
             "pitch": pitches,
         })
     return jsonify({"slots": result})
@@ -525,7 +530,8 @@ def api_place():
     instance_id = _make_instance_id(part.filename)
     new_placed = PlacedPart(part=part, rail=rail, slot_inches=slot_inches, instance_id=instance_id)
 
-    result = check_placement(new_placed, list(_placements.values()), _rail_width(), _bed_x(), _edge_margin_in())
+    result = check_placement(new_placed, list(_placements.values()), _rail_width(), _bed_x(),
+                             _bed_y(), _edge_margin_in())
     if result.collides:
         # Roll back the instance counter
         stem = os.path.splitext(part.filename)[0]

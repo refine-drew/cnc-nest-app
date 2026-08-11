@@ -188,7 +188,7 @@ def _draw_diagram(c, x0, y0, w, h, parts, geom) -> None:
     c.setFillColor(HexColor("#555555"))
     for slot in geom.get("slots", []):
         slot = float(slot)
-        mach_y = (120.0 - slot - edge_margin_in) * 25.4
+        mach_y = BED_Y - (slot + edge_margin_in) * 25.4
         px = ox + (BED_Y - mach_y) * s
         c.line(px, oy - 3, px, oy - 9)
         c.drawCentredString(px, oy - 17, f"{slot:g}")

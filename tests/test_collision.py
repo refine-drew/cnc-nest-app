@@ -7,6 +7,7 @@ from collision import (
 
 RAIL_W = 82.55
 BED_X = 1524.0
+BED_Y = 3048.0   # 120" along the rail
 
 
 def make_part(vcarve_x_span, vcarve_y_span, min_vx, max_vx, min_vy, max_vy,
@@ -46,7 +47,7 @@ def test_blank_rect_a_rail():
     # vcarve_x_span=100 (along rail = machine Y), vcarve_y_span=200 (across bed = machine X)
     part = make_part(100, 200, 0, 100, 0, 200)
     p = placed(part, "A", 39)
-    r = blank_rect(p, RAIL_W, BED_X)
+    r = blank_rect(p, RAIL_W, BED_X, BED_Y)
 
     machine_y = (120 - 39) * 25.4  # 2057.4
     assert r.min_x == pytest.approx(RAIL_W)
@@ -59,7 +60,7 @@ def test_blank_rect_b_rail():
     # vcarve_x_span=100 (along rail = machine Y), vcarve_y_span=200 (across bed = machine X)
     part = make_part(100, 200, 0, 100, 0, 200)
     p = placed(part, "B", 39)
-    r = blank_rect(p, RAIL_W, BED_X)
+    r = blank_rect(p, RAIL_W, BED_X, BED_Y)
 
     machine_y = (120 - 39) * 25.4
     expected_min_x = BED_X - RAIL_W - 200               # vcarve_y_span = machine X extent
@@ -69,14 +70,39 @@ def test_blank_rect_b_rail():
     assert r.max_y == pytest.approx(machine_y + 100)     # + vcarve_x_span
 
 
+def test_blank_rect_honors_non_default_bed_y():
+    """A shorter bed must move the slot mark.
+
+    Regression: bed_y_mm was a config key the backend ignored in favour of a
+    hardcoded 120", so the canvas moved with config while collision detection,
+    the generated G-code and the PDF slot ruler did not.
+    """
+    part = make_part(100, 200, 0, 100, 0, 200)
+    p = placed(part, "A", 39)
+
+    short_bed = 2000.0
+    r = blank_rect(p, RAIL_W, BED_X, short_bed)
+    assert r.max_y == pytest.approx(short_bed - 39 * 25.4)
+    # ...and is genuinely different from the 120" default.
+    assert r.max_y != pytest.approx(blank_rect(p, RAIL_W, BED_X, BED_Y).max_y)
+
+
+def test_machine_y_scales_with_bed_y():
+    from collision import _machine_y
+    assert _machine_y(39, 3048.0) == pytest.approx((120 - 39) * 25.4)
+    assert _machine_y(39, 2000.0) == pytest.approx(2000.0 - 39 * 25.4)
+    # edge margin is subtracted in the same inch-space as the slot
+    assert _machine_y(39, 2000.0, 1.5) == pytest.approx(2000.0 - (39 + 1.5) * 25.4)
+
+
 # --- toolpath_rect ---
 
 def test_toolpath_rect_a_rail_same_as_blank_when_extents_equal():
     part = make_part(100, 100, 0, 100, 0, 100)
     p = placed(part, "A", 39)
 
-    br = blank_rect(p, RAIL_W, BED_X)
-    tr = toolpath_rect(p, RAIL_W, BED_X)
+    br = blank_rect(p, RAIL_W, BED_X, BED_Y)
+    tr = toolpath_rect(p, RAIL_W, BED_X, BED_Y)
     assert tr == br
 
 
@@ -87,7 +113,7 @@ def test_toolpath_rect_a_rail_extents_beyond_blank():
     # min_vy=-10,max_vy=110 → machine X: min_x=RAIL_W-10, max_x=RAIL_W+110
     part = make_part(100, 100, -10, 110, -10, 110)
     p = placed(part, "A", 39)
-    tr = toolpath_rect(p, RAIL_W, BED_X)
+    tr = toolpath_rect(p, RAIL_W, BED_X, BED_Y)
 
     machine_y = (120 - 39) * 25.4
     assert tr.min_x == pytest.approx(RAIL_W - 10)
@@ -105,7 +131,7 @@ def test_toolpath_rect_b_rail_rotation():
     # machine Y: min_y = my + min_vx = my, max_y = my + max_vx = my+100
     part = make_part(100, 100, 0, 100, 0, 110)
     p = placed(part, "B", 39)
-    tr = toolpath_rect(p, RAIL_W, BED_X)
+    tr = toolpath_rect(p, RAIL_W, BED_X, BED_Y)
 
     machine_y = (120 - 39) * 25.4
     far_x = BED_X - RAIL_W  # 1441.45
@@ -121,7 +147,7 @@ def test_toolpath_rect_b_rail_x_rotation():
     # machine Y: min_y = my + min_vx = my, max_y = my + max_vx = my + 110
     part = make_part(100, 100, 0, 110, 0, 100)
     p = placed(part, "B", 39)
-    tr = toolpath_rect(p, RAIL_W, BED_X)
+    tr = toolpath_rect(p, RAIL_W, BED_X, BED_Y)
 
     machine_y = (120 - 39) * 25.4
     assert tr.min_y == pytest.approx(machine_y)       # my + min_vx (0)
@@ -177,7 +203,7 @@ def test_spec_example_b_rail_notch_position():
 
 
 def _machine_y(slot_inches):
-    return (120.0 - slot_inches) * 25.4
+    return BED_Y - slot_inches * 25.4
 
 
 # --- rects_overlap ---
@@ -227,7 +253,7 @@ def test_rects_overlap_contained():
 def test_no_collision_when_no_existing_parts():
     part = make_part(100, 100, 0, 100, 0, 100)
     p = placed(part, "A", 39)
-    result = check_placement(p, [], RAIL_W, BED_X)
+    result = check_placement(p, [], RAIL_W, BED_X, BED_Y)
     assert not result.collides
 
 
@@ -237,7 +263,7 @@ def test_no_collision_parts_far_apart():
     existing = [placed(part_a, "A", 0, "i1")]
     new = placed(part_b, "A", 117, "i2")
 
-    result = check_placement(new, existing, RAIL_W, BED_X)
+    result = check_placement(new, existing, RAIL_W, BED_X, BED_Y)
     assert not result.collides
 
 
@@ -264,7 +290,7 @@ def test_collision_new_toolpath_into_existing_blank():
     existing = [placed(part_a, "A", 39, "i1")]
     new = placed(part_b, "A", 52, "i2")
 
-    result = check_placement(new, existing, RAIL_W, BED_X)
+    result = check_placement(new, existing, RAIL_W, BED_X, BED_Y)
     assert result.collides
     assert result.conflicting_instance_id == "i1"
     assert "b.nc" in result.message
@@ -279,7 +305,7 @@ def test_collision_existing_toolpath_into_new_blank():
     existing = [placed(part_existing, "A", 52, "i1")]
     new = placed(part_new, "A", 39, "i2")
 
-    result = check_placement(new, existing, RAIL_W, BED_X)
+    result = check_placement(new, existing, RAIL_W, BED_X, BED_Y)
     assert result.collides
     assert "existing.nc" in result.message
 
@@ -300,7 +326,7 @@ def test_no_collision_toolpath_vs_toolpath():
     existing = [placed(part_a, "A", 39, "i1")]
     new = placed(part_b, "A", 52, "i2")
 
-    result = check_placement(new, existing, RAIL_W, BED_X)
+    result = check_placement(new, existing, RAIL_W, BED_X, BED_Y)
     assert not result.collides
 
 
@@ -310,7 +336,7 @@ def test_no_collision_a_and_b_rail_same_slot():
     existing = [placed(part, "A", 39, "i1")]
     new = placed(part, "B", 39, "i2")
 
-    result = check_placement(new, existing, RAIL_W, BED_X)
+    result = check_placement(new, existing, RAIL_W, BED_X, BED_Y)
     assert not result.collides
 
 
@@ -322,7 +348,7 @@ def test_collision_message_contains_slot_labels():
     existing = [placed(part_a, "A", 52, "i1")]
     new = placed(part_b, "A", 39, "i2")
 
-    result = check_placement(new, existing, RAIL_W, BED_X)
+    result = check_placement(new, existing, RAIL_W, BED_X, BED_Y)
     assert "A39" in result.message
     assert "A52" in result.message
 
@@ -332,8 +358,8 @@ def test_collision_message_contains_slot_labels():
 def test_toolpath_rect_expands_by_tool_radius():
     part = make_part(100, 100, 0, 100, 0, 100)
     p = placed(part, "A", 39)
-    base = toolpath_rect(p, RAIL_W, BED_X, tool_radius_mm=0.0)
-    expanded = toolpath_rect(p, RAIL_W, BED_X, tool_radius_mm=10.0)
+    base = toolpath_rect(p, RAIL_W, BED_X, BED_Y, tool_radius_mm=0.0)
+    expanded = toolpath_rect(p, RAIL_W, BED_X, BED_Y, tool_radius_mm=10.0)
     assert expanded.min_x == pytest.approx(base.min_x - 10.0)
     assert expanded.max_x == pytest.approx(base.max_x + 10.0)
     assert expanded.min_y == pytest.approx(base.min_y - 10.0)
@@ -351,7 +377,7 @@ def test_check_placement_catches_tool_radius_collision():
                        tools={"T2": {"description": "End Mill", "diameter_inches": 1.0}})
 
     result = check_placement(placed(part_b, "A", 39, "i2"),
-                             [placed(part_a, "A", 26, "i1")], RAIL_W, BED_X)
+                             [placed(part_a, "A", 26, "i1")], RAIL_W, BED_X, BED_Y)
     assert result.collides
     assert "T2" in result.message
 
@@ -365,5 +391,5 @@ def test_check_placement_passes_when_radius_fits_in_gap():
                        tools={"T2": {"description": "End Mill", "diameter_inches": 0.25}})
 
     result = check_placement(placed(part_b, "A", 39, "i2"),
-                             [placed(part_a, "A", 26, "i1")], RAIL_W, BED_X)
+                             [placed(part_a, "A", 26, "i1")], RAIL_W, BED_X, BED_Y)
     assert not result.collides

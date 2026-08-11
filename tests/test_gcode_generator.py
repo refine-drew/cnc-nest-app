@@ -24,6 +24,7 @@ from gcode_generator import (
 
 RAIL_W = 82.55
 BED_X = 1524.0
+BED_Y = 3048.0
 
 SETTINGS = {
     "job_name": "test_job",
@@ -289,7 +290,7 @@ def test_transform_a_rail_z_unchanged():
 
 def test_transform_params_a_rail():
     p = _placed(SINGLE_T2, "A", 39)
-    params = _transform_params(p, RAIL_W, BED_X)
+    params = _transform_params(p, RAIL_W, BED_X, BED_Y)
     slot_mark = (120 - 39) * 25.4
     assert params["b_x"] is True
     assert params["b_y"] is False
@@ -299,12 +300,33 @@ def test_transform_params_a_rail():
 
 def test_transform_params_b_rail():
     p = _placed(SINGLE_T2, "B", 39)
-    params = _transform_params(p, RAIL_W, BED_X)
+    params = _transform_params(p, RAIL_W, BED_X, BED_Y)
     slot_mark = (120 - 39) * 25.4
     assert params["b_x"] is False
     assert params["b_y"] is True
     assert params["x"] == pytest.approx(slot_mark)
     assert params["y"] == pytest.approx(BED_X - RAIL_W)
+
+
+def test_transform_params_honors_non_default_bed_y():
+    """slot_mark must be measured from the configured bed length, not a hardcoded 120"."""
+    for rail in ("A", "B"):
+        p = _placed(SINGLE_T2, rail, 39)
+        short = _transform_params(p, RAIL_W, BED_X, 2000.0)
+        assert short["x"] == pytest.approx(2000.0 - 39 * 25.4)
+        assert short["x"] != pytest.approx(_transform_params(p, RAIL_W, BED_X, BED_Y)["x"])
+
+
+def test_generate_honors_non_default_bed_y():
+    """End-to-end: a shorter bed_y_mm must shift the emitted cut coordinates."""
+    p = _placed(SINGLE_T2, "A", 39)
+    short_settings = {
+        **SETTINGS,
+        "advanced": {**SETTINGS["advanced"], "bed_y_mm": 2000.0},
+    }
+    default_out = generate_master_gcode([p], SETTINGS)
+    short_out = generate_master_gcode([p], short_settings)
+    assert default_out != short_out
 
 
 # ── _nearest_neighbor_sort ────────────────────────────────────────────────────
@@ -552,7 +574,7 @@ def test_no_placements_produces_header_and_park():
 def test_build_blocks_merges_same_tool():
     p1 = _placed(SINGLE_T2, "A", 39, "i1")
     p2 = _placed(SINGLE_T2, "A", 26, "i2")
-    blocks = _build_blocks([p1, p2], RAIL_W, BED_X)
+    blocks = _build_blocks([p1, p2], RAIL_W, BED_X, BED_Y)
     assert len(blocks) == 1
     assert blocks[0]["tool"] == "T2"
     assert len(blocks[0]["segments"]) == 2
@@ -561,7 +583,7 @@ def test_build_blocks_merges_same_tool():
 def test_build_blocks_two_passes():
     p1 = _placed(TWO_PASS_T2_T4, "A", 39, "i1")
     p2 = _placed(TWO_PASS_T2_T4, "A", 26, "i2")
-    blocks = _build_blocks([p1, p2], RAIL_W, BED_X)
+    blocks = _build_blocks([p1, p2], RAIL_W, BED_X, BED_Y)
     assert len(blocks) == 2
     assert blocks[0]["tool"] == "T2"
     assert blocks[1]["tool"] == "T4"

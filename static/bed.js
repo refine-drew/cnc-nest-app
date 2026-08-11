@@ -282,8 +282,9 @@ var BedCanvas = (() => {
     ctx.font = "9px system-ui";
     ctx.textAlign = "center";
 
-    for (let op = 0; op <= 120; op += 10) {
-      const machY = (120 - op) * 25.4;
+    const bedInches = BED_Y_MM / 25.4;
+    for (let op = 0; op <= bedInches; op += 10) {
+      const machY = BED_Y_MM - op * 25.4;
       const cx = toCanvas(0, machY).x;
       const isMajor = op % 20 === 0;
       const tickH = isMajor ? 8 : 4;
@@ -443,7 +444,7 @@ var BedCanvas = (() => {
     // Highlight target slot
     if (hoverSlot) {
       const { rail: hr, slot_inches } = hoverSlot;
-      const machY = (120 - slot_inches - EDGE_MARGIN_IN) * 25.4;
+      const machY = BED_Y_MM - (slot_inches + EDGE_MARGIN_IN) * 25.4;
       const slotMachX = hr === "A" ? RAIL_W : BED_X_MM - RAIL_W;
       const pos = toCanvas(slotMachX, machY);
       ctx.strokeStyle = hr === "A" ? "#4dabf7" : "#30d158";

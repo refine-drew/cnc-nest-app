@@ -31,15 +31,15 @@ def slot_label(rail: str, slot_inches: float) -> str:
     return f"{rail}{n}"
 
 
-def _machine_y(slot_inches: float, edge_margin_in: float = 0.0) -> float:
-    return (120.0 - slot_inches - edge_margin_in) * 25.4
+def _machine_y(slot_inches: float, bed_y_mm: float, edge_margin_in: float = 0.0) -> float:
+    return bed_y_mm - (slot_inches + edge_margin_in) * 25.4
 
 
 def blank_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float,
-               edge_margin_in: float = 0.0) -> Rect:
+               bed_y_mm: float, edge_margin_in: float = 0.0) -> Rect:
     """Blank boundary in machine coordinates."""
     p = placed.part
-    my = _machine_y(placed.slot_inches, edge_margin_in)
+    my = _machine_y(placed.slot_inches, bed_y_mm, edge_margin_in)
     if placed.rail == "A":
         # vcarve_y_span = dim across bed = machine X extent
         # vcarve_x_span = dim along rail = machine Y extent
@@ -61,7 +61,8 @@ def blank_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float,
 
 
 def toolpath_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float,
-                  tool_radius_mm: float = 0.0, edge_margin_in: float = 0.0) -> Rect:
+                  bed_y_mm: float, tool_radius_mm: float = 0.0,
+                  edge_margin_in: float = 0.0) -> Rect:
     """
     Toolpath extents in machine coordinates, optionally expanded by tool_radius_mm
     on all four sides to account for the physical width of the cutter.
@@ -70,7 +71,7 @@ def toolpath_rect(placed: PlacedPart, rail_width_mm: float, bed_x_mm: float,
     B rail: machX = (bed_x-rail_w) - vcarve_Y,  machY = slot_mark + vcarve_X
     """
     p = placed.part
-    my = _machine_y(placed.slot_inches, edge_margin_in)
+    my = _machine_y(placed.slot_inches, bed_y_mm, edge_margin_in)
     if placed.rail == "A":
         r = Rect(
             min_x=rail_width_mm + p.min_vy,
@@ -131,6 +132,7 @@ def check_placement(
     existing: List[PlacedPart],
     rail_width_mm: float,
     bed_x_mm: float,
+    bed_y_mm: float,
     edge_margin_in: float = 0.0,
 ) -> CollisionResult:
     """
@@ -147,15 +149,15 @@ def check_placement(
     """
     new_radius = _max_tool_radius(new_placed)
     new_tool_str = _largest_tool_str(new_placed)
-    new_tp = toolpath_rect(new_placed, rail_width_mm, bed_x_mm, new_radius, edge_margin_in)
-    new_blank = blank_rect(new_placed, rail_width_mm, bed_x_mm, edge_margin_in)
+    new_tp = toolpath_rect(new_placed, rail_width_mm, bed_x_mm, bed_y_mm, new_radius, edge_margin_in)
+    new_blank = blank_rect(new_placed, rail_width_mm, bed_x_mm, bed_y_mm, edge_margin_in)
     new_slot = slot_label(new_placed.rail, new_placed.slot_inches)
 
     for placed in existing:
         ex_radius = _max_tool_radius(placed)
         ex_tool_str = _largest_tool_str(placed)
-        ex_tp = toolpath_rect(placed, rail_width_mm, bed_x_mm, ex_radius, edge_margin_in)
-        ex_blank = blank_rect(placed, rail_width_mm, bed_x_mm, edge_margin_in)
+        ex_tp = toolpath_rect(placed, rail_width_mm, bed_x_mm, bed_y_mm, ex_radius, edge_margin_in)
+        ex_blank = blank_rect(placed, rail_width_mm, bed_x_mm, bed_y_mm, edge_margin_in)
         ex_slot = slot_label(placed.rail, placed.slot_inches)
 
         if rects_overlap(new_tp, ex_blank):

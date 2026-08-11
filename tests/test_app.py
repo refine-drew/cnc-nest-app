@@ -81,6 +81,20 @@ def test_slots_machine_y_calculation(client):
     assert slots[39]["machine_y"] == pytest.approx(2019.3)
 
 
+def test_slots_machine_y_honors_bed_y_config(client):
+    """/api/slots must measure from configured bed_y_mm, not a hardcoded 120"."""
+    adv = app_module.config["advanced"]
+    original = adv["bed_y_mm"]
+    try:
+        adv["bed_y_mm"] = 2000.0
+        slots = {s["inches"]: s for s in client.get("/api/slots").get_json()["slots"]}
+        margin = adv.get("slot_edge_margin_in", 1.5)
+        assert slots[0]["machine_y"] == pytest.approx(2000.0 - margin * 25.4)
+        assert slots[39]["machine_y"] == pytest.approx(2000.0 - (39 + margin) * 25.4)
+    finally:
+        adv["bed_y_mm"] = original
+
+
 def test_slots_pitch_labels(client):
     r = client.get("/api/slots")
     slots = {s["inches"]: s for s in r.get_json()["slots"]}

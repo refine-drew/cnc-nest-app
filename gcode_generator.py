@@ -39,6 +39,7 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
     adv = settings["advanced"]
     rail_w = float(adv["rail_width_mm"])
     bed_x = float(adv["bed_x_mm"])
+    bed_y = float(adv["bed_y_mm"])
     edge_margin_in = float(adv.get("slot_edge_margin_in", 0.0))
     park_x = float(adv.get("park_x", 0.0))
     park_y = float(adv.get("park_y", 3048.0))
@@ -78,7 +79,7 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
     ]
 
     # ── tool blocks ───────────────────────────────────────────────────────────
-    blocks = _build_blocks(placements, rail_w, bed_x, edge_margin_in)
+    blocks = _build_blocks(placements, rail_w, bed_x, bed_y, edge_margin_in)
 
     for block_num, block in enumerate(blocks, start=1):
         tool = block["tool"]
@@ -128,7 +129,7 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
 # ── block building ────────────────────────────────────────────────────────────
 
 def _build_blocks(placements: List[PlacedPart], rail_w: float, bed_x: float,
-                  edge_margin_in: float = 0.0) -> list:
+                  bed_y: float, edge_margin_in: float = 0.0) -> list:
     """
     Produce an ordered list of tool blocks from all placements.
 
@@ -159,7 +160,7 @@ def _build_blocks(placements: List[PlacedPart], rail_w: float, bed_x: float,
                 if spd:
                     spindle_speed = spd
                 body = _extract_body(raw_lines)
-                params = _transform_params(placed, rail_w, bed_x, edge_margin_in)
+                params = _transform_params(placed, rail_w, bed_x, bed_y, edge_margin_in)
                 segs.append([_transform_line(ln, params) for ln in body])
 
             if blocks and blocks[-1]["tool"] == tool:
@@ -247,7 +248,7 @@ def _extract_body(lines: List[str]) -> List[str]:
 # ── coordinate transformation ─────────────────────────────────────────────────
 
 def _transform_params(placed: PlacedPart, rail_w: float, bed_x: float,
-                      edge_margin_in: float = 0.0) -> dict:
+                      bed_y: float, edge_margin_in: float = 0.0) -> dict:
     """
     Pre-compute per-placement transform constants.
 
@@ -267,7 +268,7 @@ def _transform_params(placed: PlacedPart, rail_w: float, bed_x: float,
       output_X = slot_mark + vcarve_X        (G-code X = machine Y, additive)
       output_Y = (bed_x - rail_w) - vcarve_Y (G-code Y = machine X, reversed)
     """
-    slot_mark = (120.0 - placed.slot_inches - edge_margin_in) * 25.4
+    slot_mark = bed_y - (placed.slot_inches + edge_margin_in) * 25.4
     if placed.rail == "A":
         return {"b_x": True,  "x": slot_mark,
                 "b_y": False, "y": rail_w}
