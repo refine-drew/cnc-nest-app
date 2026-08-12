@@ -46,8 +46,15 @@ MM_PER_IN = 25.4
 #   slot_dir   +1 if increasing slot number moves toward machine Y max, else -1
 #   x_dir      +1 if the blank extends from x_mm toward machine X max, else -1
 #
-# Values below are measured from the machine (A0/B0 corner+slot-edge readouts,
-# 13" pitch confirmed via B0→B13 = 330.200 mm).
+# Every value below is measured from the machine — X to the rail corner, Y to the
+# slot edge — at two slots per rail, so both the datum and the direction are
+# observed rather than assumed:
+#
+#     A0 (134.628, 3034.700)    A13 (134.628, 2704.500)   -> -330.200 mm/13"
+#     B0 (1534.160,   88.300)   B13 (1534.160,  418.500)  -> +330.200 mm/13"
+#
+# tests/test_collision.py::test_rail_defaults_match_measured_machine_positions
+# pins these four readouts; re-measure and update both together.
 RAIL_DEFAULTS = {
     "A": {"x_mm":  134.628, "slot0_y_mm": 3034.700, "slot_dir": -1, "x_dir":  1},
     "B": {"x_mm": 1534.160, "slot0_y_mm":   88.300, "slot_dir":  1, "x_dir": -1},

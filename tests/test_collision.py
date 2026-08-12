@@ -73,6 +73,49 @@ def test_blank_rect_b_rail():
     assert r.max_y == pytest.approx(my + 100)
 
 
+# Ground truth read off the machine: X to the rail corner, Y to the slot edge.
+# Two slots per rail, so direction is observed and not inferred.
+MEASURED = {
+    ("A", 0):  (134.628, 3034.700),
+    ("A", 13): (134.628, 2704.500),
+    ("B", 0):  (1534.160,  88.300),
+    ("B", 13): (1534.160,  418.500),
+}
+
+
+def test_rail_defaults_match_measured_machine_positions():
+    """The calibration anchor: RAIL_DEFAULTS must reproduce every measured point.
+
+    If someone edits RAIL_DEFAULTS without re-measuring, this fails. Keep it in
+    step with the readout table in collision.py.
+    """
+    for (rail, slot), (mx, my) in MEASURED.items():
+        assert rail_geom(rail)["x_mm"] == pytest.approx(mx, abs=1e-3), f"{rail}{slot} X"
+        assert slot_mark_y(rail, slot) == pytest.approx(my, abs=1e-3), f"{rail}{slot} Y"
+
+
+def test_measured_pitch_is_exactly_13_inches_each_way():
+    """Both rails step 13" per 13 slot-inches, in opposite directions."""
+    a = MEASURED[("A", 13)][1] - MEASURED[("A", 0)][1]
+    b = MEASURED[("B", 13)][1] - MEASURED[("B", 0)][1]
+    assert a / 25.4 == pytest.approx(-13.0)
+    assert b / 25.4 == pytest.approx(+13.0)
+    assert a == pytest.approx(-b)
+
+
+def test_rails_are_antisymmetric_about_bed_centre():
+    """A_Y(slot) + B_Y(slot) is constant — the rails mirror about one Y centre.
+
+    Verified at two independent slots, so this is a real property of the machine
+    rather than an artifact of fitting a single point pair. It is what justifies
+    the provisional bed_y_mm; it does NOT by itself measure the table length.
+    """
+    total = MEASURED[("A", 0)][1] + MEASURED[("B", 0)][1]
+    assert MEASURED[("A", 13)][1] + MEASURED[("B", 13)][1] == pytest.approx(total)
+    for slot in (19.5, 39, 78, 117):
+        assert slot_mark_y("A", slot) + slot_mark_y("B", slot) == pytest.approx(total)
+
+
 def test_rails_run_in_opposite_directions():
     """The measured SS2 geometry: slot numbers count up toward +Y on B, -Y on A.
 

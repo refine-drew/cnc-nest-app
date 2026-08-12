@@ -70,7 +70,19 @@ The A and B rails are **independent fixturing systems** at opposite ends of the
 machine, loaded separately by the operator. They are not two views of one formula:
 measured on the SS2, slot numbers count toward machine Y **max** on B and toward
 Y **min** on A. Each rail therefore carries its own datum and directions in
-`collision.RAIL_DEFAULTS` (overridable per rail via `config.advanced.rails`):
+`collision.RAIL_DEFAULTS` (overridable per rail via `config.advanced.rails`).
+
+The defaults come from four machine readouts — X to the rail corner, Y to the slot
+edge, two slots per rail so each direction is observed rather than assumed:
+
+```
+A0 (134.628, 3034.700)   A13 (134.628, 2704.500)   -> -330.200 mm per 13"
+B0 (1534.160,   88.300)  B13 (1534.160,  418.500)  -> +330.200 mm per 13"
+```
+
+`tests/test_collision.py::test_rail_defaults_match_measured_machine_positions`
+pins those readouts. Re-measure and update the test, the comment in
+`collision.py`, and `config.json` together.
 
 | key | meaning |
 |---|---|
@@ -95,9 +107,12 @@ crash a cutter. (`bed.js` gets the resolved geometry from `/api/slots`; placemen
 blanks arrive pre-computed as `placement.blank` so the canvas never recomputes them.)
 
 Slot positions are deliberately **independent of `bed_x_mm` / `bed_y_mm`**, which
-now only drive canvas/PDF extents and the utilization figure. Those two are
-currently provisional — derived by assuming the rails are 180°-symmetric, not
-measured — and should be replaced with real table dimensions.
+now only drive canvas/PDF extents and the utilization figure. Those two are still
+**provisional**: the readouts confirm the rails are antisymmetric about
+Y = 1561.5 (`A_Y(slot) + B_Y(slot) = 3123.0` at every slot), but that fixes the
+rails' shared centre, not the table's extent. Treating the centre as the bed centre
+is what yields 1668.788 × 3123.0. Replace both with real table dimensions when
+available; nothing in the cut path depends on them.
 
 Collision detection compares **both rails against each other**, not just parts
 sharing a rail: everything is in machine coordinates. The rail datums are 1399.5 mm
