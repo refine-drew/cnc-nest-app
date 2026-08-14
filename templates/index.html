@@ -155,14 +155,10 @@ table.audit td.feed-varies{color:#ffd60a}
 <!-- ── top bar ── -->
 <div id="topbar">
   <span class="title">CNC Nest Tool</span>
-  <div class="sep"></div>
+  <div style="flex:1"></div>
   <label style="font-size:11px;color:#888;margin-right:2px">Job:</label>
   <input type="text" id="job-name-input" placeholder="auto" style="width:160px"/>
-  <div style="flex:1"></div>
   <button id="btn-generate" class="primary" disabled>Generate G-code</button>
-  <div class="sep"></div>
-  <button id="btn-save" disabled>Save Job</button>
-  <button id="btn-load">Load Job</button>
   <div class="sep"></div>
   <button id="btn-audit" title="Audit all library files for best-practice issues">Audit Library</button>
   <button id="btn-settings" title="Settings">⚙</button>
@@ -344,7 +340,6 @@ function _updateTopButtons() {
   const hasPlaced = App.placements.length > 0;
   const noConflict = !App.compatibility.has_conflict;
   document.getElementById("btn-generate").disabled = !(hasPlaced && noConflict);
-  document.getElementById("btn-save").disabled = !hasPlaced;
 }
 
 function _set(id, val) {

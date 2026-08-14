@@ -33,7 +33,8 @@ No build step, linter, or type checker is configured.
 - `_loaded`: dict of parsed parts (filename → `GcodePart`)
 - `_placements`: dict of placed parts (placement ID → placement dict with rail, slot, transforms)
 - `_instance_counts`: tracks how many times each part has been placed (for unique IDs)
-- Key API routes: `/api/load-library`, `/api/place`, `/api/remove-placement`, `/api/generate`, `/api/save-job`, `/api/load-job`
+- Key API routes: `/api/load-library`, `/api/place`, `/api/remove-placement`, `/api/generate`
+- `/api/save-job` and `/api/load-job` still exist (and are still tested) but have no GUI — the Save/Load Job buttons were removed as unused. Nothing in the app calls them.
 
 **`gcode_parser.py`** — parses `.nc`/`.mmg` VCarve G-code files into `GcodePart` dataclasses. Extracts blank dimensions, material thickness, tool info, XYZ bounding boxes per pass, and validates Z depths.
 
@@ -52,7 +53,7 @@ No framework, no bundler. Files in `/static/`:
 - **`bed.js`** — HTML5 Canvas renderer. Draws the bed, rails, slots, placed parts with color coding, and ghost preview during drag. This is the largest and most complex frontend file.
 - **`sidebar.js`** — library tree (left) and placement tray (right) UI
 - **`placement.js`** — drag-and-drop placement logic, communicates with `/api/place`
-- **`job.js`** — save/load job state (`.cnj` JSON format)
+- **`job.js`** — the Generate G-code button
 - **`config.js`** — settings panel, reads/writes `/api/config`
 
 ### Data Flow
@@ -60,7 +61,9 @@ No framework, no bundler. Files in `/static/`:
 1. User picks library folder → `/api/load-library` → `gcode_parser` → populates `_loaded` → sidebar tree
 2. User drags part to bed slot → `/api/place` → `collision.py` validates → adds to `_placements` → bed canvas redraws
 3. User clicks Generate → `/api/generate` → `gcode_generator` merges all `_placements` → writes `.nc` + `.txt` report
-4. Save/load state persists `_placements` + `_loaded` as a `.cnj` JSON file
+
+Placements live only in memory for the life of the server process; there is no
+GUI path to persist or restore a layout.
 
 ### Coordinate Systems
 
