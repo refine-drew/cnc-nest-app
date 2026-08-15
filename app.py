@@ -23,6 +23,7 @@ from config import (
 )
 from gcode_generator import generate_master_gcode
 from gcode_parser import GcodePart, parse_vcarve_text
+from gcode_validator import format_findings, validate_gcode
 from pdf_report import generate_layout_pdf, palette_color as pdf_palette_color
 from runtime_estimator import estimate_lines_runtime, format_duration
 from tool_library import ToolLibrary
@@ -554,7 +555,8 @@ def api_place():
     instance_id = _make_instance_id(part.filename)
     new_placed = PlacedPart(part=part, rail=rail, slot_inches=slot_inches, instance_id=instance_id)
 
-    result = check_placement(new_placed, list(_placements.values()), _rails())
+    result = check_placement(new_placed, list(_placements.values()),
+                             _rails(), config["advanced"])
     if result.collides:
         # Roll back the instance counter
         stem = os.path.splitext(part.filename)[0]
@@ -663,11 +665,32 @@ def api_generate():
     except Exception as e:
         return jsonify({"error": f"Generation failed: {e}"}), 500
 
+    # Validate before anything reaches the disk. The validator re-derives the
+    # file's modal state from the emitted text rather than reusing the
+    # generator's, so it can catch the generator being wrong. A file with a hard
+    # finding is never written — the operator cannot run what does not exist.
+    findings = validate_gcode(gcode, config["advanced"])
+    errors = [f for f in findings if f.severity == "error"]
+    warnings = [f for f in findings if f.severity == "warning"]
+    if errors:
+        return jsonify({
+            "error": "validation_failed",
+            "message": (
+                f"Generated G-code failed {len(errors)} safety check(s) and was not "
+                "written. This is a defect in the nest tool, not in your layout — "
+                "send the details below to whoever maintains it."
+            ),
+            "findings": [str(f) for f in errors],
+        }), 422
+
     out = _output_dir()
     nc_path = out / f"{job_name}.nc"
     pdf_path = out / f"{job_name}.pdf"
 
     nc_path.write_text(gcode, encoding="utf-8")
+    if findings:
+        (out / f"{job_name}_validation.txt").write_text(
+            format_findings(findings), encoding="utf-8")
     try:
         meta, parts, geom = _build_pdf_model(job_name, settings, gcode)
         generate_layout_pdf(pdf_path, meta, parts, geom)
@@ -675,7 +698,8 @@ def api_generate():
         return jsonify({"error": f"PDF generation failed: {e}"}), 500
 
     return jsonify({"ok": True, "job_name": job_name,
-                    "nc_path": str(nc_path), "pdf_path": str(pdf_path)})
+                    "nc_path": str(nc_path), "pdf_path": str(pdf_path),
+                    "warnings": [str(f) for f in warnings]})
 
 
 @app.route("/api/audit")

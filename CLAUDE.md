@@ -42,6 +42,18 @@ No build step, linter, or type checker is configured.
 
 **`gcode_generator.py`** — merges placed parts into a single master G-code. Walks tool passes in order-of-operations sequence (all T1 cuts across all parts, then all T2, etc.), applies coordinate transforms matching `collision.py`, and uses nearest-neighbor sorting to minimize rapid travel.
 
+**`gcode_validator.py`** — gates `/api/generate`. Re-derives the emitted file's
+modal state by reading it block by block, the way the control does, and reports
+`Finding`s at two severities. **It deliberately shares no state with
+`gcode_generator`** — the point is to catch the generator being wrong, which a
+checker built from the generator's own bookkeeping cannot do. An `ERROR` means
+the file is never written; a `WARNING` lands in `<job>_validation.txt` beside the
+output. The split follows what a check can prove: a G49 cutting move is wrong
+under every reading, a straight-down plunge may be exactly what was intended.
+`G71` is correct for Syntec (the one documented deviation from Fanuc 0M) and must
+never be "fixed" to `G21`. The three files from the 2026-08-15 output review are
+pinned as fixtures in `tests/test_gcode_validator.py`.
+
 **`tool_library.py`** — simple tool registry. Resolves tool diameters from file headers or user-supplied overrides.
 
 **`config.py`** — loads/saves `config.json`. Config defines library paths (a list of candidates; the first that exists locally wins), output path, tool definitions, bed dimensions, per-rail geometry (`advanced.rails` — see Coordinate Systems), `tool_capacity` (generation is blocked above it), fence-origin offsets, safe Z, and slot positions.
@@ -116,6 +128,66 @@ Y = 1561.5 (`A_Y(slot) + B_Y(slot) = 3123.0` at every slot), but that fixes the
 rails' shared centre, not the table's extent. Treating the centre as the bed centre
 is what yields 1668.788 × 3123.0. Replace both with real table dimensions when
 available; nothing in the cut path depends on them.
+
+#### Machine envelope
+
+Separate from `bed_x_mm`/`bed_y_mm`: `advanced.machine_travel` holds the **axis
+travel limits** and `advanced.edge_margin_in` the keep-out from them.
+`collision.check_envelope` rejects a placement whose footprint — the toolpath
+**inflated by the part's largest tool radius** — crosses `limit − margin`.
+
+The inflation is the point. Programmed coordinates are **tool centre** with no
+cutter comp (`G40`, computer-compensated toolpaths), so the cutting edge stands
+one radius outside every number in the file.
+
+**No limit is measured yet, so all six ship as `null` and the check is dormant**
+— an axis with `null` limits is skipped. Issue #19 tracks measuring them.
+
+Do not infer them from the park block again. Its `G00 G53 X0 Y3048` is the only
+machine-frame coordinate in the output, and reading those two numbers as limits
+was wrong twice over. `Y 3048` is a position the machine *reaches*, which bounds
+travel from below rather than fixing it; it is also exactly 120.000", the
+nominal bed length. Real Y travel runs well past it — the tool changer sits
+beyond that end of the rail. Asserting 3048 put **A slot 0** (datum Y 3034.700,
+13.3 mm short of it) inside the edge margin and made the slot unusable, which is
+what `test_a_slot_zero_is_usable_with_the_shipped_config` now guards. `X 0 →
+1524` contradicts the measured B rail corner at 1534.160 that every B-rail part
+cuts inboard from.
+
+Guessing is harmful both ways: too tight rejects placements that cut fine today,
+too loose licenses a real overtravel. Fill in `advanced.machine_travel` from the
+machine and each axis starts checking itself.
+
+`_max_tool_radius` reads `part.tools[...]["diameter_inches"]` straight from the
+parsed file, not the resolved `ToolLibrary`. The Fusion post writes `(T2 D=12.7
+… )` rather than `{0.5 inches}`, so those files parse to diameter 0 and both the
+envelope check and the existing tool-radius collision check under-inflate them.
+
+#### Arc planes
+
+The X↔Y swap moves arcs between the two vertical planes, so the **plane word is
+part of the transform**, not a passenger. VCarve emits lead-in/lead-out ramps as
+vertical arcs — G19 (file YZ) when the ramp runs along file Y, G18 (file XZ) when
+along file X — and every one of them must be rewritten:
+
+| file | machine | offsets |
+|---|---|---|
+| G17 (XY) | G17 | I↔J swap |
+| G18 (XZ) | **G19** (YZ) | I→J, K unchanged |
+| G19 (YZ) | **G18** (XZ) | J→I, K unchanged |
+
+Arc direction follows the plane's **normal** axis, not its in-plane axes — an arc
+reverses only when its normal reverses. Since the normal is an axial vector it
+also picks up det(Jacobian). That is why the rails disagree per plane: G17 never
+flips on either rail, G19 flips on A only, G18 flips on B only. Emitting a file
+`G19` unchanged next to a swapped `X` word is an illegal block; the control
+alarms mid-cut (it did, on 2026-08-14).
+
+`gcode_generator._transform_body` tracks the modal plane across a pass and
+restores G17 at the end of any body that leaves it vertical, so the travel sort
+is free to reorder segments. `gcode_parser.extract_file_segments` tracks it too:
+a G18/G19 arc's footprint is the straight lateral line, and flattening it as an
+XY arc invents a bulge the cutter never makes.
 
 Collision detection compares **both rails against each other**, not just parts
 sharing a rail: everything is in machine coordinates. The rail datums are 1399.5 mm

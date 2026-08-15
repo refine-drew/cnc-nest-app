@@ -16,9 +16,17 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       const data = await r.json();
       if (data.ok) {
-        App.setMessage(`Saved: ${data.nc_path} (+ layout PDF)`, false);
+        const warned = (data.warnings || []).length;
+        App.setMessage(
+          `Saved: ${data.nc_path} (+ layout PDF)` +
+            (warned ? ` — ${warned} check(s) flagged for review, see ${data.job_name}_validation.txt` : ""),
+          false,
+        );
       } else {
-        App.setMessage(data.error || "Generation failed", true);
+        // Prefer `message`: `error` is a slug like "validation_failed" and the
+        // people running this are operators, not developers.
+        App.setMessage(data.message || data.error || "Generation failed", true);
+        if (data.findings) console.error("Validation findings:", data.findings);
       }
     } catch (e) {
       App.setMessage("Generation failed: " + e.message, true);
