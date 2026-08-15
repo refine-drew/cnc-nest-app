@@ -28,7 +28,7 @@
   },
   "advanced": {
     "bed_x_mm": 1668.788,
-    "bed_y_mm": 3123.0,
+    "bed_y_mm": 3123,
     "rails": {
       "A": {
         "x_mm": 134.628,
@@ -43,8 +43,17 @@
         "x_dir": -1
       }
     },
+    "machine_travel": {
+      "x_min": null,
+      "x_max": null,
+      "y_min": null,
+      "y_max": null,
+      "z_min": null,
+      "z_max": null
+    },
+    "edge_margin_in": 0.5,
     "tool_capacity": 8,
-    "safe_z_clearance_mm": 30,
+    "safe_z_clearance_mm": 29.971999999999998,
     "park_x": 0.0,
     "park_y": 3048.0,
     "fence_offset_x_in": 0.0,

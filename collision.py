@@ -61,6 +61,65 @@ RAIL_DEFAULTS = {
 }
 
 
+# ── machine envelope ──────────────────────────────────────────────────────────
+#
+# Programmed coordinates are TOOL CENTRE with no cutter compensation — the posts
+# emit G40 and computer-compensated toolpaths — so the cutting edge stands one
+# tool radius outside every number in the file, and the gantry and dust boot are
+# wider still. The envelope check therefore compares the toolpath footprint
+# INFLATED by the part's largest tool radius against the travel limit pulled in
+# by an edge margin, and rejects at placement time rather than at the control.
+#
+# These are NOT bed_x_mm / bed_y_mm. Those drive canvas and PDF extents and the
+# utilisation figure only; these are the axis travel limits in machine
+# coordinates and they gate the cut path.
+#
+# NONE OF THESE LIMITS ARE MEASURED, so every one is None and the check is
+# dormant — an axis with None limits is skipped. See issue #19.
+#
+# The park block ends `G00 G53 X0 Y3048`, and the two numbers in it are the only
+# machine-frame coordinates anywhere in the output. Both were read as limits
+# once. Both readings were wrong:
+#
+#   Y 3048 is a position the machine REACHES, which makes it a lower bound on Y
+#   travel, not the limit. It is also exactly 120.000" — the nominal bed length,
+#   a design round number rather than an axis end. Real Y travel runs well past
+#   it, because the tool changer sits beyond that end of the rail. Asserting
+#   3048 as the limit put A rail slot 0 (datum Y 3034.700) inside the edge
+#   margin and made the slot unusable.
+#
+#   X 0 → 1524 (60") contradicts the measured B rail corner at X 1534.160, which
+#   every B-rail part cuts inboard from. The machine cannot both reach that
+#   corner and stop at 1524.
+#
+# Guessing is harmful in both directions: too tight rejects placements that cut
+# fine today, too loose licenses a real overtravel. Fill in
+# advanced.machine_travel once the limits are read off the machine and each axis
+# starts checking itself.
+TRAVEL_DEFAULTS = {
+    "x_min": None, "x_max": None,
+    "y_min": None, "y_max": None,
+    "z_min": None, "z_max": None,
+}
+
+EDGE_MARGIN_DEFAULT_IN = 0.5
+
+
+def travel_limits(advanced: Optional[dict] = None) -> dict:
+    """Axis travel limits in machine mm, with config overrides. None = unchecked."""
+    limits = dict(TRAVEL_DEFAULTS)
+    for key, val in ((advanced or {}).get("machine_travel") or {}).items():
+        if key in limits:
+            limits[key] = None if val is None else float(val)
+    return limits
+
+
+def edge_margin_mm(advanced: Optional[dict] = None) -> float:
+    """Keep-out from each travel limit, in mm."""
+    val = (advanced or {}).get("edge_margin_in")
+    return float(EDGE_MARGIN_DEFAULT_IN if val is None else val) * MM_PER_IN
+
+
 def rail_geom(rail: str, rails: Optional[dict] = None) -> dict:
     """Geometry for one rail, with any config overrides layered over the defaults."""
     if rail not in RAIL_DEFAULTS:
@@ -151,6 +210,52 @@ def _largest_tool_str(placed: PlacedPart) -> str:
     return f"{best_num} ({best_dia:.3g}\" dia) "
 
 
+def check_envelope(
+    placed: PlacedPart,
+    rails: Optional[dict] = None,
+    advanced: Optional[dict] = None,
+) -> CollisionResult:
+    """
+    Check one placement against the machine travel limits, less the edge margin.
+
+    The footprint measured is the toolpath inflated by the part's largest tool
+    radius, not the tool-centre extents: the file's numbers are tool centre, so
+    the cutting edge already stands a radius outside them.
+    """
+    limits = travel_limits(advanced)
+    margin = edge_margin_mm(advanced)
+    r = toolpath_rect(placed, rails, _max_tool_radius(placed))
+    slot = slot_label(placed.rail, placed.slot_inches)
+    tool = _largest_tool_str(placed) or "cutter "
+
+    for axis, lo_key, hi_key, reach_lo, reach_hi in (
+        ("X", "x_min", "x_max", r.min_x, r.max_x),
+        ("Y", "y_min", "y_max", r.min_y, r.max_y),
+    ):
+        lo, hi = limits[lo_key], limits[hi_key]
+        if lo is not None and reach_lo < lo + margin:
+            return _envelope_result(placed, slot, tool, axis, reach_lo, lo + margin, lo, margin)
+        if hi is not None and reach_hi > hi - margin:
+            return _envelope_result(placed, slot, tool, axis, reach_hi, hi - margin, hi, margin)
+
+    return CollisionResult(collides=False)
+
+
+def _envelope_result(placed: PlacedPart, slot: str, tool: str, axis: str,
+                     reach: float, keepout: float, limit: float,
+                     margin: float) -> CollisionResult:
+    return CollisionResult(
+        collides=True,
+        message=(
+            f"Cannot place {placed.part.filename} at slot {slot}: its {tool}"
+            f"would reach machine {axis} {reach:.1f} mm, past the safe limit of "
+            f"{keepout:.1f} mm. The machine stops at {axis} {limit:.1f} mm and this "
+            f"job keeps a {margin / MM_PER_IN:.2g}\" margin. "
+            "Move the part to a slot further from the end of the bed."
+        ),
+    )
+
+
 def rects_overlap(a: Rect, b: Rect) -> bool:
     """True when two rects share interior area. Touching edges are not a collision."""
     return not (
@@ -163,9 +268,14 @@ def check_placement(
     new_placed: PlacedPart,
     existing: List[PlacedPart],
     rails: Optional[dict] = None,
+    advanced: Optional[dict] = None,
 ) -> CollisionResult:
     """
-    Check whether new_placed collides with any already-placed part.
+    Check whether new_placed is legal: inside the machine envelope, and clear of
+    every already-placed part.
+
+    The envelope is checked first — a placement the machine cannot reach is not
+    made acceptable by having the bed to itself.
 
     A collision occurs when:
       - new part's toolpath extents (expanded by its largest tool radius) overlap
@@ -180,6 +290,10 @@ def check_placement(
     everything is compared in machine coordinates, so an A-rail part and a
     B-rail part that would physically interfere are caught.
     """
+    envelope = check_envelope(new_placed, rails, advanced)
+    if envelope.collides:
+        return envelope
+
     new_radius = _max_tool_radius(new_placed)
     new_tool_str = _largest_tool_str(new_placed)
     new_tp = toolpath_rect(new_placed, rails, new_radius)

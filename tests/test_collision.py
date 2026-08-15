@@ -1,9 +1,9 @@
 import pytest
 from gcode_parser import GcodePart, ZValidation
 from collision import (
-    PlacedPart, Rect, RAIL_DEFAULTS,
+    PlacedPart, Rect, RAIL_DEFAULTS, TRAVEL_DEFAULTS,
     blank_rect, toolpath_rect, rects_overlap, check_placement, slot_label,
-    rail_geom, slot_mark_y,
+    rail_geom, slot_mark_y, check_envelope, travel_limits, edge_margin_mm,
 )
 
 # Measured SS2 rail geometry (collision.RAIL_DEFAULTS) — the two rails are
@@ -458,3 +458,110 @@ def test_check_placement_passes_when_radius_fits_in_gap():
     result = check_placement(placed(part_b, "A", 39, "i2"),
                              [placed(part_a, "A", 26, "i1")])
     assert not result.collides
+
+
+# --- machine envelope ---
+#
+# Programmed coordinates are tool centre with no cutter comp, so the cutting
+# edge stands one tool radius outside every number in the file. The envelope
+# check measures the inflated footprint against travel limit less edge margin.
+#
+# No travel limit is measured yet (issue #19), so the shipped defaults are all
+# None and the check is dormant. These tests therefore supply limits explicitly:
+# they exercise the mechanism, which is what has to keep working once real
+# numbers arrive. The two tests at the top pin the dormant default itself.
+
+HALF_INCH_TOOL = {"T2": {"description": "End Mill", "diameter_inches": 0.5}}
+
+# A generous, obviously-not-measured Y bound used to drive the mechanism.
+FAKE_Y = {"machine_travel": {"y_min": 0.0, "y_max": 3048.0}}
+
+
+def test_no_travel_limit_is_asserted_until_it_is_measured():
+    # The park block's G53 X0 Y3048 is a position the machine REACHES, which
+    # bounds travel from below; it is not the limit. Reading it as one made
+    # A slot 0 unusable. X was likewise contradicted by the measured B rail
+    # corner. Until both are read off the machine, nothing is asserted.
+    assert all(v is None for v in travel_limits().values())
+    assert set(travel_limits()) == {
+        "x_min", "x_max", "y_min", "y_max", "z_min", "z_max"}
+    assert B_X > 1524.0   # the X contradiction, pinned
+
+
+def test_a_slot_zero_is_usable_with_the_shipped_config():
+    # The regression this guards: A0's datum is Y 3034.700, and asserting the
+    # park position of 3048 as the Y limit put it inside the 1/2" margin.
+    part = make_part(300, 100, -10, 300, 0, 100, "a.nc", tools=HALF_INCH_TOOL)
+    assert not check_envelope(placed(part, "A", 0)).collides
+    assert not check_placement(placed(part, "A", 0), []).collides
+
+
+def test_default_edge_margin_is_half_an_inch():
+    assert edge_margin_mm() == pytest.approx(12.7)
+    assert edge_margin_mm({"edge_margin_in": 0.25}) == pytest.approx(6.35)
+
+
+def test_envelope_rejects_a_cutter_crowding_a_configured_limit():
+    # A slot 0: toolpath max Y = 3034.700, + 6.35 radius = 3041.05,
+    # past a keep-out at 3048 - 12.7 = 3035.3.
+    part = make_part(300, 100, 0, 300, 0, 100, "a.nc", tools=HALF_INCH_TOOL)
+    result = check_envelope(placed(part, "A", 0), None, FAKE_Y)
+    assert result.collides
+    assert "3041.0" in result.message   # cutter edge
+    assert "3035.3" in result.message   # keep-out
+    assert "3048.0" in result.message   # travel limit
+
+
+def test_envelope_rejects_a_part_running_off_the_low_end():
+    # A counts down, so a high slot number puts a long part past Y 0.
+    part = make_part(100, 100, 0, 100, 0, 100, "a.nc")
+    result = check_envelope(placed(part, "A", 117), None, FAKE_Y)
+    assert result.collides
+    assert "-37.1" in result.message
+
+
+def test_envelope_allows_the_same_part_further_down_the_rail():
+    part = make_part(300, 100, 0, 300, 0, 100, "a.nc", tools=HALF_INCH_TOOL)
+    assert not check_envelope(placed(part, "A", 13), None, FAKE_Y).collides
+
+
+def test_envelope_margin_is_measured_from_the_cutter_edge():
+    # Identical geometry with no tool defined clears the same slot, so it is the
+    # radius — not the tool-centre extent — that puts the part over the line.
+    part = make_part(300, 100, 0, 300, 0, 100, "a.nc")
+    assert not check_envelope(placed(part, "A", 0), None, FAKE_Y).collides
+
+
+def test_envelope_honours_a_configured_margin():
+    part = make_part(300, 100, 0, 300, 0, 100, "a.nc", tools=HALF_INCH_TOOL)
+    advanced = {**FAKE_Y, "edge_margin_in": 0}
+    assert not check_envelope(placed(part, "A", 0), None, advanced).collides
+
+
+def test_envelope_skips_an_axis_with_no_limit():
+    # B slot 0 reaches machine X 1540.5 with the cutter edge. Nothing rejects it
+    # while the X limit is unknown.
+    part = make_part(300, 100, 0, 300, 0, 100, "b.nc", tools=HALF_INCH_TOOL)
+    assert not check_envelope(placed(part, "B", 0)).collides
+
+
+def test_envelope_checks_x_once_travel_is_configured():
+    part = make_part(300, 100, 0, 300, 0, 100, "b.nc", tools=HALF_INCH_TOOL)
+    advanced = {"machine_travel": {"x_max": 1524.0}}
+    result = check_envelope(placed(part, "B", 0), None, advanced)
+    assert result.collides
+    assert "X" in result.message
+
+
+def test_check_placement_rejects_out_of_envelope_on_an_empty_bed():
+    # Having the bed to itself does not make an unreachable placement legal.
+    part = make_part(300, 100, 0, 300, 0, 100, "a.nc", tools=HALF_INCH_TOOL)
+    result = check_placement(placed(part, "A", 0), [], None, FAKE_Y)
+    assert result.collides
+    assert "Move the part" in result.message
+
+
+def test_check_placement_envelope_message_names_the_part_and_slot():
+    part = make_part(300, 100, 0, 300, 0, 100, "crowder.nc", tools=HALF_INCH_TOOL)
+    msg = check_placement(placed(part, "A", 0), [], None, FAKE_Y).message
+    assert "crowder.nc" in msg and "slot A0" in msg
