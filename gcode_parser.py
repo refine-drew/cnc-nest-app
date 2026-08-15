@@ -16,8 +16,31 @@ TOOL_CHANGE_PATTERN = re.compile(r"\bT(\d+)\s+M06\b", re.IGNORECASE)
 G43_Z_PATTERN = re.compile(r"\bG43\b.*\bZ([+-]?\d*\.?\d+)", re.IGNORECASE)
 CUTTING_MOVE_PATTERN = re.compile(r"\bG0?[123]\b", re.IGNORECASE)
 MACHINE_COORD_PATTERN = re.compile(r"\bG53\b", re.IGNORECASE)
+BARE_COMMENT_PATTERN = re.compile(r"^\(([^)]*)\)$")
+
+# Comments that are file metadata rather than a toolpath name. A toolpath name
+# is recognised only by position — the bare comment above a tool change — so
+# these have to be ruled out explicitly or a header line becomes an "operation".
+_NON_OPERATION_COMMENTS = (
+    HEADER_SIZE_PATTERN, PART_SIZE_PATTERN, TOOL_HEADER_PATTERN, INLINE_TOOL_PATTERN,
+)
 
 OVERTRAVEL_TOLERANCE_MM = 0.762  # 0.03 inches
+
+
+def operation_name_in_comment(line: str) -> str:
+    """Return the toolpath name in a bare comment line, or '' if it isn't one."""
+    m = BARE_COMMENT_PATTERN.match(line.strip())
+    if not m or any(p.search(line) for p in _NON_OPERATION_COMMENTS):
+        return ""
+    return m.group(1).strip()
+
+
+# A program stop sits between the toolpath name and the tool change on every
+# pass after the first ("(TABLE STIFF)" / "N2530 M01" / "N2535 T4 M06"). It
+# commands no motion, so it must not break the name's association with the
+# tool change the way a real code line does.
+_PROGRAM_STOP_ONLY = re.compile(r"^(?:N\d+\s+)?M0?[01]\s*$", re.IGNORECASE)
 
 
 @dataclass
@@ -31,6 +54,12 @@ class GcodePass:
     pass_index: int
     tool_number: str
     lines: List[str] = field(default_factory=list)
+    # Toolpath name, e.g. "TABLE OUTSIDE PROFILE ADAPTIVE". Both posts write it
+    # as a bare comment on the line above the tool change, which puts it outside
+    # the pass — see extract_passes. Later operations within a pass carry theirs
+    # inline, so without this the first operation of every pass is the only one
+    # that reaches the master file unnamed.
+    operation_name: str = ""
 
 
 @dataclass
@@ -378,12 +407,19 @@ def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[
     move_pat  = re.compile(r"\bG0?[0-3]\b", re.IGNORECASE)
     g2_pat = re.compile(r"\bG0?2\b", re.IGNORECASE)
     g3_pat = re.compile(r"\bG0?3\b", re.IGNORECASE)
+    plane_pat = re.compile(r"\bG1([789])\b", re.IGNORECASE)
 
     for pass_ in passes:
         cur_x, cur_y, cur_z = 0.0, 0.0, 0.0
+        plane = "G17"
         for line in pass_.lines:
             if line.startswith("("):
                 continue
+            # Track the modal plane before the motion filter: a plane word can
+            # arrive on a line of its own (VCarve restores G17 that way).
+            pm = plane_pat.search(line)
+            if pm:
+                plane = "G1" + pm.group(1)
             if MACHINE_COORD_PATTERN.search(line):
                 continue
             if not move_pat.search(line):
@@ -406,7 +442,11 @@ def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[
                 if is_g2 or is_g3:
                     for p, val in ARC_PARAM_PATTERN.findall(line):
                         arc_params[p.upper()] = float(val)
-                if (is_g2 or is_g3) and arc_params:
+                # Only G17 arcs curve in XY. A G18/G19 ramp arc curves into Z;
+                # its footprint is the straight lateral line, and flattening it
+                # as an XY arc invents a bulge the cutter never makes (I/J there
+                # are X/Y-vs-Z centre offsets, not an XY centre).
+                if (is_g2 or is_g3) and arc_params and plane == "G17":
                     points = _arc_points(
                         cur_x, cur_y, new_x, new_y,
                         r=arc_params.get("R"),
@@ -433,10 +473,18 @@ def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[
 
 
 def extract_passes(lines: List[str]) -> List[GcodePass]:
-    """Split file into ordered tool passes at each T# M06 tool change."""
+    """
+    Split file into ordered tool passes at each T# M06 tool change.
+
+    The toolpath name sits on the line *above* the tool change, so it falls
+    outside the pass it names. Carry it across as `operation_name` rather than
+    letting it drop: it is the only label the operator has for the first
+    operation of each pass in the merged master file.
+    """
     passes: List[GcodePass] = []
     current_pass: Optional[GcodePass] = None
     pass_index = 0
+    pending_name = ""
 
     for line in lines:
         tool_match = TOOL_CHANGE_PATTERN.search(line)
@@ -446,10 +494,20 @@ def extract_passes(lines: List[str]) -> List[GcodePass]:
                 pass_index=pass_index,
                 tool_number=tool_number,
                 lines=[line],
+                operation_name=pending_name,
             )
             passes.append(current_pass)
             pass_index += 1
+            pending_name = ""
         elif current_pass is not None:
             current_pass.lines.append(line)
+
+        # Track the comment standing immediately above the next tool change.
+        # Blank lines and the optional stop don't break the association; any
+        # real code line does.
+        s = line.strip()
+        if tool_match or not s or _PROGRAM_STOP_ONLY.match(s):
+            continue
+        pending_name = operation_name_in_comment(line)
 
     return passes

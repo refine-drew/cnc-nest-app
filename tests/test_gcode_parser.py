@@ -301,6 +301,87 @@ def test_extract_passes_empty_when_no_tool_change():
     assert part.passes == []
 
 
+# --- toolpath name capture ---
+#
+# Both posts write the toolpath name as a bare comment on the line ABOVE the
+# tool change, which puts it outside the pass extract_passes builds. Operations
+# after the first within a pass carry their names inline and survive on their
+# own, so without this capture the first operation of every pass is the only
+# one that reaches the master file unnamed.
+
+OP_NAME_NC = (
+    "( Material Size)\n( X= 200.0, Y= 100.0, Z= 19.05)\n"
+    "(T2 = End Mill {0.5 inches})\n"
+    "(T4 = Table Stiff {0.75 inches})\n"
+    "N10 G90 G94 G17 G49 G40 G80\n"
+    "N25 G90\n"
+    "\n"
+    "(TABLE OUTSIDE PROFILE ADAPTIVE)\n"
+    "N30 T2 M06\n"
+    "N35 S18000 M03\n"
+    "N50 G00 X0 Y0\n"
+    "N55 G01 X50 Y50 Z-0.254\n"
+    "N60 M05\n"
+    "N65 G90\n"
+    "\n"
+    "(TABLE STIFF)\n"
+    "N70 M01\n"
+    "N75 T4 M06\n"
+    "N80 S18000 M03\n"
+    "N85 G01 X10 Y10 Z-0.254\n"
+    "N90 M30\n"
+)
+
+
+def test_operation_name_captured_from_line_above_tool_change():
+    part = parse_vcarve_text(OP_NAME_NC, filename="p.nc")
+    assert part.passes[0].operation_name == "TABLE OUTSIDE PROFILE ADAPTIVE"
+
+
+def test_operation_name_survives_intervening_optional_stop():
+    # Every tool change after the first has an M01 between the name and the
+    # T# M06. It commands no motion, so it must not break the association.
+    part = parse_vcarve_text(OP_NAME_NC, filename="p.nc")
+    assert part.passes[1].operation_name == "TABLE STIFF"
+
+
+def test_tool_comment_is_not_an_operation_name():
+    # The Vectric post puts the tool comment directly above the tool change and
+    # no toolpath name at all. That comment names the cutter, not the toolpath.
+    src = (
+        "( Material Size)\n( X= 200.0, Y= 100.0, Z= 19.05)\n"
+        "(T2 = End Mill {0.5 inch})\n"
+        "N11 G53 Z0\n"
+        "N12 (Tool: End Mill {0.5 inch})\n"
+        "N13 T2 M06\n"
+        "N14 M03 S18000\nN16 G01 X1 Y1 Z-1\nN20 M30\n"
+    )
+    part = parse_vcarve_text(src, filename="p.nc")
+    assert part.passes[0].operation_name == ""
+
+
+def test_header_comments_are_not_operation_names():
+    # A file whose tool change follows the header block directly must not
+    # inherit a material-size or tool-table line as its operation name.
+    src = (
+        "( Material Size)\n( X= 200.0, Y= 100.0, Z= 19.05)\n"
+        "(T2 = End Mill {0.5 inches})\n"
+        "T2 M06\nM03 S18000\nG01 X1 Y1 Z-1\nM30\n"
+    )
+    part = parse_vcarve_text(src, filename="p.nc")
+    assert part.passes[0].operation_name == ""
+
+
+def test_code_line_between_name_and_tool_change_breaks_association():
+    src = (
+        "(SOME EARLIER LABEL)\n"
+        "G00 X5 Y5\n"
+        "T2 M06\nM03 S18000\nG01 X1 Y1 Z-1\nM30\n"
+    )
+    part = parse_vcarve_text(src, filename="p.nc")
+    assert part.passes[0].operation_name == ""
+
+
 def test_arc_points_flatten_r_arc_into_multiple_segments():
     points = _arc_points(1.0, 0.0, 0.0, 1.0, r=1.0, clockwise=False)
 

@@ -13,6 +13,7 @@ from gcode_generator import (
     _build_blocks,
     _dedup_spindle,
     _extract_body,
+    _transform_body,
     _transform_line,
     _transform_params,
     _nearest_neighbor_sort,
@@ -583,12 +584,13 @@ def test_two_parts_same_tool_merged():
 
 
 def test_two_parts_same_tool_has_retract_between_segments():
-    """Within a tool block, a G00 Z[safe_z] separates part segments; one also precedes park."""
+    """Within a tool block, a G00 Z[safe_z] separates part segments."""
     p1 = _placed(SINGLE_T2, "A", 39, "i1")
     p2 = _placed(SINGLE_T2, "A", 26, "i2")
     result = generate_master_gcode([p1, p2], SETTINGS)
-    # job_safe_z = 25.4: one between segments, one before park = 2 total
-    assert result.count("G00 Z25.4000") == 2
+    # job_safe_z = 25.4, one retract between the two segments. The park block
+    # deliberately has none — it retracts in machine coordinates instead.
+    assert result.count("G00 Z25.4000") == 1
 
 
 def test_g43_appears_only_once_per_tool_block():
@@ -655,6 +657,124 @@ def test_spec_example_different_tools_not_merged():
     assert t2_a < t4_pos < t5_pos < t2_b
 
 
+# ── operation labelling and tape marks ───────────────────────────────────────
+
+NAMED_OPS_NC = (
+    "( Material Size)\n( X= 200.0, Y= 100.0, Z= 19.05)\n"
+    "(T2 = End Mill {0.5 inches})\n"
+    "N25 G90\n"
+    "\n"
+    "(TABLE OUTSIDE PROFILE ADAPTIVE)\n"
+    "N30 T2 M06\n"
+    "(Tool: End Mill {0.5 inches})\n"
+    "N35 G43 H2 Z44.4754\nN40 M03 S18000\n"
+    "N50 G00 X0 Y0\nN55 G01 X50 Y50 Z-0.254\n"
+    "(OUTSIDE FINISH PASS)\n"
+    "N60 G01 X100 Y50 Z-0.254\n"
+    "N65 G53 G49 Z0\nN70 M05\nN75 M30\n%\n"
+)
+
+
+def test_first_operation_is_named_in_output():
+    # The later operation's name survives on its own because it sits inside the
+    # body; the first one has to be carried across from above the tool change.
+    result = generate_master_gcode([_placed(NAMED_OPS_NC, "A", 39)], SETTINGS)
+    assert "(TABLE OUTSIDE PROFILE ADAPTIVE)" in result
+    assert "(OUTSIDE FINISH PASS)" in result
+
+
+def test_operation_name_precedes_its_own_geometry():
+    # The travel sort reorders segments, so the name must ride with the segment
+    # it labels rather than being emitted once at the top of the tool block.
+    result = generate_master_gcode(
+        [_placed(NAMED_OPS_NC, "A", 39, "i1"), _placed(NAMED_OPS_NC, "B", 26, "i2")],
+        SETTINGS)
+    lines = result.splitlines()
+    names = [i for i, l in enumerate(lines) if "TABLE OUTSIDE PROFILE ADAPTIVE" in l]
+    assert len(names) == 2   # one per placed instance
+    for i in names:
+        assert any(re.search(r"\bG0?[01]\b", l) for l in lines[i + 1:i + 4])
+
+
+def test_operation_name_does_not_steer_the_travel_sort():
+    # A toolpath name containing something like "X2" must not be read as an
+    # X word when the sort picks each segment's start point.
+    assert _first_xy(["(POCKET X2 Y9)", "G00 X40 Y70"]) == (40.0, 70.0)
+
+
+def test_percent_present_at_both_ends():
+    result = generate_master_gcode([_placed(SINGLE_T2, "A", 39)], SETTINGS)
+    lines = [l for l in result.splitlines() if l.strip()]
+    assert lines[0] == "%"
+    assert lines[-1] == "%"
+
+
+# ── modal hygiene ─────────────────────────────────────────────────────────────
+#
+# Motion mode is modal, so a block that omits G00/G01 runs at whatever the last
+# motion command left active. Two defects came out of that: a park retract that
+# fed instead of rapiding, and — worse — a G54 Z move issued while G49 was
+# active, which positions the spindle gauge line rather than the tool tip.
+
+def _park_block(result: str) -> list:
+    """Lines from the park comment through M30."""
+    lines = result.splitlines()
+    start = next(i for i, l in enumerate(lines) if "---- park ----" in l)
+    end = next(i for i, l in enumerate(lines) if "M30" in l)
+    return lines[start:end + 1]
+
+
+def test_park_block_retracts_in_machine_coordinates():
+    # The per-tool retract leaves G49 active. A G54 Z here would target the
+    # gauge line, dropping the head about one tool length below the number, and
+    # the next line traverses the full length of the bed at that height.
+    p = _placed(TWO_PASS_T2_T4, "A", 39)
+    result = generate_master_gcode([p], SETTINGS)
+    park = _park_block(result)
+    assert any(re.search(r"\bG0?0\b.*\bG53\b.*\bZ0\b", l) for l in park)
+    for line in park:
+        if re.search(r"Z[-+.\d]", line):
+            assert re.search(r"\bG53\b", line), f"G54 Z move in park block: {line}"
+
+
+def test_park_block_does_not_use_job_safe_z():
+    # Regression on the specific number: safe Z is a G54 height and has no
+    # meaning once tool length comp is cancelled.
+    p = _placed(TWO_PASS_T2_T4, "A", 39)
+    result = generate_master_gcode([p], SETTINGS)
+    assert not any("25.4000" in l for l in _park_block(result))
+
+
+def test_park_block_safe_with_no_placements():
+    # With no tool blocks there is no preceding retract at all, so the park
+    # block has to be self-sufficient.
+    park = _park_block(generate_master_gcode([], SETTINGS))
+    assert any(re.search(r"\bG0?0\b.*\bG53\b.*\bZ0\b", l) for l in park)
+
+
+def test_every_g43_approach_asserts_g00():
+    # On a multi-tool job the previous pass ends in G01, so an unqualified G43
+    # approach feeds down to safe Z at cutting rate instead of rapiding.
+    p1 = _placed(TWO_PASS_T2_T4, "A", 39, "i1")
+    p2 = _placed(TWO_PASS_T2_T4, "A", 26, "i2")
+    result = generate_master_gcode([p1, p2], SETTINGS)
+    g43 = [l for l in result.splitlines() if re.search(r"\bG43\b", l)]
+    assert len(g43) == 2
+    for line in g43:
+        assert re.search(r"\bG0?0\b", line), f"G43 approach without G00: {line}"
+
+
+def test_every_g53_z_retract_asserts_g00():
+    p1 = _placed(TWO_PASS_T2_T4, "A", 39, "i1")
+    p2 = _placed(TWO_PASS_T2_T4, "A", 26, "i2")
+    result = generate_master_gcode([p1, p2], SETTINGS)
+    retracts = [l for l in result.splitlines()
+                if re.search(r"\bG53\b", l) and re.search(r"\bZ", l)]
+    assert len(retracts) == 4   # header, two per-tool retracts, park
+    for line in retracts:
+        assert re.search(r"\bG0?0\b", line), f"G53 retract without G00: {line}"
+
+
 def test_no_placements_produces_header_and_park():
     result = generate_master_gcode([], SETTINGS)
     assert "(MASTER JOB" in result
@@ -682,3 +802,122 @@ def test_build_blocks_two_passes():
     assert blocks[1]["tool"] == "T4"
     assert len(blocks[0]["segments"]) == 2
     assert len(blocks[1]["segments"]) == 2
+
+
+# ── vertical-plane (G18/G19) ramp arcs ────────────────────────────────────────
+#
+# VCarve emits lead-in/lead-out ramps as arcs in a vertical plane: G19 (file YZ)
+# when the ramp runs along file Y, G18 (file XZ) when it runs along file X. The
+# X↔Y axis swap moves those arcs into the other vertical plane, so the plane word
+# must swap with them. Arc direction follows the plane's NORMAL axis, which is
+# why the two rails disagree per plane — verified against transformed arc points
+# in the geometry check that accompanies this change.
+
+A_PARAMS = {"b_x": True,  "x": LINE_Y_CONST, "b_y": False, "y": LINE_X_CONST}
+B_PARAMS = {"b_x": False, "x": LINE_Y_CONST, "b_y": True,  "y": LINE_FAR_X}
+
+
+def test_g19_ramp_becomes_g18_on_both_rails():
+    # File YZ arc → machine XZ arc. Emitting G19 next to a swapped X word is the
+    # illegal block that alarmed the control mid-job.
+    for params in (A_PARAMS, B_PARAMS):
+        result = _transform_line("G19 G03 Y-5.715 Z0. J1.27 F7620.", params, "G19")
+        assert "G18" in result and "G19" not in result
+        assert re.search(r"X[-\d.]", result) and "Y" not in result
+        assert re.search(r"I[-\d.]", result) and "J" not in result
+
+
+def test_g18_ramp_becomes_g19_on_both_rails():
+    for params in (A_PARAMS, B_PARAMS):
+        result = _transform_line("G18 G02 X-3.203 Z12.7 I1.27 F3810.", params, "G18")
+        assert "G19" in result and "G18" not in result
+        assert re.search(r"Y[-\d.]", result) and "X" not in result
+        assert re.search(r"J[-\d.]", result) and "I" not in result
+
+
+def test_g19_ramp_direction_flips_on_a_rail_only():
+    # G19's normal is file X, which maps to machine Y: reversed on A, not on B.
+    assert "G02" in _transform_line("G19 G03 Y-5.715 Z0. J1.27", A_PARAMS, "G19")
+    assert "G03" in _transform_line("G19 G03 Y-5.715 Z0. J1.27", B_PARAMS, "G19")
+
+
+def test_g18_ramp_direction_flips_on_b_rail_only():
+    # G18's normal is file Y, which maps to machine X: reversed on B, not on A.
+    assert "G02" in _transform_line("G18 G02 X-3.203 Z12.7 I1.27", A_PARAMS, "G18")
+    assert "G03" in _transform_line("G18 G02 X-3.203 Z12.7 I1.27", B_PARAMS, "G18")
+
+
+def test_g17_arc_direction_unaffected_by_plane_argument():
+    # Both rails are proper rotations, so XY arcs keep their direction. This is
+    # the pre-existing rule and must not regress.
+    for params in (A_PARAMS, B_PARAMS):
+        assert "G02" in _transform_line("G02 X50 Y50 I10 J0", params, "G17")
+        assert "G03" in _transform_line("G03 X50 Y50 I-10 J5", params, "G17")
+
+
+def test_transform_body_tracks_modal_plane_across_lines():
+    # The plane word is modal: a following arc with no plane word of its own
+    # still belongs to the vertical plane and must be rewritten as one.
+    body = [
+        "G19 G03 Y-5.715 Z0. J1.27",
+        "G03 Y-4.445 Z-1.27 J1.27",   # same plane, no plane word
+        "G17",
+        "G03 X79.375 Y-3.175 I-1.27",
+    ]
+    out = _transform_body(body, A_PARAMS)
+    assert "G18" in out[0]
+    # Still in the vertical plane: file J → output I, direction flipped as above.
+    assert "G02" in out[1] and re.search(r"I[-\d.]", out[1]) and "J" not in out[1]
+    assert out[2] == "G17"
+    assert "G03" in out[3]  # XY arc, direction preserved
+
+
+def test_transform_body_restores_g17_when_body_ends_vertical():
+    # Segments get reordered by the travel sort, so each must leave the control
+    # in G17 for the next one to start from a known plane.
+    out = _transform_body(["G19 G03 Y-5.715 Z0. J1.27"], B_PARAMS)
+    assert out[-1] == "G17"
+
+
+def test_reported_alarm_line_regression():
+    # The exact block that alarmed the SS2 (nest_20260814_090009.nc N186510),
+    # from Vacuum Puck.nc N3350 placed on the B rail at slot 0.
+    params = _transform_params(
+        PlacedPart(part=parse_vcarve_text(SINGLE_T2, filename="p.nc"),
+                   rail="B", slot_inches=0, instance_id="i1"))
+    result = _transform_line("G19 G03 Y-5.715 Z0. I0. J1.27 F7620.", params, "G19")
+    assert result.startswith("G18 G03")
+    assert "X1539.8750" in result    # B_X - (-5.715)
+    assert "I-1.2700" in result      # file J → output I, negated (b_y mirrored)
+    assert "G19" not in result and "Y" not in result
+
+
+def test_generated_output_has_no_illegal_plane_axis_pairs():
+    # Invariant: a G18 block never carries a Y/J word and a G19 block never
+    # carries an X/I word. That pairing is what the control rejects.
+    ramp_nc = (
+        "( Material Size)\n( X= 200.0, Y= 100.0, Z= 19.05)\n"
+        "(T2 = End Mill {0.5 inches})\n"
+        "T2 M06\n(Tool: End Mill {0.5 inches})\nG43 H2 Z44.4754\nM03 S18000\n"
+        "G00 X80.645 Y-6.985\nG01 Z1.27 F2540.\n"
+        "G19 G03 Y-5.715 Z0. J1.27 F7620.\n"
+        "G01 Y-4.445\n"
+        "G17 G03 X79.375 Y-3.175 I-1.27\n"
+        "G18 G02 X-3.203 Z12.7 I1.27\n"
+        "G17\n"
+        "G53 G49 Z0\nM05\nM30\n%\n"
+    )
+    text = generate_master_gcode(
+        [_placed(ramp_nc, "A", 13, "i1"), _placed(ramp_nc, "B", 26, "i2")],
+        SETTINGS)
+    plane = "G17"
+    for line in text.splitlines():
+        if line.startswith("("):
+            continue
+        m = re.search(r"\bG1([789])\b", line)
+        if m:
+            plane = "G1" + m.group(1)
+        if plane == "G18":
+            assert not re.search(r"[YJ][-\d.]", line), f"Y/J word in G18 block: {line}"
+        elif plane == "G19":
+            assert not re.search(r"[XI][-\d.]", line), f"X/I word in G19 block: {line}"
