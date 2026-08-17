@@ -181,6 +181,29 @@ def test_z_scan_extracts_min_max_and_safe_z():
     assert part.max_z == pytest.approx(18.796)
 
 
+def test_z_scan_takes_the_highest_of_several_retracts():
+    """Fusion writes one G43 Z per operation and they differ per tool (#22).
+
+    Modelled on 18G.nc: T2 retracts to 34.29, T1 to 57.15 because it cuts a
+    feature standing above the stock. Reading either one alone gives a clearance
+    that the other tool crashes through.
+    """
+    gcode = """( Material Size)
+( X= 300.0, Y= 450.0, Z= 19.05)
+(T1 D=12.7 CR=6.35 - ZMIN=14.605 - BALL END MILL)
+(T2 D=12.7 CR=0. - ZMIN=0. - FLAT END MILL)
+T2 M06
+G43 Z34.29 H02
+G01 X10 Y10 Z-1.0
+T1 M06
+G43 Z57.15 H01
+G01 X20 Y20 Z14.605
+M30
+"""
+    part = parse_vcarve_text(gcode)
+    assert part.safe_z == pytest.approx(57.15)
+
+
 def test_z_scan_ignores_g53_lines():
     gcode = """( Material Size)
 ( X= 500, Y= 500, Z= 19.0)

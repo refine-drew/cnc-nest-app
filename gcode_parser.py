@@ -230,7 +230,14 @@ def scan_coordinates(lines: List[str]) -> Tuple[Optional[float], Optional[float]
 
 
 def scan_z_values(lines: List[str]) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """Returns (min_cutting_z, max_cutting_z, safe_z_from_g43)."""
+    """Returns (min_cutting_z, max_cutting_z, safe_z_from_g43).
+
+    Fusion writes a `G43 Z<retract> H<n>` per operation, and the retracts differ
+    between tools — 18G.nc has Z34.29 for T2 and Z57.15 for T1, because T1 cuts a
+    feature standing above the material top. Taking any single one of them (the
+    first, or the last) yields a clearance that is below what another tool in the
+    same file needs, so the highest one is the only safe reading (#22).
+    """
     min_z = float("inf")
     max_z = float("-inf")
     found_z = False
@@ -242,7 +249,8 @@ def scan_z_values(lines: List[str]) -> Tuple[Optional[float], Optional[float], O
 
         g43_match = G43_Z_PATTERN.search(line)
         if g43_match:
-            safe_z = float(g43_match.group(1))
+            retract = float(g43_match.group(1))
+            safe_z = retract if safe_z is None else max(safe_z, retract)
             continue
 
         if MACHINE_COORD_PATTERN.search(line):

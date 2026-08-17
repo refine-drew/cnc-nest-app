@@ -182,20 +182,43 @@ def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
 
 
 def _compute_job_safe_z() -> dict:
-    """Highest material thickness across placements plus configured clearance."""
+    """The highest clearance any placed part needs (#22).
+
+    Two candidates, and the job takes whichever is higher:
+
+    - **thickest material + configured clearance** — clears the stock, which is all
+      a flat 2D job needs;
+    - **the highest retract any source file asks for itself** (`part.safe_z`, the
+      max `G43 Z` in that file) — Fusion sets this per operation, and a part with a
+      feature standing above the stock top retracts *above* thickness + clearance.
+
+    Taking only the first is the bug: a rapid that cleared the part inside its own
+    file can clip it once the part is one of several in a merged job. Higher is
+    always safe here — the cost of an over-high retract is rapid seconds, and
+    `gcode_validator` still checks what is emitted.
+    """
     if not _placements:
         return {"value": None, "driven_by": None}
-    max_t = -1.0
-    driver = None
-    for placed in _placements.values():
-        t = placed.part.material_thickness
-        if t is not None and t > max_t:
-            max_t = t
-            driver = placed.part.filename
-    if driver is None:
-        return {"value": None, "driven_by": None}
+
     clearance = float(config["advanced"]["safe_z_clearance_mm"])
-    return {"value": round(max_t + clearance, 4), "driven_by": driver}
+    best = None
+    driver = None
+
+    for placed in _placements.values():
+        part = placed.part
+        candidates = []
+        if part.material_thickness is not None:
+            candidates.append((part.material_thickness + clearance, "stock"))
+        if part.safe_z is not None:
+            candidates.append((part.safe_z, "retract"))
+        for value, basis in candidates:
+            if best is None or value > best:
+                best = value
+                driver = f"{part.filename} ({basis})"
+
+    if best is None:
+        return {"value": None, "driven_by": None}
+    return {"value": round(best, 4), "driven_by": driver}
 
 
 def _compute_job_stats() -> dict:
@@ -217,7 +240,17 @@ def _compute_job_stats() -> dict:
                 seen_tools.add(tn)
                 ordered_tools.append(tn)
 
-    bed_area = bed_x * bed_y
+    # Utilization is measured against the real table, not the drawn extent. The
+    # canvas rectangle runs from machine 0 to the far table corner, so it includes
+    # a sliver (X < 61.49, Y < 24.99 mm) that is off the table and that
+    # check_envelope already refuses to place on.
+    travel = config["advanced"].get("machine_travel") or {}
+    try:
+        bed_area = (float(travel["x_max"]) - float(travel["x_min"])) * (
+            float(travel["y_max"]) - float(travel["y_min"])
+        )
+    except (KeyError, TypeError, ValueError):
+        bed_area = bed_x * bed_y
     used_area = sum(
         p.part.vcarve_x_span * p.part.vcarve_y_span for p in _placements.values()
     )

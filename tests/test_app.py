@@ -280,6 +280,29 @@ def test_place_returns_instance_id(client, tmp_path, monkeypatch):
     assert data["slot"] == "A39"
 
 
+def test_job_safe_z_is_driven_by_stock_when_that_is_higher(client, tmp_path, monkeypatch):
+    """19.05 stock + 29.972 clearance = 49.022, above part.nc's own 44.4754 retract."""
+    _seed_library(tmp_path, monkeypatch)
+    r = client.post("/api/place", json={"path": "part.nc", "rail": "A", "slot_inches": 39})
+    safe_z = r.get_json()["job_safe_z"]
+    assert safe_z["value"] == pytest.approx(19.05 + 29.972, abs=1e-3)
+    assert safe_z["driven_by"] == "part.nc (stock)"
+
+
+def test_job_safe_z_honours_a_file_retract_above_stock_clearance(client, tmp_path, monkeypatch):
+    """A part with a feature above the stock top retracts higher than the stock rule (#22)."""
+    tall = (
+        "( Material Size)\n( X= 100.0, Y= 100.0, Z= 19.05)\n"
+        "(T2 D=12.7 CR=0. - ZMIN=14.605 - FLAT END MILL)\n"
+        "T2 M06\nG43 Z57.15 H02\nG01 X50 Y50 Z14.605\nM30\n"
+    )
+    _seed_library(tmp_path, monkeypatch, {"tall.nc": tall})
+    r = client.post("/api/place", json={"path": "tall.nc", "rail": "A", "slot_inches": 39})
+    safe_z = r.get_json()["job_safe_z"]
+    assert safe_z["value"] == pytest.approx(57.15)
+    assert safe_z["driven_by"] == "tall.nc (retract)"
+
+
 def test_place_invalid_slot_rejected(client, tmp_path, monkeypatch):
     _seed_library(tmp_path, monkeypatch)
     r = client.post("/api/place", json={"path": "part.nc", "rail": "A", "slot_inches": 99})
