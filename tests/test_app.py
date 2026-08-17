@@ -4,12 +4,14 @@ All file system access is either stubbed or uses temp dirs.
 """
 import json
 import os
+import re
 import tempfile
 
 import pytest
 
 import app as app_module
 from app import app
+from runtime_estimator import DEFAULT_TOOL_CHANGE_SECONDS
 
 
 @pytest.fixture(autouse=True)
@@ -460,6 +462,69 @@ def test_placements_report_tool_capacity(client, tmp_path, monkeypatch):
     assert info["tool_capacity"] == app_module._tool_capacity()
     assert info["tools_over_capacity"] is False
     assert info["tool_count"] == len(info["tool_sequence"])
+
+
+# ── tool-change count (issue #7) ──────────────────────────────────────────────
+#
+# `tool_changes` is a count of T# M06 events, not of distinct tools. When two
+# parts disagree about tool order the pass-index walk revisits a tool, and every
+# revisit is a real change back. Reporting distinct-minus-one understated it.
+
+_T1_THEN_T2 = (
+    "( Material Size)\n( X=100, Y=100, Z=19)\n"
+    "(T1 = End Mill {0.25 inches})\n(T2 = Spiral Bit {0.5 inches})\n"
+    "T1 M06\nG01 X10 Y10 Z-0.254\nG53 G49 Z0\nM05\n"
+    "T2 M06\nG01 X20 Y20 Z-0.254\nG53 G49 Z0\nM05\nM30\n"
+)
+_T2_THEN_T1 = (
+    "( Material Size)\n( X=100, Y=100, Z=19)\n"
+    "(T1 = End Mill {0.25 inches})\n(T2 = Spiral Bit {0.5 inches})\n"
+    "T2 M06\nG01 X10 Y10 Z-0.254\nG53 G49 Z0\nM05\n"
+    "T1 M06\nG01 X20 Y20 Z-0.254\nG53 G49 Z0\nM05\nM30\n"
+)
+
+
+def test_tool_changes_counts_revisits_not_distinct_tools(client, tmp_path, monkeypatch):
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2, "ba.nc": _T2_THEN_T1})
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+    client.post("/api/place", json={"path": "ba.nc", "rail": "A", "slot_inches": 26})
+
+    info = client.get("/api/placements").get_json()
+    # Two distinct tools, but the blocks run T1, T2, T1, T2.
+    assert info["tool_sequence"] == ["T1", "T2"]
+    assert info["tool_count"] == 2
+    assert info["tool_changes"] == 4
+
+
+def test_tool_changes_matches_the_emitted_file(client, tmp_path, monkeypatch):
+    """The live figure and the file the machine runs must agree."""
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2, "ba.nc": _T2_THEN_T1})
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+    client.post("/api/place", json={"path": "ba.nc", "rail": "A", "slot_inches": 26})
+
+    expected = client.get("/api/placements").get_json()["tool_changes"]
+    r = client.post("/api/generate", json={"job_name": "changes"})
+    assert r.status_code == 200
+    with open(r.get_json()["nc_path"]) as f:
+        emitted = f.read()
+    assert len(re.findall(r"^N\d+\s+T\d+ M06\b", emitted, re.MULTILINE)) == expected
+
+
+def test_job_runtime_charges_every_tool_change(client, tmp_path, monkeypatch):
+    """
+    Per-part runtimes exclude tool-change time; the job total adds it back once
+    per emitted block. Without this, the always-on-touch-off posture looks free.
+    """
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2, "ba.nc": _T2_THEN_T1})
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+    client.post("/api/place", json={"path": "ba.nc", "rail": "A", "slot_inches": 26})
+
+    info = client.get("/api/placements").get_json()
+    cutting = sum(p.part.runtime_seconds for p in app_module._placements.values())
+    assert info["runtime_seconds"] == pytest.approx(
+        cutting + 4 * DEFAULT_TOOL_CHANGE_SECONDS, abs=0.01,
+    )
 
 
 # ── /api/save-job and /api/load-job ──────────────────────────────────────────

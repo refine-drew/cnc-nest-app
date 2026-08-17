@@ -54,6 +54,29 @@ under every reading, a straight-down plunge may be exactly what was intended.
 never be "fixed" to `G21`. The three files from the 2026-08-15 output review are
 pinned as fixtures in `tests/test_gcode_validator.py`.
 
+**`runtime_estimator.py`** — walks a line stream tracking modal units, feedrate
+and XYZ, and returns cutting / rapid / tool-change seconds plus
+`tool_change_count`.
+
+**Tool changes are counted, never inferred from the tool list.** `_build_blocks`
+starts a new block whenever the tool differs from the previous block, so a tool
+that recurs at a later pass index is changed *back to*: parts running `[T1, T2]`
+and `[T2, T1]` emit `T1, T2, T1, T2` — two tools, four changes. Distinct-minus-one
+understated both the count and the run time (issue #7).
+`gcode_generator.block_tool_sequence` is the single source: it and `_build_blocks`
+walk the same `_iter_pass_groups`, and
+`test_block_tool_sequence_matches_built_blocks` pins them together. `tool_sequence`
+/ `tool_count` stay **distinct** — those drive `tool_capacity` and the
+compatibility matrix, which are about how many pockets the changer needs.
+
+Per-part `GcodePart.runtime_seconds` **excludes** tool-change time
+(`tool_change_seconds=0.0` at the parse call). A part's own change count means
+nothing once the generator merges same-tool passes across parts, so the cost is
+charged once per emitted block at job level instead. The `.txt` report reads the
+finished file and is the precise figure; `_compute_job_stats` is the live
+approximation. The per-change cost is still `DEFAULT_TOOL_CHANGE_SECONDS = 30.0`,
+a placeholder until one cycle is actually timed (issue #6).
+
 **`tool_library.py`** — simple tool registry. Resolves tool diameters from file headers or user-supplied overrides.
 
 **`config.py`** — loads/saves `config.json`. Config defines library paths (a list of candidates; the first that exists locally wins), output path, tool definitions, bed dimensions, per-rail geometry (`advanced.rails` — see Coordinate Systems), `tool_capacity` (generation is blocked above it), fence-origin offsets, safe Z, and slot positions.

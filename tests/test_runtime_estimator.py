@@ -155,10 +155,7 @@ def test_combined_estimate_sums_buckets():
     )
 
 
-def test_part_runtime_round_trip_via_parser():
-    """End-to-end: parse_vcarve_text populates runtime_seconds."""
-    from gcode_parser import parse_vcarve_text
-    src = """( Material Size)
+_ROUND_TRIP_NC = """( Material Size)
 ( X= 457.200, Y= 304.800, Z= 19.050)
 (T2 = End Mill {0.5 inches})
 G43 H2 Z44.4754
@@ -169,6 +166,49 @@ G53 G49 Z0
 M05
 M30
 """
-    part = parse_vcarve_text(src, filename="test.nc")
-    # Should include 30s tool change + 10" cut at F60 = 10s, plus a tiny rapid
-    assert part.runtime_seconds >= 40
+
+
+def test_part_runtime_round_trip_via_parser():
+    """End-to-end: parse_vcarve_text populates runtime_seconds."""
+    from gcode_parser import parse_vcarve_text
+    part = parse_vcarve_text(_ROUND_TRIP_NC, filename="test.nc")
+    # 10 mm cut at F60 mm/min = 10s. The G00 X0 Y0 is a no-op from the origin.
+    assert part.runtime_seconds == pytest.approx(10, rel=1e-6)
+
+
+def test_part_runtime_excludes_tool_change_time():
+    """
+    A part's own T# M06 costs nothing in `part.runtime_seconds`.
+
+    The generator merges same-tool passes across every placed part, so a part's
+    change count in isolation is not a count of anything the machine will do.
+    Job-level runtime charges once per emitted block instead — see
+    `app._compute_job_stats`, where the honest figure lives (issue #7).
+    """
+    from gcode_parser import parse_vcarve_text
+    part = parse_vcarve_text(_ROUND_TRIP_NC, filename="test.nc")
+    with_change = estimate_lines_runtime(
+        part.passes[0].lines, tool_change_seconds=DEFAULT_TOOL_CHANGE_SECONDS,
+    )
+    # The pass really does contain the tool change the part runtime omits.
+    assert with_change["tool_change_count"] == 1
+    assert part.runtime_seconds == pytest.approx(
+        with_change["seconds"] - DEFAULT_TOOL_CHANGE_SECONDS, rel=1e-6,
+    )
+
+
+# ── tool_change_count ─────────────────────────────────────────────────────────
+
+def test_tool_change_count_survives_zero_cost():
+    result = estimate_lines_runtime(
+        ["T1 M06", "T2 M06", "T1 M06"], tool_change_seconds=0.0,
+    )
+    assert result["tool_changes"] == 0
+    assert result["tool_change_count"] == 3
+
+
+def test_tool_change_count_counts_recurrences_not_distinct_tools():
+    # T1 twice is two changes: the machine really does put T1 back on.
+    result = estimate_lines_runtime(["T1 M06", "T2 M06", "T1 M06", "T2 M06"])
+    assert result["tool_change_count"] == 4
+    assert result["tool_changes"] == 4 * DEFAULT_TOOL_CHANGE_SECONDS

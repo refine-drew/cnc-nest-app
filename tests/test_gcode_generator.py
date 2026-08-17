@@ -10,6 +10,7 @@ from gcode_parser import parse_vcarve_text
 from collision import PlacedPart, RAIL_DEFAULTS, slot_mark_y
 from gcode_generator import (
     generate_master_gcode,
+    block_tool_sequence,
     _build_blocks,
     _dedup_spindle,
     _extract_body,
@@ -802,6 +803,49 @@ def test_build_blocks_two_passes():
     assert blocks[1]["tool"] == "T4"
     assert len(blocks[0]["segments"]) == 2
     assert len(blocks[1]["segments"]) == 2
+
+
+# ── block_tool_sequence ───────────────────────────────────────────────────────
+#
+# The tool-change count comes from this list, so it has to track _build_blocks
+# exactly. A count derived independently is how the undercount in issue #7 got in.
+
+@pytest.mark.parametrize("placed_args", [
+    [(SINGLE_T2, "A", 39), (SINGLE_T2, "A", 26)],
+    [(TWO_PASS_T2_T4, "A", 39), (TWO_PASS_T2_T4, "A", 26)],
+    [(THREE_PASS_T2_T4_T2, "A", 39), (TWO_PASS_T2_T4, "A", 26)],
+    [(THREE_PASS_T2_T4_T2, "A", 39), (SINGLE_T2, "B", 26)],
+    [(TWO_PASS_T2_T4, "A", 39)],
+])
+def test_block_tool_sequence_matches_built_blocks(placed_args):
+    placements = [
+        _placed(nc, rail, slot, f"i{n}")
+        for n, (nc, rail, slot) in enumerate(placed_args)
+    ]
+    assert block_tool_sequence(placements) == [
+        b["tool"] for b in _build_blocks(placements)
+    ]
+
+
+def test_block_tool_sequence_empty_with_no_placements():
+    assert block_tool_sequence([]) == []
+
+
+def test_block_tool_sequence_repeats_a_recurring_tool():
+    # T2, T4, T2 — two distinct tools, three blocks, three tool changes.
+    p = _placed(THREE_PASS_T2_T4_T2, "A", 39, "i1")
+    assert block_tool_sequence([p]) == ["T2", "T4", "T2"]
+
+
+def test_block_tool_sequence_counts_every_emitted_tool_change():
+    # The count has to equal the T# M06 lines the machine will actually see.
+    placements = [
+        _placed(THREE_PASS_T2_T4_T2, "A", 39, "i1"),
+        _placed(TWO_PASS_T2_T4, "A", 26, "i2"),
+    ]
+    seq = block_tool_sequence(placements)
+    gcode = generate_master_gcode(placements, SETTINGS)
+    assert len(re.findall(r"^N\d+\s+T\d+ M06\b", gcode, re.MULTILINE)) == len(seq)
 
 
 # ── vertical-plane (G18/G19) ramp arcs ────────────────────────────────────────

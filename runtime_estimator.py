@@ -47,11 +47,16 @@ def estimate_lines_runtime(
     """
     Estimate runtime for a raw G-code line stream.
 
-    Returns a dict: {seconds, cutting, rapid, tool_changes}, each in seconds.
+    Returns a dict: {seconds, cutting, rapid, tool_changes} — each in seconds —
+    plus `tool_change_count`, the number of `T# M06` events seen. The count is
+    reported separately because it survives `tool_change_seconds=0.0`, and
+    because a per-tool-change cost that is still being measured (issue #6) must
+    not be the only record that the change happened.
     """
     cutting_s = 0.0
     rapid_s = 0.0
     change_s = 0.0
+    change_count = 0
 
     # Default to mm — matches gcode_parser (mm everywhere) and VCarve G71 output.
     # Flip to inches if we see G20/G70.
@@ -73,6 +78,7 @@ def estimate_lines_runtime(
 
         if TOOL_CHANGE_PATTERN.search(s):
             change_s += tool_change_seconds
+            change_count += 1
             # T# M06 lines don't move; continue so we don't try to read coords.
             continue
 
@@ -131,6 +137,7 @@ def estimate_lines_runtime(
         "cutting": cutting_s,
         "rapid": rapid_s,
         "tool_changes": change_s,
+        "tool_change_count": change_count,
     }
 
 

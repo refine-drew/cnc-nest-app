@@ -159,19 +159,16 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
 
 # ── block building ────────────────────────────────────────────────────────────
 
-def _build_blocks(placements: List[PlacedPart], rails: Optional[dict] = None,
-                  x_off_mm: float = 0.0, y_off_mm: float = 0.0) -> list:
+def _iter_pass_groups(placements: List[PlacedPart]):
     """
-    Produce an ordered list of tool blocks from all placements.
+    Yield `(tool, [(placed, GcodePass), ...])` in the order blocks are emitted.
 
-    Walk pass indices 0..max in order. At each index, group passes by tool.
-    Append to the previous block when the tool matches; otherwise start a new one.
-    This preserves each part's internal operation order while merging identical
-    consecutive tools across parts.
+    Walk pass indices 0..max in order; at each index, group that index's passes
+    by tool. This is the single source of the emitted block order — both
+    `_build_blocks` and `block_tool_sequence` walk it, so a count taken from one
+    can never disagree with the file produced by the other.
     """
     max_passes = max((len(p.part.passes) for p in placements), default=0)
-    blocks: list = []
-
     for idx in range(max_passes):
         by_tool: Dict[str, list] = {}
         for placed in placements:
@@ -180,39 +177,70 @@ def _build_blocks(placements: List[PlacedPart], rails: Optional[dict] = None,
                 by_tool.setdefault(gp.tool_number, []).append((placed, gp))
 
         for tool in sorted(by_tool):
-            segs: list = []
-            description = ""
-            spindle_speed = 18000
+            yield tool, by_tool[tool]
 
-            for placed, gp in by_tool[tool]:
-                raw_lines = gp.lines
-                if not description:
-                    description = _tool_comment(raw_lines)
-                spd = _spindle_speed(raw_lines)
-                if spd:
-                    spindle_speed = spd
-                body = _extract_body(raw_lines)
-                params = _transform_params(placed, rails, x_off_mm, y_off_mm)
-                seg = _transform_body(body, params)
-                # The pass's first operation is named on the line above the tool
-                # change, which puts it outside the body; later operations carry
-                # their names inline and survive on their own. Restore it here so
-                # every operation in the master file is labelled. It rides on the
-                # segment rather than the block because the travel sort reorders
-                # segments, and the name has to stay with its own geometry.
-                if gp.operation_name:
-                    seg.insert(0, f"({gp.operation_name})")
-                segs.append(seg)
 
-            if blocks and blocks[-1]["tool"] == tool:
-                blocks[-1]["segments"].extend(segs)
-            else:
-                blocks.append({
-                    "tool": tool,
-                    "description": description,
-                    "spindle_speed": spindle_speed,
-                    "segments": segs,
-                })
+def block_tool_sequence(placements: List[PlacedPart]) -> List[str]:
+    """
+    The tool of every block the generator will emit, in order.
+
+    Each block opens with its own `T# M06`, so `len()` of this list is the job's
+    tool-change count. It is NOT the distinct-tool list: a tool that recurs at a
+    later pass index appears again, because the machine really does change back
+    to it. `[T1, T2, T1, T2]` is two tools and four changes.
+    """
+    seq: List[str] = []
+    for tool, _group in _iter_pass_groups(placements):
+        if not seq or seq[-1] != tool:
+            seq.append(tool)
+    return seq
+
+
+def _build_blocks(placements: List[PlacedPart], rails: Optional[dict] = None,
+                  x_off_mm: float = 0.0, y_off_mm: float = 0.0) -> list:
+    """
+    Produce an ordered list of tool blocks from all placements.
+
+    Append to the previous block when the tool matches; otherwise start a new
+    one. This preserves each part's internal operation order while merging
+    identical consecutive tools across parts.
+    """
+    blocks: list = []
+
+    for tool, group in _iter_pass_groups(placements):
+        segs: list = []
+        description = ""
+        spindle_speed = 18000
+
+        for placed, gp in group:
+            raw_lines = gp.lines
+            if not description:
+                description = _tool_comment(raw_lines)
+            spd = _spindle_speed(raw_lines)
+            if spd:
+                spindle_speed = spd
+            body = _extract_body(raw_lines)
+            params = _transform_params(placed, rails, x_off_mm, y_off_mm)
+            seg = _transform_body(body, params)
+            # The pass's first operation is named on the line above the tool
+            # change, which puts it outside the body; later operations carry
+            # their names inline and survive on their own. Restore it here so
+            # every operation in the master file is labelled. It rides on the
+            # segment rather than the block because the travel sort reorders
+            # segments, and the name has to stay with its own geometry.
+            if gp.operation_name:
+                seg.insert(0, f"({gp.operation_name})")
+            segs.append(seg)
+
+        if blocks and blocks[-1]["tool"] == tool:
+            blocks[-1]["segments"].extend(segs)
+        else:
+            blocks.append({
+                "tool": tool,
+                "description": description,
+                "spindle_speed": spindle_speed,
+                "segments": segs,
+            })
 
     return blocks
 

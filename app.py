@@ -21,11 +21,13 @@ from config import (
     load_config, save_config,
     _sanitize_path_str, normalize_library_paths, resolve_library_root,
 )
-from gcode_generator import generate_master_gcode
+from gcode_generator import block_tool_sequence, generate_master_gcode
 from gcode_parser import GcodePart, parse_vcarve_text
 from gcode_validator import format_findings, validate_gcode
 from pdf_report import generate_layout_pdf, palette_color as pdf_palette_color
-from runtime_estimator import estimate_lines_runtime, format_duration
+from runtime_estimator import (
+    DEFAULT_TOOL_CHANGE_SECONDS, estimate_lines_runtime, format_duration,
+)
 from tool_library import ToolLibrary
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -221,16 +223,27 @@ def _compute_job_stats() -> dict:
     )
     utilization = round(used_area / bed_area * 100, 1) if bed_area else 0.0
 
-    # Per-part runtimes already include each part's internal T# M06 events.
-    # Summing slightly overestimates because the generator merges consecutive
-    # same-tool blocks across parts; the .txt report runs the estimator over
-    # the actual merged G-code for the precise number.
-    runtime_seconds = sum(p.part.runtime_seconds for p in _placements.values())
+    # The tool of every block the generator will emit, in emitted order. Its
+    # length is the tool-change count: a tool that recurs at a later pass index
+    # gets changed back to, so this is longer than `ordered_tools` whenever the
+    # parts disagree about tool order. Counting distinct tools instead understated
+    # both the change count and the run time (issue #7).
+    block_tools = block_tool_sequence(list(_placements.values()))
+
+    # Per-part runtimes deliberately exclude tool-change time (the generator
+    # merges same-tool passes across parts, so a part's own change count means
+    # nothing in a merged job). Charge it once per emitted block instead. The
+    # .txt report runs the estimator over the actual merged G-code for the
+    # precise number; this is the live approximation.
+    runtime_seconds = (
+        sum(p.part.runtime_seconds for p in _placements.values())
+        + len(block_tools) * DEFAULT_TOOL_CHANGE_SECONDS
+    )
 
     capacity = _tool_capacity()
     return {
         "tool_sequence": ordered_tools,
-        "tool_changes": max(0, len(ordered_tools) - 1),
+        "tool_changes": len(block_tools),
         "tool_count": len(ordered_tools),
         "tool_capacity": capacity,
         "tools_over_capacity": len(ordered_tools) > capacity,
@@ -335,7 +348,10 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
         "bed_y_mm": float(settings["advanced"]["bed_y_mm"]),
         "safe_z": settings.get("job_safe_z", {}),
         "tool_sequence": list(tools_seen.keys()),
-        "tool_changes": max(0, len(tools_seen) - 1),
+        # Counted off the emitted file's own T# M06 lines rather than derived
+        # from the tool list — the file is the thing the machine runs, and a
+        # recurring tool is a real change back (issue #7).
+        "tool_changes": runtime["tool_change_count"] if runtime else 0,
         "parts_count": len(parts),
         "runtime": format_duration(runtime["seconds"]) if runtime else None,
     }
