@@ -848,6 +848,36 @@ def test_block_tool_sequence_counts_every_emitted_tool_change():
     assert len(re.findall(r"^N\d+\s+T\d+ M06\b", gcode, re.MULTILINE)) == len(seq)
 
 
+# ── H follows T ───────────────────────────────────────────────────────────────
+#
+# The control is assumed to honour G43 H# as a register index rather than
+# substituting a live measured length (issue #5). Under that assumption a stray H
+# is a wrong Z, so every block's H has to match the tool it just changed to —
+# including a tool that recurs, where the second block must re-issue its own H.
+
+def test_every_block_asserts_the_h_of_the_tool_it_just_changed_to():
+    placements = [
+        _placed(THREE_PASS_T2_T4_T2, "A", 39, "i1"),
+        _placed(TWO_PASS_T2_T4, "A", 26, "i2"),
+    ]
+    gcode = generate_master_gcode(placements, SETTINGS)
+
+    pairs, pending = [], None
+    for line in gcode.splitlines():
+        t = re.search(r"\bT(\d+) M06\b", line)
+        if t:
+            pending = t.group(1)
+            continue
+        h = re.search(r"\bG43 H(\d+)\b", line)
+        if h:
+            pairs.append((pending, h.group(1)))
+            pending = None
+
+    assert pairs, "no G43 blocks emitted"
+    assert len(pairs) == len(block_tool_sequence(placements))
+    assert all(t == h for t, h in pairs), pairs
+
+
 # ── vertical-plane (G18/G19) ramp arcs ────────────────────────────────────────
 #
 # VCarve emits lead-in/lead-out ramps as arcs in a vertical plane: G19 (file YZ)

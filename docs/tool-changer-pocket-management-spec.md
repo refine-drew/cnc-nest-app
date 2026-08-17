@@ -151,7 +151,22 @@ so the offset table is pocket-indexed, and a remap that moves `T` without moving
 `H` applies the wrong tool-length offset. Wrong Z. Crash or air-cut.
 
 This invariant holds under both candidate safety postures, so it is safe to build
-against before #5 and #8 resolve.
+against before #8 resolves.
+
+**2026-08-17 — #5 is resolved by assumption: the control honours `G43 H#`.**
+Syntec's manual defines `H` as a register index; the machine test that would
+confirm ShopSabre has not modified that has not been run, and the app now assumes
+it has not. The assumption is deliberately in the **strict** direction — the world
+where `H` is honoured is the world where getting it wrong cuts at the wrong Z, so
+building for it is safe whether or not the live measured length would have
+overridden it. The invariant is therefore **load-bearing, not merely tidy**, and
+the geometry guarantee (#12) has to carry the full weight: `H` is the one word
+outside the geometry set whose value can put the cutter at the wrong depth.
+
+`gcode_validator._check_g43` enforces it at `ERROR` — an `H` that does not match
+the preceding `T` blocks the file from being written. That severity is a
+consequence of this assumption and must not be softened to a warning while it
+stands.
 
 ### 4.2 Order of operations is preserved
 
@@ -185,7 +200,6 @@ Frontier (takeable now):
 
 | # | Ticket | Type | Why it matters |
 |---|---|---|---|
-| [#5](https://github.com/refine-drew/cnc-nest-app/issues/5) | Does the SS2 control honour `G43 H#`? | task | Sets how much of the safety argument rests on H. **Docs half done** — Syntec's manual defines `H` as a register index set by per-tool touch-off; what ShopSabre's "auto tool" does to it needs the machine |
 | [#6](https://github.com/refine-drew/cnc-nest-app/issues/6) | Measure one touch-off cycle on the SS2 | task | **Needs the machine.** Turns the posture fork into arithmetic |
 | [#7](https://github.com/refine-drew/cnc-nest-app/issues/7) | Fix the tool-change undercount | task | Nothing about posture cost is trustworthy until this is honest |
 | [#20](https://github.com/refine-drew/cnc-nest-app/issues/20) | Parse Fusion tool headers | task | 9 of 26 library files yield no tool identity at all; identity matching has nothing to match on for them. **Now the primary path, not a compatibility patch** |
@@ -196,13 +210,14 @@ Resolved:
 | # | Ticket | Answer |
 |---|---|---|
 | [#4](https://github.com/refine-drew/cnc-nest-app/issues/4) | Can tool identity come from the VCarve tool database? | **No** — see §3.1. The library is hand-maintained, with aliases |
+| [#5](https://github.com/refine-drew/cnc-nest-app/issues/5) | Does the SS2 control honour `G43 H#`? | **Assumed yes** (2026-08-17, operator's call) — see §4.1. Syntec documents `H` as a register index; the machine check was not run. The assumption is the strict branch, so `H`-follows-pocket is load-bearing and the geometry test must cover `H` |
 | [#21](https://github.com/refine-drew/cnc-nest-app/issues/21) | What stable per-tool identity can the Fusion REFINE post emit? | **`vendor` + `productId`**, or an explicit `comment`. No library-wide GUID exists; `toolId` is document-scoped and must not be used. Identity therefore rests on operator-maintained Fusion library fields — which puts CAM tool hygiene on the critical path, contesting an out-of-scope ruling. See §6.2 |
 
 Blocked:
 
 | # | Ticket | Blocked by |
 |---|---|---|
-| [#8](https://github.com/refine-drew/cnc-nest-app/issues/8) | Choose the safety posture | #5, #6, #7 |
+| [#8](https://github.com/refine-drew/cnc-nest-app/issues/8) | Choose the safety posture | #6, #7 |
 | [#9](https://github.com/refine-drew/cnc-nest-app/issues/9) | Define tool identity matching, and no-match behaviour | #20, #21 |
 | [#10](https://github.com/refine-drew/cnc-nest-app/issues/10) | Define pocket auto-assignment and conflict resolution | #9 |
 | [#11](https://github.com/refine-drew/cnc-nest-app/issues/11) | Tool changer interface: 8 pockets, drag to reassign | #10 |
@@ -218,6 +233,16 @@ Blocked:
    wrong pocket assignment or stale offset **cannot propagate into a crash**.
    Remapping becomes self-correcting, which deletes the single largest safety
    risk in the feature.
+
+**Resolving #5 by assumption does not settle posture 2's safety claim.** Assuming
+the control honours `H` says what the *program* means; it says nothing about where
+ShopSabre's "auto tool" writes the length it measures at `T#` time. If that write
+lands in the `H` register, posture 2 is self-correcting as described. If it
+bypasses `H`, then under our assumption the program still reads the register — and
+a stale register beats a fresh measurement. Posture 2's whole advantage rests on
+that unobserved detail, so #8 cannot lean on "self-correcting" without checking
+it on the machine. Posture 1 needs no such check: it is correct under the
+assumption as it stands.
 
 The operator's objection to posture 2 is wasted time. That cost is likely much
 smaller than intuition suggests: order-of-operations merging already calls each

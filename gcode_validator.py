@@ -302,6 +302,11 @@ def _check_g43(code: str, n: int, raw: str, gs: List[int], st: _State) -> List[F
         out.append(Finding(ERROR, "g43-offset", n, raw.strip(),
                            "G43 with no H word — the control applies an undefined "
                            "tool length offset."))
+    # ERROR, not WARNING, because the control is assumed to honour H rather than
+    # substitute a live measured length (issue #5, decided 2026-08-17). Under that
+    # assumption a mismatched H is a wrong Z, which a check can prove from the file
+    # alone. If the machine is ever observed to ignore H, this drops to advisory —
+    # until then it blocks the write.
     elif st.tool is not None and h.group(1).lstrip("0") != st.tool.lstrip("0"):
         out.append(Finding(
             ERROR, "g43-offset", n, raw.strip(),

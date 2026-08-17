@@ -77,6 +77,21 @@ finished file and is the precise figure; `_compute_job_stats` is the live
 approximation. The per-change cost is still `DEFAULT_TOOL_CHANGE_SECONDS = 30.0`,
 a placeholder until one cycle is actually timed (issue #6).
 
+**`H` is assumed to be honoured, and `H` always equals `T`.** Decided
+2026-08-17 (issue #5): Syntec documents `H` as an index into a touch-off register,
+and we assume ShopSabre has not replaced that with a live measured length. So
+`gcode_generator` derives `H` from the tool number (`T2` → `G43 H2`) and
+`gcode_validator._check_g43` rejects any mismatch at **`ERROR`**. Both follow from
+the assumption; don't soften either while it stands. The assumption was taken in
+the strict direction on purpose — if `H` really is honoured, a wrong one cuts at
+the wrong Z, and if it is inert, emitting the matching number costs nothing. The
+machine check (run `G43` against a deliberately wrong register in air and watch
+whether Z shifts) was never run, and it still matters for one thing only: whether
+"auto tool" writes into the `H` register, which is the entire basis of the
+self-correcting safety posture in
+`docs/tool-changer-pocket-management-spec.md` §6.1. Touch-off is per **pocket**,
+not per cutter, so when pocket remapping lands, `H` moves with the pocket.
+
 **`tool_library.py`** — simple tool registry. Resolves tool diameters from file headers or user-supplied overrides.
 
 **`config.py`** — loads/saves `config.json`. Config defines library paths (a list of candidates; the first that exists locally wins), output path, tool definitions, bed dimensions, per-rail geometry (`advanced.rails` — see Coordinate Systems), `tool_capacity` (generation is blocked above it), fence-origin offsets, safe Z, and slot positions.
