@@ -6,6 +6,14 @@ implementation until at least the safety-posture decision (#8) and the
 identity-matching decision (#9) have closed — everything structural depends on
 them.
 
+> **2026-08-17 — #10 is resolved.** Pocket auto-assignment, the validity gate and
+> the tool library are now specified in **§3.2, §3.4 and §3.5**. The headline is
+> that the auto-assigner **makes no arbitrary choices at all**: it seeds each
+> tool's declared default slot, surfaces collisions instead of breaking ties,
+> stages tools that have no declared home, and blocks generation until the
+> operator has resolved everything. Determinism therefore falls out rather than
+> needing a rule. #11 and #13 are unblocked.
+
 > **2026-08-15 — Fusion is now the primary CAM tool.** VCarve is retained for
 > simple one-offs only, and **the REFINE post-processor is editable**. This map
 > was charted when Fusion was "down the road", so read §3.1 with that in mind:
@@ -15,9 +23,11 @@ them.
 > qualify — not overturn — that section for the primary corpus.
 
 - Map: [Tool changer pocket management — spec](https://github.com/refine-drew/cnc-nest-app/issues/3)
-- Discovery session: `brainstorms/2026-08-12-tool-changer-pocket-management.md`
+- Discovery sessions: `brainstorms/2026-08-12-tool-changer-pocket-management.md`,
+  `brainstorms/2026-08-17-pocket-auto-assignment.md` (#10 — assignment, the
+  validity gate, the tool library)
 - Reference Fusion output: `~/Documents/Windows Bridge Folder/18G.nc`
-- Date: 2026-08-12, revised 2026-08-15
+- Date: 2026-08-12, revised 2026-08-15 and 2026-08-17
 
 ---
 
@@ -43,11 +53,29 @@ both say `T4` while meaning different cutters are **merged into a single `T4`
 block** and cut with whatever is physically loaded.
 
 `app._tool_compatibility()` already detects this: it compares descriptions per
-`T#` and sets `conflict` / `has_conflict`. **Nothing blocks generation on it.**
-The app can emit a job that cuts geometry with the wrong tool right now.
+`T#` and sets `conflict` / `has_conflict`.
+
+**2026-08-17 — correcting this section.** It previously read *"Nothing blocks
+generation on it."* **That is wrong, and was wrong when written.** The gate exists
+in both layers and has since the original build:
+
+- `static/job.js:36` and `templates/index.html:342` `_updateTopButtons()` disable
+  the Generate button whenever `compatibility.has_conflict` is set (`404e228`).
+- `app.py:661` rejects `/api/generate` with **422 "Resolve tool compatibility
+  conflicts before generating"** (`785bea9`).
+
+The defect is real but **narrower and nastier than "unenforced"**: what is unsound
+is *detection*, not enforcement. `conflict` fires only when one `T#` carries
+**differing** description strings, so two genuinely different cutters that share a
+stale identical string are never flagged, and sail through both gates into a merged
+block. The library corpus contains exactly that case — `T2` and `T9` both post
+`(T… = End Mill {0.5 inch})` byte-for-byte in one file. So the gate is sound in the
+safe direction and blind in the dangerous one, which is the inverse failure §3.1
+warns about.
 
 This should be treated as a bug with a safety consequence, independent of
-whether the full feature ships.
+whether the full feature ships. The fix is a sound signal feeding the gate that is
+already there — see §3.4 — not a new gate.
 
 ---
 
@@ -104,6 +132,25 @@ fundamentally, CAM records *what a tool is*; this app must record *where it
 lives*. Good CAM hygiene makes matching reliable — it does not make the app-side
 library unnecessary.
 
+**2026-08-17 — the alias list is the identity mechanism, not the match key (#10).**
+Because the library is hand-typed and the app imports nothing (§3.5), `vendor` +
+`productId` cannot be relied on to match byte-for-byte what a post wrote into a
+file. First encounter of a tool therefore usually **misses**; the operator binds it
+once by hand and the alias remembers it. **Auto-matching is the steady state,
+manual binding is the onboarding step** — which is why the alias list, introduced
+above as a supporting detail, is in fact load-bearing.
+
+This also settles the scope question §6.2 raised: with aliases carrying identity,
+CAM-side tool hygiene improves the hit rate but is **not a precondition** of the
+feature, so §7's out-of-scope ruling stands.
+
+**What no file can ever supply.** Measured across the whole library on 2026-08-17:
+**nothing from either CAM names the flute direction.** VCarve writes `End Mill`;
+Fusion writes `FLAT END MILL`. Upcut, downcut and compression — the distinction
+this section opens by saying must never merge — appear in **no file the shop owns**.
+That is the library's deepest justification: it is not merely a convenient place to
+record where a tool lives, it is the **only** place that fact can exist at all.
+
 ### 3.2 Pocket assignment is job-scoped
 
 The app holds **no model of the physical changer contents**. There is no state to
@@ -115,8 +162,56 @@ operator's expectation is that suggested values "will likely match the real tool
 changer anyway". Matching physical reality is an operator convenience, never an
 app obligation.
 
-Because assignment is job state, it **must round-trip through the `.cnj` save/load
-format** alongside `_placements`.
+**Assignment is pure in-memory job state, like `_placements`.** This section
+previously required it to round-trip through the `.cnj` save/load format; that
+requirement is **void** — save/load job is being sunset, because a nest is quick
+enough to rebuild that reloading one was never worth the format (2026-08-17). One
+consequence worth naming: nothing persists a pocket map, so the entire class of
+"stale override in a saved job" problems does not exist.
+
+#### 3.2.1 The assigner makes no arbitrary choices (#10)
+
+This is the governing principle, and every rule below is a consequence of it. The
+app never invents a pocket, never breaks a tie, and never learns one behind the
+operator's back.
+
+- **An unhonoured default slot is real physical work**, not a cosmetic loss. The
+  operator pulls a cutter, re-seats it and touches it off (27 s + 30 s, §6.1). So
+  the objective is to **minimise physical tool moves**, and honouring declared
+  default slots is the proxy for it.
+- **Collisions are surfaced, never resolved.** Two tools declaring the same default
+  slot both occupy it, visibly and invalidly, until the operator drags one out.
+  **There is no tie-break rule** — the app cannot know which cutter is cheaper to
+  move, precisely because it holds no model of the changer's contents.
+- **The invalid state must be permitted, not refused at drop time.** Swapping two
+  tools is impossible without transiting a double-occupied pocket, so refusing the
+  drop would deadlock the swap. Dropping onto an occupied pocket therefore makes the
+  two **coexist** — it does not swap them and is not rejected.
+- **A tool with no declared default slot is staged, not placed.** It goes to a
+  "needs a home" area and waits. The app does **not** fill the lowest free pocket.
+  Because the create-tool flow is where a default slot is declared (§3.5), a
+  populated library leaves little staged, so this stays an exception path.
+- **The default slot is prescriptive, not descriptive.** It records where a tool
+  *belongs*. A drag is a **job-scoped override that never writes back to the
+  library**; the app re-proposing the standard pocket on the next job is the
+  **intended nag**, and operators getting used to seeing tools in the same places is
+  the point. The library UI is the only place a default slot changes.
+- **Nothing is ever refused at placement — not even exceeding 8 tools.** The
+  distinct-tool count is **not final at placement time**, because identity merging
+  (§3.5) can still lower it; blocking the 9th tool would block a job that is really
+  an 8-tool job once the operator corrects a duplicate. Only *generation* is
+  refused.
+
+Because none of these steps chooses anything, **determinism is a consequence rather
+than a requirement**: the map is a pure function of *(resolved tools, library
+default slots)* plus the operator's drags. No fill order, no tie-break, no
+write-back, no clock, nothing dictionary-ordered. The same files against the same
+library give the same map every time, so setup sheets cannot drift.
+
+One constraint for the implementer, from §4.2: the assigner must run off
+**identity-ordered data, never the remapped `T` numbers**. `_build_blocks` sorts by
+the `T#` string, so an assigner reading post-remap numbers would make the output
+depend on an assignment that depends on the output.
 
 ### 3.3 Every `T#` is remappable
 
@@ -126,6 +221,169 @@ program. The `T99` entry in `config.json` is leftover test data, not a conventio
 
 No allow-list, no reserved range, no exclusions. This is a significant
 simplification and it should stay that way — see §7.
+
+### 3.4 The validity gate (#10)
+
+A job is **valid** — Generate enabled — when all three hold:
+
+1. **Every file tool resolves to a library tool.** Nothing unmatched.
+2. **Every resolved tool sits in exactly one pocket.** Nothing left staged.
+3. **No pocket holds more than one tool.**
+
+**Capacity is not a fourth rule, it is a consequence.** With eight pockets, rules 2
+and 3 together make ">8 distinct tools" unsatisfiable, so over-capacity needs no
+mechanism of its own: the ninth tool is simply a tool with nowhere to go, sitting in
+"needs a home" with Generate disabled. This also answers §8's open question about
+over-capacity after de-dup — the staging framing holds whether identity resolution
+*raises* the count (one `T#` that is two cutters) or *lowers* it (two `T#`s that are
+one cutter), because it never needed to know which happened.
+
+`gcode_generator`'s capacity `ValueError` and the 422 at `app.py:661` remain as
+**backstops**, the way `gcode_validator` backs up the placement-time envelope check.
+The stricter check runs first; the second line of defence stays.
+
+**This gate is existing machinery re-pointed, not new machinery** — see the §1.1
+correction. What changes is the *signal*: `has_conflict`, which is unsound in the
+dangerous direction, is replaced by the three rules above.
+
+#### 3.4.1 What the operator has to be able to see
+
+- **Every tool shows its parent part(s)** — which placed instances require it — so
+  the operator can find the part to delete when the changer is full. The data
+  already exists as `_tool_compatibility`'s per-tool `usages`, which is
+  what makes this cheap: the panel this feature retires supplies its replacement.
+  Show placed **instances**, not just filenames (`_instance_counts`).
+- **Better than making them scan: name the part.** Compute which placed parts are
+  the **sole** user of a tool, so the app can say *"removing bracket-L frees pocket 7
+  — no other part uses ⅜" comp."* Parts that share every tool with something else
+  cannot help and get no badge.
+- **A tool sitting away from its default pocket must be marked**, or the deviation is
+  invisible and never gets restored — which defeats §3.2.1's prescriptive default.
+- **Two messages off one state.** "3 tools have no home" is a to-do when free pockets
+  exist and a *stop* when the changer is full — dragging cannot fix the second, and
+  an operator would otherwise hunt for a free pocket that does not exist. Operators
+  are not developers; the wording carries the difference.
+- **The changer surface is a full-window-width collapsible dock** above the status
+  bar, 8 pockets left-to-right to match how the machine is read, force-expanded while
+  the map is invalid so a disabled Generate always has a visible reason. It replaces
+  the right sidebar's `#compat-section`, which is where the screen budget comes from.
+  Layout detail and the agreed mockup are in
+  `brainstorms/2026-08-17-pocket-auto-assignment.md`; **#11 owns the build.**
+
+### 3.5 The tool library (#10)
+
+**Standalone, hand-maintained, and it imports nothing.** Reading Fusion `.tools`
+(JSON) or VCarve `.vtdb` (SQLite, per #4) was considered and **rejected for v1** on a
+hard constraint: the shop PC running CNC Nest may have no Fusion install at all, so
+the design must not depend on reaching a CAM library. Dual maintenance is an accepted
+cost. A sync feature is a **future ticket, explicitly not a dependency**.
+
+It lives in its own **`tool_library.json`** — operator data with its own lifecycle,
+backed up separately, portable to a second machine, and kept out of the settings file
+the settings panel writes. `config.json`'s pocket-keyed `tools` map seeds a one-time
+migration; most of it is junk to discard rather than carry (`T99` marked "test", `T5`
+with an empty name).
+
+#### 3.5.1 Entry schema
+
+The discipline: **every field has a named consumer. A field without one does not
+belong.**
+
+| field | req? | consumed by |
+|---|---|---|
+| `id` | ✔ | primary key — app-assigned, **never a `T#`**. What the pocket map references |
+| `name` | ✔ | changer dock, setup sheet (#13) — e.g. `1/2" downcut spiral` |
+| `diameter_inches` | ✔ | tool-radius collision, **X envelope inflation**; **replaces** the parsed-file diameter |
+| `geometry_class` | ✔ | `flat` / `ball` / `radius` / `chamfer` / `form` / `drill` — enumerated from the real corpus |
+| `flute_direction` | ✔ | `up` / `down` / `compression` / `straight` — **the field no file can supply** (§3.1); what blocks the merge |
+| `default_slot` | — | pocket seeding; **null → staged**, and null is a legitimate answer |
+| `aliases[]` | — | the actual match mechanism (§3.1); grows one entry per manual bind |
+| `vendor` + `product_id` | — | exact match when populated (#21); usually blank with no import |
+| `corner_radius_in`, `taper_deg`, `flutes` | — | **verification only, never keys** — check the file's `CR=` / `TAPER=` against the declaration |
+
+`geometry_class` and `flute_direction` are **deliberately separate**: up/down/
+compression is orthogonal to flat/ball/chamfer, so two short lists beat a dozen
+combined classes.
+
+**Explicitly excluded: feeds, speeds, stepover, tool length, holder.** CAM owns
+cutting parameters; the app needs geometry only for collision, envelope and identity.
+Stated as a boundary so the schema stops growing.
+
+`default_slot` is **optional on purpose.** Requiring it would force a guess at create
+time, and a guessed default is a wrong prescription — which §3.2.1 makes the
+library's whole job to get right. Optional is also the only thing that makes staging
+meaningful rather than dead code.
+
+#### 3.5.2 The library is the diameter authority
+
+This is a safety fix that falls out of the feature and has nothing to do with pockets.
+CLAUDE.md records that `_max_tool_radius` reads
+`part.tools[...]["diameter_inches"]` **straight from the parsed file**, and that
+Fusion's `(T2 D=12.7 …)` header parses to diameter **0** (#20). So Fusion files —
+the *primary* corpus — currently **under-inflate both the X envelope check and the
+tool-radius collision check.** Once a tool resolves to a library entry, its declared
+diameter supplies a true radius, which routes around #20 for safety purposes even
+before the parser is fixed.
+
+Fusion's headers also make verification non-vacuous: `D=12.7 CR=6.35 TAPER=45DEG`
+can be checked *against* the declaration rather than trusted as identity.
+
+#### 3.5.3 Match-on-load, and the two guards
+
+Loading a job resolves each file tool against the library:
+
+- **Match** → bind, take its default slot.
+- **No entry** → prompt the operator to **create a new tool** (this is where a default
+  slot gets declared).
+- **No automatic match** → the operator **binds it by hand**, and the alias remembers.
+
+Two guards, both biased against §3.1's dangerous direction:
+
+- **(a) Resolution is injective within a single file.** Two distinct `T#` in one `.nc`
+  must **never** resolve to the same library tool — CAM already asserted they differ
+  by giving them different pockets. A collision here is a **hard stop requiring manual
+  disambiguation, never a merge.** This is what catches the measured `T2`/`T9`
+  byte-identical case. Deliberately **per file only**: two *different* files' `T4`
+  resolving to one library tool is the feature working as intended.
+- **(b) A manual bind is refused on diameter disagreement.** Binding a 0.25" toolpath
+  to a 0.5" library tool is scrap or a crash with no legitimate use, so refuse rather
+  than warn. Where diameter agrees but flute direction cannot be read from the file —
+  always, per §3.1 — the app binds what the operator says and that ambiguity is theirs.
+
+**Open, and owned by #9:** guards (a) and the alias mechanism are in tension on one
+real file. `T2` and `T9` emit the same string in the same file, so (a) correctly
+refuses to merge them — but the manual bind then has nothing durable to key on except
+`T#`, the token this feature exists to distrust. Candidates (scope the binding to
+`(filename, T#)`; treat the file as unusable until re-posted; accept `T#` as a
+within-file discriminator only) are logged in the 2026-08-17 brainstorm. **Resolve
+this in #9 before implementation.**
+
+#### 3.5.4 Lifecycle
+
+The pattern across all of these: **the library can always be corrected, but a
+correction never silently changes what the machine will cut.**
+
+- **Merge two entries** — the operator picks the survivor, the loser's aliases fold
+  into it, the loser is deleted. That is all a merge needs to be, because aliases
+  carry identity: merging is the operator saying *"these strings were always the same
+  cutter."* Required because a VCarve file and a Fusion file for one physical cutter
+  will otherwise produce two entries.
+- **Deleting a tool that is in use is refused**, listing the placed parts that resolve
+  to it (§3.4.1's attribution doing a second job).
+- **Editing `diameter_inches` or geometry on a placed tool re-runs collision and the
+  envelope check, and newly-colliding placements are DELETED, with the operator
+  told.** Not flagged-and-kept: the edit exists *because* the old data was wrong, so a
+  placement derived from the error is **invalid rather than merely suspect**. This is
+  the first path in the app by which an already-validated placement can become wrong
+  retroactively — everything else is checked once, at drop time.
+- **Re-binding a toolpath to a different library tool ("shift") is an operator
+  power** — selecting a valid library tool for those toolpaths.
+
+**Two different "shift" operations exist and must not be conflated in the UI:**
+re-binding a *toolpath to a library tool* (identity) versus moving a *library tool to
+a pocket* (position). Blurring them re-creates the exact double-duty confusion §1
+exists to remove. Identity re-binding is also the one path that can merge two
+genuinely different cutters **by operator action**, which is what guard (b) is for.
 
 ---
 
@@ -179,6 +437,11 @@ One caveat to carry into implementation: `for tool in sorted(by_tool)` sorts by
 the `T#` *string*, so renumbering pockets can change block ordering and therefore
 the tool-change count. Whether that reordering is acceptable is open — see #12.
 
+That caveat imposes a hard constraint on the assigner, stated in §3.2.1 and repeated
+here because this is where it bites: **the assigner must run off identity-ordered
+data, never the remapped `T` numbers.** An assigner that read post-remap numbers
+would make the emitted output depend on an assignment that depends on the output.
+
 ---
 
 ## 5. Counting was wrong (#7 — fixed)
@@ -206,25 +469,30 @@ Frontier (takeable now):
 | [#8](https://github.com/refine-drew/cnc-nest-app/issues/8) | Choose the safety posture | grilling | **Now unblocked** — #6 and #7 are both resolved, so the tradeoff is arithmetic. See §6.1 |
 | [#20](https://github.com/refine-drew/cnc-nest-app/issues/20) | Parse Fusion tool headers | task | 9 of 26 library files yield no tool identity at all; identity matching has nothing to match on for them. **Now the primary path, not a compatibility patch** |
 | [#12](https://github.com/refine-drew/cnc-nest-app/issues/12) | Define the no-geometry-change guarantee and its proving test | grilling | Turns the hard constraint into a test |
+| [#11](https://github.com/refine-drew/cnc-nest-app/issues/11) | Tool changer interface: 8 pockets, drag to reassign | prototype | **Unblocked by #10.** Surface, drag semantics and the mockup are settled in §3.4.1 — the build and the layout details are #11's |
+| [#13](https://github.com/refine-drew/cnc-nest-app/issues/13) | Define the operator setup sheet | grilling | **Unblocked by #10.** Note §3.2.1: a deviation from a default slot is a **temporary** instruction ("⅜" comp → pocket 6 for this job, return to 4"), because the standard is what the operator is trained toward |
 
 Resolved:
 
 | # | Ticket | Answer |
 |---|---|---|
 | [#6](https://github.com/refine-drew/cnc-nest-app/issues/6) | How long is one touch-off cycle? | **Swap 27 s, swap + touch-off 57 s → touch-off is 30 s** (2026-08-17, timed on the machine). Charged on every `T# M06`. See §6.1 |
+| [#10](https://github.com/refine-drew/cnc-nest-app/issues/10) | Pocket auto-assignment and conflict resolution | **Resolved 2026-08-17** — see §3.2.1, §3.4, §3.5. **The assigner makes no arbitrary choices**: no tie-break (collisions surface), no fill rule (blanks stage), no write-back (defaults are prescriptive), nothing refused at placement. Determinism follows. Taken **ahead of #9** on the grounds that assignment consumes *"a set of resolved tools each with an optional default slot"* and does not care how resolution happened |
 | [#7](https://github.com/refine-drew/cnc-nest-app/issues/7) | Tool-change undercount | **Fixed** — counted off the emitted blocks, not distinct tools |
 | [#4](https://github.com/refine-drew/cnc-nest-app/issues/4) | Can tool identity come from the VCarve tool database? | **No** — see §3.1. The library is hand-maintained, with aliases |
 | [#5](https://github.com/refine-drew/cnc-nest-app/issues/5) | Does the SS2 control honour `G43 H#`? | **Assumed yes** (2026-08-17, operator's call) — see §4.1. Syntec documents `H` as a register index; the machine check was not run. The assumption is the strict branch, so `H`-follows-pocket is load-bearing and the geometry test must cover `H` |
-| [#21](https://github.com/refine-drew/cnc-nest-app/issues/21) | What stable per-tool identity can the Fusion REFINE post emit? | **`vendor` + `productId`**, or an explicit `comment`. No library-wide GUID exists; `toolId` is document-scoped and must not be used. Identity therefore rests on operator-maintained Fusion library fields — which puts CAM tool hygiene on the critical path, contesting an out-of-scope ruling. See §6.2 |
+| [#21](https://github.com/refine-drew/cnc-nest-app/issues/21) | What stable per-tool identity can the Fusion REFINE post emit? | **`vendor` + `productId`**, or an explicit `comment`. No library-wide GUID exists; `toolId` is document-scoped and must not be used. Identity therefore rests on operator-maintained Fusion library fields — which looked like it put CAM tool hygiene on the critical path. **It does not, as of #10:** the app imports no CAM library and the alias list carries identity, so hygiene is a hit-rate improvement, not a precondition. See §6.2 |
 
 Blocked:
 
 | # | Ticket | Blocked by |
 |---|---|---|
-| [#9](https://github.com/refine-drew/cnc-nest-app/issues/9) | Define tool identity matching, and no-match behaviour | #20, #21 |
-| [#10](https://github.com/refine-drew/cnc-nest-app/issues/10) | Define pocket auto-assignment and conflict resolution | #9 |
-| [#11](https://github.com/refine-drew/cnc-nest-app/issues/11) | Tool changer interface: 8 pockets, drag to reassign | #10 |
-| [#13](https://github.com/refine-drew/cnc-nest-app/issues/13) | Define the operator setup sheet | #10 |
+| [#9](https://github.com/refine-drew/cnc-nest-app/issues/9) | Define tool identity matching, and no-match behaviour | #20 (#21 closed) |
+
+#10 answered several of #9's branches in passing — no-match prompts tool creation,
+manual binding is supported, and the two guards in §3.5.3 are settled. What #9 still
+owns is the **matching rule itself** and the alias-collision hole flagged at the end
+of §3.5.3.
 
 ### 6.1 The decision that matters most
 
@@ -307,6 +575,13 @@ prevent. The map must either adopt "every physical cutter has a unique, populate
 `vendor`+`productId`" as a stated precondition, or accept `comment`-based identity
 and say so plainly. **Operator's call — not re-scoped here.**
 
+**2026-08-17 — settled by #10, and neither branch was needed.** The app imports no
+CAM library (§3.5), so `vendor`+`productId` is a *bonus* when populated rather than
+the key. Identity is carried by the **alias list**, learned one manual bind at a time
+(§3.1). Hygiene therefore improves the hit rate without being a precondition, and
+**§7's out-of-scope ruling stands unchanged.** The scope problem dissolved rather
+than being decided.
+
 ### 6.3 Recommended shape for the geometry guarantee (#12)
 
 Generate the master G-code twice from identical placements — once with the
@@ -330,16 +605,34 @@ failure by construction, rather than something a reviewer has to notice.
 ## 8. Not yet specified
 
 - **Schema migration.** `config.json`'s `tools` map is keyed by `T#` — i.e. by
-  *pocket* — and must become keyed by tool identity. `.cnj` job files must carry
-  the pocket assignment. Both migrate existing saved data.
-- **Over-capacity behaviour after de-dup.** Resolving identity may *lower* a
-  job's distinct-tool count (two `T#`s that are one cutter) or *raise* it (one
-  `T#` that is two cutters). What the app does at >8 is unclear until counting is
-  trustworthy.
-- **Pinning** a tool to a pocket the auto-assigner may not move.
-- **Fusion-era identity** — what a Fusion post could write to make matching
-  unambiguous, and whether specifying it now helps or prematurely constrains the
-  CAM migration.
+  *pocket* — and must become keyed by tool identity. **Destination is now specified**
+  (§3.5: a separate `tool_library.json`, `id`-keyed); what remains is the migration
+  itself, which is mostly discard — `T99` "test" and an empty-name `T5`.
+
+Closed since this list was written:
+
+- ~~**Over-capacity behaviour after de-dup.**~~ **Answered** — §3.4. Capacity stops
+  being a rule at all: the ninth tool simply has nowhere to go. The framing holds
+  whether resolution raises or lowers the count, because it never needed to know which.
+- ~~**Pinning** a tool to a pocket the auto-assigner may not move.~~ **Moot** — with
+  no fill rule, no tie-break and no write-back, **the assigner never moves anything**
+  (§3.2.1). There is nothing to pin against.
+- ~~**`.cnj` job files must carry the pocket assignment.**~~ **Void** — save/load job
+  is sunset (§3.2). The pocket map is pure in-memory job state.
+- ~~**Fusion-era identity.**~~ **Answered** by #21 and §6.2: `vendor`+`productId` when
+  populated, `comment` as fallback — and per §3.1 the alias list carries identity
+  regardless, so this no longer gates anything.
+
+New, opened by #10:
+
+- **The alias-collision hole** at the end of §3.5.3 — `T2`/`T9` emit one string in one
+  file, so a hand bind has nothing durable to key on. **#9 owns it.**
+- **Fusion/VCarve library sync** — deliberately deferred (§3.5), explicitly not a
+  dependency. Whoever takes it must pin a real `.tools` / `.vtdb` file as a fixture;
+  neither format has been verified against an actual file yet. Note the Fusion library
+  *file* carries a per-tool `guid` even though no GUID can reach a **posted file**
+  (#21 is right about the post) — different problems, different keys, and the guid is
+  what a re-import should reconcile on.
 
 ---
 
@@ -353,8 +646,15 @@ failure by construction, rather than something a reviewer has to notice.
 | `app.py:241` `_tool_compatibility` | Already detects the conflict; advisory only |
 | `app.py:232` | Under-reports tool changes (§5) |
 | `gcode_parser.py:137` `extract_tools` | Source of per-file `{T#: {description, diameter}}` |
-| `tool_library.py` | Today a `T#`→diameter registry; becomes the identity library |
+| `tool_library.py` | Today a `T#`→diameter registry; becomes the identity library (§3.5) |
 | `tool_library.py:39` `find_unknown_tools` | Existing block-on-unresolvable pattern to mirror |
-| `config.json` `tools` | Pocket-keyed today; must become identity-keyed |
+| `config.json` `tools` | Pocket-keyed today; seeds the one-time migration to `tool_library.json` |
+| `tool_library.json` | **New** — the identity library, `id`-keyed, operator data (§3.5) |
 | `static/bed.js`, `static/sidebar.js` | Where the changer UI has to live |
+| `templates/index.html:24` `#main` grid | The dock is a new full-width row above `#statusbar` (§3.4.1) |
+| `templates/index.html:201` `#compat-section` | **Retired** by the changer dock — this is the screen budget |
+| `static/job.js:36`, `index.html:342` | The Generate gate, already present; re-point it at §3.4's three rules |
+| `app.py:661` | The 422 gate, already present; becomes a backstop |
+| `collision.py:204` `_max_tool_radius` | Reads the parsed file's diameter; must read the library instead (§3.5.2) |
+| `app.py` `/api/save-job`, `/api/load-job` | **Delete** — save/load is sunset (§3.2) |
 | `pdf_report.py` | Natural home for the setup sheet |

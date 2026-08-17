@@ -34,7 +34,7 @@ No build step, linter, or type checker is configured.
 - `_placements`: dict of placed parts (placement ID → placement dict with rail, slot, transforms)
 - `_instance_counts`: tracks how many times each part has been placed (for unique IDs)
 - Key API routes: `/api/load-library`, `/api/place`, `/api/remove-placement`, `/api/generate`
-- `/api/save-job` and `/api/load-job` still exist (and are still tested) but have no GUI — the Save/Load Job buttons were removed as unused. Nothing in the app calls them.
+- `/api/save-job` and `/api/load-job` still exist (and are still tested) but have no GUI — the Save/Load Job buttons were removed as unused. Nothing in the app calls them. **Slated for deletion** (2026-08-17, issue #10): a nest is quick enough to rebuild that reloading one was never worth the format. Do not build on them, and do not add pocket assignment to `.cnj` — the pocket map is deliberately in-memory job state, like `_placements`.
 
 **`gcode_parser.py`** — parses `.nc`/`.mmg` VCarve G-code files into `GcodePart` dataclasses. Extracts blank dimensions, material thickness, tool info, XYZ bounding boxes per pass, and validates Z depths.
 
@@ -108,6 +108,29 @@ self-correcting safety posture in
 not per cutter, so when pocket remapping lands, `H` moves with the pocket.
 
 **`tool_library.py`** — simple tool registry. Resolves tool diameters from file headers or user-supplied overrides.
+
+**Pocket assignment: the assigner makes no arbitrary choices.** Decided 2026-08-17
+(issue #10), specified in `docs/tool-changer-pocket-management-spec.md` §3.2.1, §3.4
+and §3.5; not built yet. It seeds each tool's declared default slot and stops —
+**no tie-break** (two tools declaring one pocket both sit in it, visibly and
+invalidly), **no fill rule** (a tool with no declared slot is staged, never dropped
+into the lowest free pocket), **no write-back** (a drag is a job-scoped override; the
+default slot is *prescriptive*, and re-proposing it next job is the intended nag).
+Nothing is refused at placement — not even a 9th tool, because identity merging can
+still lower the count — and **only generation is gated**, on three rules: every file
+tool resolved, every resolved tool in exactly one pocket, no pocket holding two.
+Determinism is therefore a *consequence*, not a rule to enforce; don't add a
+tie-break "for stability" — that would be the one thing that breaks it.
+
+Two traps for whoever builds it. **The assigner must read identity-ordered data,
+never the remapped `T` numbers**: `_build_blocks` sorts by the `T#` string, so
+reading post-remap numbers makes the output depend on an assignment that depends on
+the output. And **the Generate gate already exists** — `static/job.js:36` and
+`app.py:661` both block on `_tool_compatibility`'s `has_conflict`. That gate is not
+missing, its *signal* is unsound: `conflict` fires only when descriptions **differ**,
+so two different cutters sharing a stale identical string are never flagged (the
+library has this case — `T2` and `T9` post `End Mill {0.5 inch}` byte-for-byte in one
+file). Re-point the gate; don't add another.
 
 **`config.py`** — loads/saves `config.json`. Config defines library paths (a list of candidates; the first that exists locally wins), output path, tool definitions, bed dimensions, per-rail geometry (`advanced.rails` — see Coordinate Systems), `tool_capacity` (generation is blocked above it), fence-origin offsets, safe Z, and slot positions.
 
@@ -237,6 +260,10 @@ check must be the one that runs first.
 parsed file, not the resolved `ToolLibrary`. The Fusion post writes `(T2 D=12.7
 … )` rather than `{0.5 inches}`, so those files parse to diameter 0 and both the
 envelope check and the existing tool-radius collision check under-inflate them.
+The fix is decided but not built: **the identity library becomes the diameter
+authority**, so a Fusion file that parses to 0 still inflates correctly once its
+tool resolves (spec §3.5.2). That routes around #20 for safety purposes without
+waiting on the parser.
 
 **Every parse assumes the file's origin is the blank's registration corner** —
 the VCarve convention, where all coordinates are positive. Nothing checks it.
