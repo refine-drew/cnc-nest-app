@@ -54,6 +54,16 @@ under every reading, a straight-down plunge may be exactly what was intended.
 never be "fixed" to `G21`. The three files from the 2026-08-15 output review are
 pinned as fixtures in `tests/test_gcode_validator.py`.
 
+**Job safe Z is the highest clearance any placed part needs, from either of two
+sources.** `app._compute_job_safe_z` takes the max of *(thickest material +
+`safe_z_clearance_mm`)* and *every part's own `part.safe_z`*, and names which one won
+in `driven_by`. `part.safe_z` is the **maximum** `G43 Z` in the file, not the first or
+last: Fusion writes one retract per operation and they differ per tool — `18G.nc` has
+`Z34.29` for T2 and `Z57.15` for T1, because T1 cuts a feature standing above the
+stock top. Reading a single one of them yields a clearance another tool in the same
+file crashes through, and the stock rule alone misses it entirely (issue #22). Higher
+is always the safe direction here; the cost is rapid seconds.
+
 **`runtime_estimator.py`** — walks a line stream tracking modal units, feedrate
 and XYZ, and returns cutting / rapid / tool-change seconds plus
 `tool_change_count`.
@@ -79,9 +89,12 @@ approximation.
 **The per-change cost is measured, and it is two numbers, not one.** Timed on the
 SS2 2026-08-17 (issue #6): the swap alone is 27 s, swap plus touch-off is 57 s, so
 `TOOL_SWAP_SECONDS = 27.0`, `TOUCH_OFF_SECONDS = 30.0`, and
-`DEFAULT_TOOL_CHANGE_SECONDS` is their sum. Keep them split — the safety posture
-(issue #8) switches the touch-off on and off, and collapsing them back to one
-constant deletes the only arithmetic that decides it.
+`DEFAULT_TOOL_CHANGE_SECONDS` is their sum. Keep them split. **The posture is now
+decided — "auto tool" on, every job (issue #8, 2026-08-17) — so the default is the
+chosen posture and the estimate needs no flag.** The split stays because it is the
+only arithmetic that shows what that choice costs (`TOUCH_OFF_SECONDS ×
+tool_change_count`, 4–7.5 min on a typical job, every run); collapsing the two
+constants deletes the record of an accepted cost.
 
 Touch-off is charged on **every** `T# M06`, not once per distinct tool: with "auto
 tool" on, the control measures at every call, so a tool the pass-index walk
@@ -101,9 +114,12 @@ the assumption; don't soften either while it stands. The assumption was taken in
 the strict direction on purpose — if `H` really is honoured, a wrong one cuts at
 the wrong Z, and if it is inert, emitting the matching number costs nothing. The
 machine check (run `G43` against a deliberately wrong register in air and watch
-whether Z shifts) was never run, and it still matters for one thing only: whether
-"auto tool" writes into the `H` register, which is the entire basis of the
-self-correcting safety posture in
+whether Z shifts) was **declined** on 2026-08-17, after #8 chose the always-on
+posture. The one thing it would have shown — whether "auto tool" writes into the `H`
+register — is therefore **unobserved, and the "self-correcting" property must not be
+cited as the safety basis for anything.** With it unproven, `H`-follows-pocket carries
+the full load alone: keep the strict reading, and make the #12 geometry test cover
+`H` as tightly as geometry. See
 `docs/tool-changer-pocket-management-spec.md` §6.1. Touch-off is per **pocket**,
 not per cutter, so when pocket remapping lands, `H` moves with the pocket.
 
@@ -198,12 +214,20 @@ crash a cutter. (`bed.js` gets the resolved geometry from `/api/slots`; placemen
 blanks arrive pre-computed as `placement.blank` so the canvas never recomputes them.)
 
 Slot positions are deliberately **independent of `bed_x_mm` / `bed_y_mm`**, which
-now only drive canvas/PDF extents and the utilization figure. Those two are still
-**provisional**: the readouts confirm the rails are antisymmetric about
-Y = 1561.5 (`A_Y(slot) + B_Y(slot) = 3123.0` at every slot), but that fixes the
-rails' shared centre, not the table's extent. Treating the centre as the bed centre
-is what yields 1668.788 × 3123.0. Replace both with real table dimensions when
-available; nothing in the cut path depends on them.
+only drive canvas/PDF extents and the utilization figure.
+
+Those two are **no longer provisional.** Confirmed 2026-08-17: the `machine_travel`
+extents below *are* the table's corners, so `bed_x_mm` / `bed_y_mm` are now the far
+corner in machine coordinates — **1606.4992 × 3098.0126**, replacing the inferred
+1668.788 × 3123.0. (The old pair came from the rails being antisymmetric about
+Y = 1561.5 — true, and it fixes the rails' shared centre, not the table's extent.)
+
+The canvas still draws from machine 0 to that far corner, so the drawn rectangle
+includes a sliver — X < 61.493, Y < 24.994 mm — that is **not table**. Nothing can
+be placed there (`check_envelope` gates on `machine_travel`), and utilization is
+computed against the true table area from those extents, not against the drawn
+rectangle. Keep it that way: the drawn extent is a frame, the travel box is the
+truth.
 
 #### Machine envelope
 
@@ -211,13 +235,25 @@ Separate from `bed_x_mm`/`bed_y_mm`: `advanced.machine_travel` holds the outer
 extents of the **machinable surface** and `advanced.edge_margin_in` the keep-out
 from them. `collision.check_envelope` gates placement on both.
 
-Measured off the machine layout drawing on 2026-08-17, in inches:
+Measured off the machine layout drawing on 2026-08-17, in inches. The X and Y
+figures are the **table's own corners** — the machinable surface and the table are
+the same rectangle:
 
 ```
 X  2.421 → 63.248      (60.827" usable)     ->   61.4934 → 1606.4992 mm
 Y  0.984 → 121.969     (120.985" usable)    ->   24.9936 → 3098.0126 mm
-Z  unmeasured                               ->   null (skipped) — issue #19
+Z  not checkable                            ->   null (skipped)
 ```
+
+**Z stays `null` on purpose, and #19 closed on that basis** (2026-08-17). The
+machine's Z travel tops out at machine Z 0 and its useful floor is whatever the job
+needs, but the envelope check reads **work coordinates** out of the file: X and Y are
+comparable because the rail transform maps them into the machine frame, and Z is not,
+because nothing here knows the `G54` Z offset the operator touched off. Comparing a
+file's `Z57.15` against machine Z 0 would be an arithmetic error dressed as a safety
+check. Z depth is already validated where it can be — `gcode_parser.validate_z`
+against material thickness. Do not "finish" the envelope by adding a Z bound unless
+the G54 offset becomes readable.
 
 **The two axes are checked differently, because they fail differently.** This
 asymmetry is the whole design; flattening it breaks the app in one direction or
@@ -273,7 +309,14 @@ output with `G54` at the blank **centre**, so their toolpaths run
 −195.798 → +208.369 across the bed. Placed on the A rail with the corner-datum
 transform, the cutter lands at machine X −61.2 — 122 mm past the hard stop.
 Both are now rejected at every slot on both rails, which is correct but reads as
-a placement failure rather than the file-origin mismatch it is. Issue #23.
+a placement failure rather than the file-origin mismatch it is.
+
+**#23 closed as a CAM defect, not an app one** (2026-08-17): those two files are junk
+hand-merged output and get re-posted from Fusion with a corner origin. The corner-datum
+assumption **stands as a precondition of the library** — do not add centre-origin
+detection or a per-file origin override to accommodate a mis-posted file. The rejection
+is the app working. Its diagnostic wording is still the weak part, since it names a
+placement collision rather than the origin mismatch.
 
 #### Arc planes
 

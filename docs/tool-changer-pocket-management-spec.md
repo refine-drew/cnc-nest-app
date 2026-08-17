@@ -466,8 +466,7 @@ Frontier (takeable now):
 
 | # | Ticket | Type | Why it matters |
 |---|---|---|---|
-| [#8](https://github.com/refine-drew/cnc-nest-app/issues/8) | Choose the safety posture | grilling | **Now unblocked** — #6 and #7 are both resolved, so the tradeoff is arithmetic. See §6.1 |
-| [#20](https://github.com/refine-drew/cnc-nest-app/issues/20) | Parse Fusion tool headers | task | 9 of 26 library files yield no tool identity at all; identity matching has nothing to match on for them. **Now the primary path, not a compatibility patch** |
+| [#20](https://github.com/refine-drew/cnc-nest-app/issues/20) | Parse Fusion tool headers | task | 9 of 26 library files yield no tool identity at all; identity matching has nothing to match on for them. **Now the primary path, not a compatibility patch** — and it must read the new identity comment from §6.2 |
 | [#12](https://github.com/refine-drew/cnc-nest-app/issues/12) | Define the no-geometry-change guarantee and its proving test | grilling | Turns the hard constraint into a test |
 | [#11](https://github.com/refine-drew/cnc-nest-app/issues/11) | Tool changer interface: 8 pockets, drag to reassign | prototype | **Unblocked by #10.** Surface, drag semantics and the mockup are settled in §3.4.1 — the build and the layout details are #11's |
 | [#13](https://github.com/refine-drew/cnc-nest-app/issues/13) | Define the operator setup sheet | grilling | **Unblocked by #10.** Note §3.2.1: a deviation from a default slot is a **temporary** instruction ("⅜" comp → pocket 6 for this job, return to 4"), because the standard is what the operator is trained toward |
@@ -476,6 +475,7 @@ Resolved:
 
 | # | Ticket | Answer |
 |---|---|---|
+| [#8](https://github.com/refine-drew/cnc-nest-app/issues/8) | Which safety posture? | **Posture 2 — "auto tool" on, every job** (2026-08-17, operator's call). The machine check that would confirm the self-correcting claim was **declined**; see §6.1 for what that leaves unproven. The 57 s default already prices this posture, so no code changes |
 | [#6](https://github.com/refine-drew/cnc-nest-app/issues/6) | How long is one touch-off cycle? | **Swap 27 s, swap + touch-off 57 s → touch-off is 30 s** (2026-08-17, timed on the machine). Charged on every `T# M06`. See §6.1 |
 | [#10](https://github.com/refine-drew/cnc-nest-app/issues/10) | Pocket auto-assignment and conflict resolution | **Resolved 2026-08-17** — see §3.2.1, §3.4, §3.5. **The assigner makes no arbitrary choices**: no tie-break (collisions surface), no fill rule (blanks stage), no write-back (defaults are prescriptive), nothing refused at placement. Determinism follows. Taken **ahead of #9** on the grounds that assignment consumes *"a set of resolved tools each with an optional default slot"* and does not care how resolution happened |
 | [#7](https://github.com/refine-drew/cnc-nest-app/issues/7) | Tool-change undercount | **Fixed** — counted off the emitted blocks, not distinct tools |
@@ -545,6 +545,31 @@ The app prices the always-on posture by default
 `tool_change_seconds=TOOL_SWAP_SECONDS`; the gap is
 `TOUCH_OFF_SECONDS × tool_change_count`.
 
+#### Decided: posture 2, and the check is declined (2026-08-17)
+
+**"Auto tool" on, every job.** The per-run tax above is accepted with the cost
+known. The machine check — running `G43` against a deliberately wrong register in
+air to see whether Z shifts, and whether auto-tool overwrites that register — was
+**explicitly declined**, so record precisely what does and does not follow:
+
+- **What holds.** The app already prices this posture
+  (`DEFAULT_TOOL_CHANGE_SECONDS = 57.0`), so nothing in `runtime_estimator` changes.
+  The touch-off happens at every `T# M06` regardless of where the length lands, so
+  the operator is never running on a length measured days ago.
+- **What is now an accepted risk, not a proven benefit.** Posture 2 was originally
+  attractive because remapping becomes *self-correcting* — a wrong pocket cannot
+  propagate into a crash. That rests on the measured length landing in the `H`
+  register, which is exactly what the declined check would have shown. It is
+  unobserved, so **it must not be cited as the safety basis for anything the feature
+  does.**
+- **Consequence for §4.1.** With self-correction unproven, `H`-follows-pocket carries
+  the full safety load on its own. The strict reading of #5 — derive `H` from the
+  pocket, `ERROR` on any mismatch — is therefore **load-bearing, not belt-and-braces**,
+  and §6.3's geometry test must cover `H` as tightly as geometry.
+
+That is the whole of it: the posture is settled, the arithmetic is settled, and the
+one unverified claim is written down as unverified rather than leaned on.
+
 ### 6.2 Fusion identity, and a scope ruling that no longer holds
 
 [#21](https://github.com/refine-drew/cnc-nest-app/issues/21) settled what the post
@@ -582,6 +607,55 @@ the key. Identity is carried by the **alias list**, learned one manual bind at a
 **§7's out-of-scope ruling stands unchanged.** The scope problem dissolved rather
 than being decided.
 
+#### 6.2.1 Decided: the REFINE post will emit an identity token (2026-08-17)
+
+*"Let's change the Fusion post to emit what we need to make the library safer to
+use."* The post is ours, so the primary corpus stops being something the app has to
+guess at. **Emission format** — one comment per tool, in the header block beside the
+existing `(T2 D=12.7 …)` line:
+
+```
+(TOOLID T2 VENDOR=Amana PRODUCT=46170-K FLUTES=3 TYPE=TOOL_MILLING_END_FLAT D=12.7 CR=0. DESC=1/2 downcut spiral)
+```
+
+Rules the format has to obey, each for a stated reason:
+
+- **`TOOLID` is a leading keyword**, so a parser can find the line without guessing at
+  comment shapes; `T2` repeats the pocket only so the line can be tied to the header
+  it annotates. **The token that matters is `VENDOR`+`PRODUCT`, and the pocket in the
+  line is not part of the identity.**
+- **Every field is `KEY=value`, whitespace-separated, `DESC` last** because it is the
+  only free-text field and may contain spaces.
+- **A missing field is emitted as an empty value, never omitted.** `VENDOR=` tells the
+  app the Fusion library entry is blank; a *missing* `VENDOR` is indistinguishable
+  from an older post. This is the difference between "unpopulated" and "unknown",
+  and only the first is actionable by the operator.
+- **`D=` and `CR=` are millimetres**, matching what the post already writes.
+- The comment must be **inert to the control** — a parenthesised comment in the header
+  block, before the first motion, exactly like the lines already there.
+
+**What this fixes, and what it does not.** It kills the alias-collision hole (end of
+§3.5.3) for Fusion output: two cutters can no longer arrive as one byte-identical
+string, because `VENDOR`+`PRODUCT` distinguishes them even when both are
+`FLAT END MILL` at `D=12.7`. It does **not** supply flute direction — Fusion has no
+such field, so `up`/`down`/`compression` remains library-declared (§3.5.1) and this
+changes nothing about §3.1's core claim. The win is *identity*, not *geometry*: once
+`VENDOR`+`PRODUCT` pins which physical cutter this is, the library supplies everything
+Fusion cannot.
+
+**Two things stay unsolved and must not be assumed away.**
+
+1. **VCarve files are unaffected.** Its post is not ours, so the six notation variants
+   in F9 and the `T2`/`T9` byte-identical case remain exactly as measured. VCarve is
+   retained for simple one-offs, so the alias-collision hole shrinks to that corpus —
+   **it does not close.** #9 still owns it.
+2. **`vendor`+`productId` must actually be populated in the Fusion library**, per
+   cutter, uniquely. The post can only emit what Fusion holds. This is now a
+   *quality-of-outcome* dependency rather than a precondition — a blank pair degrades
+   to alias matching (§3.1), which still works — so §7's ruling continues to stand,
+   but the empty-value rule above exists so the app can *say* which entries are blank
+   instead of silently matching worse.
+
 ### 6.3 Recommended shape for the geometry guarantee (#12)
 
 Generate the master G-code twice from identical placements — once with the
@@ -600,7 +674,11 @@ failure by construction, rather than something a reviewer has to notice.
   live in the changer for the full program "for now" — if that changes, this
   becomes a fresh effort, not a resumption.)
 - **CAM-side tool hygiene in Fusion/VCarve.** A parallel effort already intended,
-  independent of this map.
+  independent of this map. *Amended 2026-08-17:* **the REFINE post itself is in
+  scope** — §6.2.1 specifies an identity comment it must emit, because we own that
+  post. What stays out is the *content* of the Fusion tool library: populating
+  `vendor`/`productId` per cutter is the operator's parallel effort, and the app
+  degrades to alias matching without it.
 
 ## 8. Not yet specified
 
