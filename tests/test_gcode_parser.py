@@ -1,7 +1,11 @@
 import math
+import pathlib
 
 import pytest
-from gcode_parser import GcodePass, _arc_points, extract_file_segments, parse_vcarve_text, validate_z
+from gcode_parser import (
+    GcodePass, _arc_points, extract_file_segments, file_is_inch,
+    operation_name_in_comment, parse_vcarve_text, validate_z,
+)
 
 # --- fixtures ---
 
@@ -529,3 +533,175 @@ def test_extract_tools_description_excludes_tool_prefix():
     assert desc == "End Mill {.75 inches}"
     assert "T4" not in desc
     assert "=" not in desc
+
+
+# ── Fusion tool headers (issue #20) ──────────────────────────────────────────
+#
+# Before this, `extract_tools` matched only VCarve's "(T2 = ...)" shape, so every
+# Fusion-posted file in the library parsed to no tools at all — which meant
+# diameter 0 feeding `collision._max_tool_radius`, and therefore an X envelope
+# check and a tool-radius collision check that both under-inflated on the
+# *primary* corpus. These pin the four variants the post can emit.
+
+
+def _fusion(header_comment, tool="T2"):
+    return f"( Material Size)\n( X=100, Y=50, Z=19)\n{header_comment}\nN15 G71\n{tool} M06\nM30\n"
+
+
+def test_fusion_header_diameter_is_converted_from_mm():
+    part = parse_vcarve_text(_fusion("(T2 D=12.7 CR=0. - ZMIN=0. - FLAT END MILL)"))
+    # 12.7 mm is exactly 1/2". Read as inches it would inflate the envelope check
+    # by 1/25.4 of what the cutter really needs.
+    assert part.tools["T2"]["diameter_inches"] == pytest.approx(0.5)
+
+
+def test_fusion_header_ball_mill_carries_corner_radius():
+    part = parse_vcarve_text(_fusion("(T1 D=12.7 CR=6.35 - ZMIN=14.605 - BALL END MILL)", "T1"))
+    info = part.tools["T1"]
+    assert info["diameter_inches"] == pytest.approx(0.5)
+    assert info["corner_radius_inches"] == pytest.approx(0.25)
+    assert info["tool_type"] == "BALL END MILL"
+    assert info["taper_degrees"] is None
+
+
+def test_fusion_header_taper_is_captured():
+    part = parse_vcarve_text(_fusion("(T3 D=12.7 CR=0. TAPER=45DEG - ZMIN=18.542 - CHAMFER MILL)", "T3"))
+    info = part.tools["T3"]
+    assert info["taper_degrees"] == pytest.approx(45.0)
+    assert info["tool_type"] == "CHAMFER MILL"
+    assert "TAPER=45DEG" in info["description"]
+
+
+def test_fusion_header_without_zmin_still_parses():
+    # ZMIN is written only when the job is 3D, so a 2D-only program omits it.
+    part = parse_vcarve_text(_fusion("(T2 D=3.175 CR=3.175 - RADIUS MILL)"))
+    info = part.tools["T2"]
+    assert info["diameter_inches"] == pytest.approx(0.125)
+    assert info["tool_type"] == "RADIUS MILL"
+
+
+def test_fusion_description_excludes_zmin():
+    # The regression this guards is subtle and app-breaking rather than unsafe.
+    # ZMIN is the job's Z range, not a property of the cutter, so one physical tool
+    # posts ZMIN=0. in one file and ZMIN=-19.05 in another. `_tool_compatibility`
+    # flags a conflict when descriptions for one T# differ, so carrying ZMIN would
+    # make a tool conflict with itself and block Generate on compatible files.
+    a = parse_vcarve_text(_fusion("(T2 D=12.7 CR=0. - ZMIN=0. - FLAT END MILL)"))
+    b = parse_vcarve_text(_fusion("(T2 D=12.7 CR=0. - ZMIN=-19.05 - FLAT END MILL)"))
+    assert a.tools["T2"]["description"] == b.tools["T2"]["description"]
+    assert "ZMIN" not in a.tools["T2"]["description"]
+
+
+def test_fusion_description_distinguishes_diameters():
+    # The opposite direction: two genuinely different cutters must not collapse to
+    # one string. Fusion names both "FLAT END MILL", so geometry has to be in there.
+    a = parse_vcarve_text(_fusion("(T2 D=12.7 CR=0. - FLAT END MILL)"))
+    b = parse_vcarve_text(_fusion("(T2 D=6.35 CR=0. - FLAT END MILL)"))
+    assert a.tools["T2"]["description"] != b.tools["T2"]["description"]
+
+
+def test_fusion_header_is_not_read_as_an_operation_name():
+    # A bare comment above a tool change is how a toolpath name is recognised, so
+    # the tool list has to be excluded explicitly or it becomes an "operation".
+    assert operation_name_in_comment("(T2 D=12.7 CR=0. - ZMIN=0. - FLAT END MILL)") == ""
+
+
+def test_fusion_diameter_not_rescaled_when_file_declares_inches():
+    part = parse_vcarve_text(
+        "( Material Size)\n( X=100, Y=50, Z=19)\n"
+        "(T2 D=0.5 CR=0. - FLAT END MILL)\nN15 G70\nT2 M06\nM30\n"
+    )
+    assert part.tools["T2"]["diameter_inches"] == pytest.approx(0.5)
+
+
+def test_units_word_inside_a_comment_does_not_set_inches():
+    # Comment lines are skipped, so free text mentioning G20 cannot rescale a tool
+    # by 25.4x in the under-inflating direction.
+    assert file_is_inch(["(FACE G20 PASS)", "N15 G71", "T2 M06"]) is False
+
+
+def test_units_default_is_metric_when_no_units_word():
+    assert file_is_inch(["T2 M06", "G00 X1 Y1"]) is False
+
+
+# ── the TOOLID identity comment (spec §6.2.1) ────────────────────────────────
+#
+# What `writeToolIdentity` in `post/syntec 4.cps` emits. The strings below
+# are post-filter: settings.comments uppercases and strips anything outside
+# " a-z0-9.,=_-", so '/' and '"' are gone from free text by the time the app reads
+# it. That only touches TOOLDESC, which is why identity lives on the other line.
+
+
+def _with_toolid(*extra):
+    body = "\n".join(extra)
+    return (
+        "( Material Size)\n( X=100, Y=50, Z=19)\n"
+        "(T2 D=12.7 CR=0. - FLAT END MILL)\n"
+        f"{body}\nN15 G71\nT2 M06\nM30\n"
+    )
+
+
+def test_toolid_identity_is_read_alongside_the_geometry_header():
+    part = parse_vcarve_text(_with_toolid("(TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)"))
+    info = part.tools["T2"]
+    assert info["vendor"] == "AMANA"
+    assert info["product_id"] == "46170-K"
+    assert info["flutes"] == 3
+    # The geometry from the header line survives the merge.
+    assert info["diameter_inches"] == pytest.approx(0.5)
+    assert info["tool_type"] == "FLAT END MILL"
+
+
+def test_toolid_blank_field_is_distinct_from_a_missing_one():
+    # The post emits "VENDOR=" rather than omitting it, because a blank Fusion
+    # library entry is something the operator can go and fill in while an older
+    # post is not. "" and None must not collapse.
+    blank = parse_vcarve_text(_with_toolid("(TOOLID T2 VENDOR= PRODUCT=46170-K FLUTES=)"))
+    assert blank.tools["T2"]["vendor"] == ""
+    assert blank.tools["T2"]["flutes"] is None
+
+    absent = parse_vcarve_text(_with_toolid())
+    assert absent.tools["T2"].get("vendor") is None
+
+
+def test_toolid_distinguishes_two_cutters_that_post_the_same_geometry():
+    # The case the whole comment exists for: an upcut and a downcut of one diameter
+    # are both "FLAT END MILL D=12.7 CR=0." byte-for-byte, so geometry cannot tell
+    # them apart and merging them cuts with whatever is loaded.
+    up = parse_vcarve_text(_with_toolid("(TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)"))
+    down = parse_vcarve_text(_with_toolid("(TOOLID T2 VENDOR=AMANA PRODUCT=46172-K FLUTES=3)"))
+    assert up.tools["T2"]["description"] == down.tools["T2"]["description"]
+    assert up.tools["T2"]["product_id"] != down.tools["T2"]["product_id"]
+
+
+def test_tooldesc_is_captured_separately_from_the_derived_description():
+    part = parse_vcarve_text(
+        _with_toolid(
+            "(TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)",
+            "(TOOLDESC T2 12 DOWNCUT SPIRAL)",
+        )
+    )
+    info = part.tools["T2"]
+    assert info["cam_description"] == "12 DOWNCUT SPIRAL"
+    # `description` stays the geometry string the compatibility matrix compares, so
+    # adding the post's free text cannot change that signal.
+    assert info["description"] == "FLAT END MILL D=12.7 CR=0."
+
+
+def test_toolid_lines_are_not_read_as_operation_names():
+    assert operation_name_in_comment("(TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)") == ""
+    assert operation_name_in_comment("(TOOLDESC T2 12 DOWNCUT SPIRAL)") == ""
+
+
+_FORM_MILL_FILE = pathlib.Path.home() / "Documents" / "cnc_library" / "39x35.nc"
+
+
+@pytest.mark.skipif(not _FORM_MILL_FILE.exists(), reason="library file not present")
+def test_library_form_mill_diameter_is_read_from_the_real_file():
+    # The worst case the old parser produced, pinned against the real file: a
+    # 59.728 mm form mill that resolved to diameter 0, so `_max_tool_radius`
+    # inflated the X envelope by nothing where it owed 1.176" per side. X is the
+    # axis with a hard stop just outside each end.
+    part = parse_vcarve_text(_FORM_MILL_FILE.read_text(errors="replace"), "39x35.nc")
+    assert part.tools["T4"]["diameter_inches"] == pytest.approx(2.3515, abs=1e-4)
+    assert part.tools["T4"]["tool_type"] == "FORM MILL"

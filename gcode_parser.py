@@ -12,6 +12,36 @@ HEADER_SIZE_PATTERN = re.compile(
 PART_SIZE_PATTERN = re.compile(r"\(\s*PART SIZE X\s*=\s*([0-9.+-]+)\s*Y\s*=\s*([0-9.+-]+)\s*\)", re.IGNORECASE)
 TOOL_HEADER_PATTERN = re.compile(r"\(\s*(T\d+)\s*=\s*(.+?)\s*\)", re.IGNORECASE)
 INLINE_TOOL_PATTERN = re.compile(r"\(\s*Tool:\s*([^\{\)]+)\{([0-9.]+)\s*inches\}\)", re.IGNORECASE)
+# Fusion's tool list, written by `post/syntec 4.cps` writeProgramHeader():
+#   (T1 D=12.7 CR=6.35 - ZMIN=14.605 - BALL END MILL)
+#   (T3 D=12.7 CR=0. TAPER=45DEG - ZMIN=18.542 - CHAMFER MILL)
+# TAPER appears only for tapered tools, and ZMIN only when the job is 3D, so both
+# are optional. `D`/`CR` are in the file's own units. The post writes `T#` rather
+# than a name unconditionally — its `toolAsName` branch is never taken, because no
+# such property is declared.
+FUSION_TOOL_HEADER_PATTERN = re.compile(
+    r"\(\s*(T\d+)\s+D=([0-9.+-]+)\s+CR=([0-9.+-]+)"
+    r"(?:\s+TAPER=([0-9.+-]+)\s*DEG)?"
+    r"(?:\s*-\s*ZMIN=([0-9.+-]+))?"
+    r"\s*-\s*(.+?)\s*\)",
+    re.IGNORECASE,
+)
+# The identity comment the REFINE post emits (spec §6.2.1), written by
+# `writeToolIdentity` in `post/syntec 4.cps`:
+#   (TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)
+#   (TOOLDESC T2 12 DOWNCUT SPIRAL)
+# `TOOLID` leads so the line can be found without guessing at comment shapes. The
+# identity is VENDOR+PRODUCT; the `T#` only ties the line to the header above it and
+# is not part of the identity.
+TOOLID_PATTERN = re.compile(r"\(\s*TOOLID\s+(T\d+)\s*(.*?)\s*\)", re.IGNORECASE)
+TOOLDESC_PATTERN = re.compile(r"\(\s*TOOLDESC\s+(T\d+)\s+(.+?)\s*\)", re.IGNORECASE)
+TOOLID_FIELD_PATTERN = re.compile(r"\b([A-Z_]+)=(\S*)", re.IGNORECASE)
+
+# First units word in the body wins. The rest of the app is millimetres throughout
+# (see CLAUDE.md), and G71 is what the Syntec post emits, so metric is the default
+# when nothing says otherwise.
+UNITS_WORD_PATTERN = re.compile(r"\bG(70|71|20|21)\b")
+_INCH_UNITS_WORDS = frozenset({"70", "20"})
 TOOL_CHANGE_PATTERN = re.compile(r"\bT(\d+)\s+M06\b", re.IGNORECASE)
 G43_Z_PATTERN = re.compile(r"\bG43\b.*\bZ([+-]?\d*\.?\d+)", re.IGNORECASE)
 CUTTING_MOVE_PATTERN = re.compile(r"\bG0?[123]\b", re.IGNORECASE)
@@ -23,6 +53,7 @@ BARE_COMMENT_PATTERN = re.compile(r"^\(([^)]*)\)$")
 # these have to be ruled out explicitly or a header line becomes an "operation".
 _NON_OPERATION_COMMENTS = (
     HEADER_SIZE_PATTERN, PART_SIZE_PATTERN, TOOL_HEADER_PATTERN, INLINE_TOOL_PATTERN,
+    FUSION_TOOL_HEADER_PATTERN, TOOLID_PATTERN, TOOLDESC_PATTERN,
 )
 
 OVERTRAVEL_TOLERANCE_MM = 0.762  # 0.03 inches
@@ -163,9 +194,94 @@ def _extract_diameter(text: str) -> Optional[float]:
     return None
 
 
+def file_is_inch(lines: List[str]) -> bool:
+    """True if the program declares inch units. Comment lines are skipped so a stray
+    'G20' in free text cannot rescale a tool."""
+    for line in lines:
+        if line.lstrip().startswith("("):
+            continue
+        m = UNITS_WORD_PATTERN.search(line)
+        if m:
+            return m.group(1) in _INCH_UNITS_WORDS
+    return False
+
+
+def _fusion_tool_entry(match: "re.Match", to_inches: float) -> Dict[str, Optional[float]]:
+    """Build a tool entry from a Fusion header match.
+
+    `description` is assembled from the *stable* fields only. ZMIN is deliberately
+    left out even though it is right there in the line: it is the job's Z range, not
+    a property of the cutter, so the same physical tool posts `ZMIN=0.` in one file
+    and `ZMIN=-19.05` in another. Feeding that into `app._tool_compatibility`, which
+    compares description strings per `T#`, would flag one cutter as a conflict with
+    itself and block Generate on two perfectly compatible files.
+    """
+    diameter, corner_radius, taper, _zmin, type_name = match.group(2, 3, 4, 5, 6)
+
+    description = f"{type_name} D={diameter} CR={corner_radius}"
+    if taper is not None:
+        description += f" TAPER={taper}DEG"
+
+    return {
+        "description": description,
+        # Converted here rather than at the call site: `D=12.7` read as inches is a
+        # 25.4x under-inflation of the X envelope and tool-radius checks, which is
+        # the crash direction.
+        "diameter_inches": float(diameter) * to_inches,
+        "corner_radius_inches": float(corner_radius) * to_inches,
+        "taper_degrees": float(taper) if taper is not None else None,
+        "tool_type": type_name,
+    }
+
+
+def _toolid_fields(body: str) -> Dict[str, object]:
+    """Parse the KEY=value pairs of a TOOLID comment.
+
+    The post emits a blank field as `VENDOR=` rather than omitting it, and that
+    distinction is the whole point: an empty value says the Fusion library entry is
+    blank, which the operator can go and fill in, while a *missing* key says only
+    that the file predates the identity comment. Preserve it — an absent key leaves
+    nothing in the dict, so `.get("vendor")` returns None, whereas a blank one
+    returns "".
+    """
+    fields: Dict[str, object] = {}
+    for key, value in TOOLID_FIELD_PATTERN.findall(body):
+        name = key.upper()
+        if name == "VENDOR":
+            fields["vendor"] = value
+        elif name == "PRODUCT":
+            fields["product_id"] = value
+        elif name == "FLUTES":
+            fields["flutes"] = int(value) if value.isdigit() else None
+    return fields
+
+
 def extract_tools(lines: List[str]) -> Dict[str, Dict[str, Optional[float]]]:
     tools: Dict[str, Dict[str, Optional[float]]] = {}
+    to_inches = 1.0 if file_is_inch(lines) else 1.0 / 25.4
+
     for line in lines:
+        # Checked before the VCarve patterns, and `continue`s on a hit: a Fusion
+        # description must never reach _extract_diameter, whose bare-decimal fallback
+        # would read the millimetre `12.7` in `D=12.7` as 12.7 inches.
+        fusion_match = FUSION_TOOL_HEADER_PATTERN.search(line)
+        if fusion_match:
+            entry = tools.setdefault(fusion_match.group(1).upper(), {})
+            entry.update(_fusion_tool_entry(fusion_match, to_inches))
+            continue
+
+        toolid_match = TOOLID_PATTERN.search(line)
+        if toolid_match:
+            entry = tools.setdefault(toolid_match.group(1).upper(), {})
+            entry.update(_toolid_fields(toolid_match.group(2)))
+            continue
+
+        tooldesc_match = TOOLDESC_PATTERN.search(line)
+        if tooldesc_match:
+            entry = tools.setdefault(tooldesc_match.group(1).upper(), {})
+            entry["cam_description"] = tooldesc_match.group(2).strip()
+            continue
+
         header_match = TOOL_HEADER_PATTERN.search(line)
         if header_match:
             tool_number = header_match.group(1).upper()

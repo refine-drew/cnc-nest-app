@@ -7,4 +7,8 @@ __pycache__/
 dist/
 build/
 .DS_Store
-Source Data/
+# Operator-local reference material. Anything the app has a contract with must live
+# outside this folder rather than be un-ignored inside it — the REFINE Fusion post
+# moved to post/ for exactly that reason (spec §6.2.1 specifies the identity comment
+# it emits, and gcode_parser reads that output).
+Source Data/*

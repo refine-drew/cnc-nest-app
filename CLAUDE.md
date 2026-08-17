@@ -38,6 +38,37 @@ No build step, linter, or type checker is configured.
 
 **`gcode_parser.py`** — parses `.nc`/`.mmg` VCarve G-code files into `GcodePart` dataclasses. Extracts blank dimensions, material thickness, tool info, XYZ bounding boxes per pass, and validates Z depths.
 
+**`post/syntec 4.cps`** — the REFINE Fusion post-processor. **It is ours to
+change**, and it is the only place CAM knowledge can reach the app, because the app
+reads posted `.nc` and never CAM source. It lives in `post/` rather than
+`Source Data/` for one reason: **`Source Data/` is gitignored**, and a post the app's
+parser has a contract with cannot be untracked and unreviewable. Anything else the app
+depends on belongs out of that folder too. `writeToolIdentity` emits the identity
+comment specified in `docs/tool-changer-pocket-management-spec.md` §6.2.1:
+
+```
+(TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)
+(TOOLDESC T2 12 DOWNCUT SPIRAL)
+```
+
+`VENDOR`+`PRODUCT` is the identity (`toolId` is document-scoped and must never be
+used); the `T#` only ties the line to the header above it. **A blank field is emitted
+as `VENDOR=`, never omitted** — empty means the Fusion library entry needs filling in,
+missing means the file predates the comment, and only the first is actionable.
+`_toolid_fields` preserves that as `""` vs absent; don't collapse them.
+
+**Three constraints from `settings.comments` shape this format, and they are easy to
+trip over.** Comments are uppercased, filtered to `" a-z0-9.,=_-"` (so `/` and `"`
+vanish from free text), and **truncated at 80 characters**. Truncation *omits* fields,
+which would defeat the empty-vs-missing rule, so: the identity line carries no
+geometry (`D`/`CR`/`TYPE` are already on the tool-list line above it — repeating them
+is what would spend the budget), and the one unbounded field, the description, sits on
+its own `TOOLDESC` line where a truncation can only cost free text. Adding a field to
+the `TOOLID` line means re-checking that budget.
+
+`TOOLDESC` lands in `cam_description`, deliberately **not** in `description` — the
+latter is what `_tool_compatibility` compares, and free text must not move that signal.
+
 **`collision.py`** — rectangle overlap collision detection. Handles the two coordinate systems: A rail uses additive XY offsets; B rail applies 180° rotation (mirroring) around the bed center before offset.
 
 **`gcode_generator.py`** — merges placed parts into a single master G-code. Walks tool passes in order-of-operations sequence (all T1 cuts across all parts, then all T2, etc.), applies coordinate transforms matching `collision.py`, and uses nearest-neighbor sorting to minimize rapid travel.
@@ -293,13 +324,38 @@ a backstop, not the primary guard. That direction is deliberate: the stricter
 check must be the one that runs first.
 
 `_max_tool_radius` reads `part.tools[...]["diameter_inches"]` straight from the
-parsed file, not the resolved `ToolLibrary`. The Fusion post writes `(T2 D=12.7
-… )` rather than `{0.5 inches}`, so those files parse to diameter 0 and both the
-envelope check and the existing tool-radius collision check under-inflate them.
-The fix is decided but not built: **the identity library becomes the diameter
-authority**, so a Fusion file that parses to 0 still inflates correctly once its
-tool resolves (spec §3.5.2). That routes around #20 for safety purposes without
-waiting on the parser.
+parsed file, not the resolved `ToolLibrary`.
+
+**The Fusion side of that is fixed (#20, 2026-08-17).** The post writes
+`(T2 D=12.7 CR=0. - ZMIN=0. - FLAT END MILL)` rather than `{0.5 inches}`, and
+`extract_tools` matched only the VCarve shape, so all 9 Fusion files in the library
+parsed to **no tools at all** — diameter 0, and therefore an X envelope check and a
+tool-radius collision check that both under-inflated on the *primary* corpus. The
+worst case was `39x35.nc`'s 59.728 mm form mill: 1.176" of radius per side that the
+envelope check owed and did not add. `FUSION_TOOL_HEADER_PATTERN` now reads
+`D`/`CR`/`TAPER` and the tool type. Re-checked across the library afterwards, **no
+placement changed** — the correct radii do not push any current part over the bound,
+so the hole closed at zero cost.
+
+Two things about that parse are load-bearing, not incidental:
+
+- **`D=` is millimetres and must be converted.** The file's own units word decides
+  (`file_is_inch`, first `G70`/`G71`/`G20`/`G21` in a non-comment line, metric
+  default). Reading `12.7` as inches is a 25.4× under-inflation — the crash
+  direction. The Fusion branch also `continue`s before `_extract_diameter`, whose
+  bare-decimal fallback would do exactly that.
+- **`ZMIN` is excluded from `description`.** It is the job's Z range, not a property
+  of the cutter, so one physical tool posts `ZMIN=0.` in one file and `ZMIN=-19.05`
+  in another. `app._tool_compatibility` flags a conflict when descriptions for one
+  `T#` differ, so carrying `ZMIN` would make a tool conflict with itself and block
+  Generate on two compatible files. The description is built from the stable fields
+  (`FLAT END MILL D=12.7 CR=0.`) — type alone would collapse every ½" and ¼" flat
+  mill onto one string, which is the dangerous direction.
+
+**Still true, and still the destination:** the identity library becomes the diameter
+authority (spec §3.5.2), because a file whose header is absent or wrong still needs a
+true radius, and because the parsed `CR=`/`TAPER=` are then *verifiable* against a
+declaration rather than trusted.
 
 **Every parse assumes the file's origin is the blank's registration corner** —
 the VCarve convention, where all coordinates are positive. Nothing checks it.
