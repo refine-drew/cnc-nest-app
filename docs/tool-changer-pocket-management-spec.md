@@ -1,14 +1,23 @@
 # Tool Changer Pocket Management — Spec
 
 **Status: incomplete by design.** Sections 1–5 are settled and safe to build
-against. Section 6 lists ten decisions that are still open, five of which are
-takeable now and two of which need the machine. Do not start implementation
-until at least the safety-posture decision (#8) and the identity-matching
-decision (#9) have closed — everything structural depends on them.
+against. Section 6 lists the decisions that are still open. Do not start
+implementation until at least the safety-posture decision (#8) and the
+identity-matching decision (#9) have closed — everything structural depends on
+them.
+
+> **2026-08-15 — Fusion is now the primary CAM tool.** VCarve is retained for
+> simple one-offs only, and **the REFINE post-processor is editable**. This map
+> was charted when Fusion was "down the road", so read §3.1 with that in mind:
+> its conclusion that identity can never come from the file was established
+> against VCarve, whose post we do not control. [#21](https://github.com/refine-drew/cnc-nest-app/issues/21)
+> tests whether the Fusion post can carry a stable identity token, which would
+> qualify — not overturn — that section for the primary corpus.
 
 - Map: [Tool changer pocket management — spec](https://github.com/refine-drew/cnc-nest-app/issues/3)
 - Discovery session: `brainstorms/2026-08-12-tool-changer-pocket-management.md`
-- Date: 2026-08-12
+- Reference Fusion output: `~/Documents/Windows Bridge Folder/18G.nc`
+- Date: 2026-08-12, revised 2026-08-15
 
 ---
 
@@ -75,10 +84,22 @@ with the wrong tool. Every matching rule must be biased against it.
 Diameter alone is insufficient: a 1/4" upcut, downcut, and compression spiral are
 all 0.25" and must never merge.
 
+**Nor can identity come from VCarve's tool database** — resolved in [#4](https://github.com/refine-drew/cnc-nest-app/issues/4).
+`.vtdb` is readable SQLite, but the only per-tool number it holds is the ATC
+carousel position — the same `T#` that already collides — and no row key reaches
+the posted file. Measured across the 26-file library: `T4` denotes four different
+cutters, `T2` and `T9` post byte-identical strings in one file, and 3 files yield
+no parseable diameter at all. The library must therefore be **operator-declared**,
+keyed independently of `T#`, and must carry a **geometry class** plus a
+many-to-one **alias list** of the raw strings seen in files — which is what lets
+one library serve VCarve and Fusion output without a second mechanism.
+
 **A Fusion tool library will not remove the need for this.** The app reads posted
 `.nc`, not CAM source, so CAM knowledge reaches the app only through what the
-post-processor writes into the file. The corpus is almost entirely VCarve today,
-and a future Fusion library does not retroactively fix existing files. Most
+post-processor writes into the file. The corpus is **not** almost entirely VCarve —
+9 of 26 library files are already Fusion-posted, and the parser currently reads
+**no tools whatsoever** from them ([#20](https://github.com/refine-drew/cnc-nest-app/issues/20)).
+A future Fusion library does not retroactively fix existing files. Most
 fundamentally, CAM records *what a tool is*; this app must record *where it
 lives*. Good CAM hygiene makes matching reliable — it does not make the app-side
 library unnecessary.
@@ -164,18 +185,25 @@ Frontier (takeable now):
 
 | # | Ticket | Type | Why it matters |
 |---|---|---|---|
-| [#4](https://github.com/refine-drew/cnc-nest-app/issues/4) | Can tool identity come from the VCarve tool database? | research | Decides whether the library is derived or hand-maintained |
-| [#5](https://github.com/refine-drew/cnc-nest-app/issues/5) | Does the SS2 control honour `G43 H#`? | task | Sets how much of the safety argument rests on H |
+| [#5](https://github.com/refine-drew/cnc-nest-app/issues/5) | Does the SS2 control honour `G43 H#`? | task | Sets how much of the safety argument rests on H. **Docs half done** — Syntec's manual defines `H` as a register index set by per-tool touch-off; what ShopSabre's "auto tool" does to it needs the machine |
 | [#6](https://github.com/refine-drew/cnc-nest-app/issues/6) | Measure one touch-off cycle on the SS2 | task | **Needs the machine.** Turns the posture fork into arithmetic |
 | [#7](https://github.com/refine-drew/cnc-nest-app/issues/7) | Fix the tool-change undercount | task | Nothing about posture cost is trustworthy until this is honest |
+| [#20](https://github.com/refine-drew/cnc-nest-app/issues/20) | Parse Fusion tool headers | task | 9 of 26 library files yield no tool identity at all; identity matching has nothing to match on for them. **Now the primary path, not a compatibility patch** |
 | [#12](https://github.com/refine-drew/cnc-nest-app/issues/12) | Define the no-geometry-change guarantee and its proving test | grilling | Turns the hard constraint into a test |
+
+Resolved:
+
+| # | Ticket | Answer |
+|---|---|---|
+| [#4](https://github.com/refine-drew/cnc-nest-app/issues/4) | Can tool identity come from the VCarve tool database? | **No** — see §3.1. The library is hand-maintained, with aliases |
+| [#21](https://github.com/refine-drew/cnc-nest-app/issues/21) | What stable per-tool identity can the Fusion REFINE post emit? | **`vendor` + `productId`**, or an explicit `comment`. No library-wide GUID exists; `toolId` is document-scoped and must not be used. Identity therefore rests on operator-maintained Fusion library fields — which puts CAM tool hygiene on the critical path, contesting an out-of-scope ruling. See §6.2 |
 
 Blocked:
 
 | # | Ticket | Blocked by |
 |---|---|---|
 | [#8](https://github.com/refine-drew/cnc-nest-app/issues/8) | Choose the safety posture | #5, #6, #7 |
-| [#9](https://github.com/refine-drew/cnc-nest-app/issues/9) | Define tool identity matching, and no-match behaviour | #4 |
+| [#9](https://github.com/refine-drew/cnc-nest-app/issues/9) | Define tool identity matching, and no-match behaviour | #20, #21 |
 | [#10](https://github.com/refine-drew/cnc-nest-app/issues/10) | Define pocket auto-assignment and conflict resolution | #9 |
 | [#11](https://github.com/refine-drew/cnc-nest-app/issues/11) | Tool changer interface: 8 pockets, drag to reassign | #10 |
 | [#13](https://github.com/refine-drew/cnc-nest-app/issues/13) | Define the operator setup sheet | #10 |
@@ -198,7 +226,37 @@ tool **once per job, not once per part**, so nesting twelve parts that share a
 *block count* — order of 8–15 per job. But the app cannot currently prove this,
 because of §5. Fix the count, measure the cycle, then decide.
 
-### 6.2 Recommended shape for the geometry guarantee (#12)
+### 6.2 Fusion identity, and a scope ruling that no longer holds
+
+[#21](https://github.com/refine-drew/cnc-nest-app/issues/21) settled what the post
+*can* carry. Autodesk's `Tool` class exposes no library-wide GUID:
+
+- **`toolId` must not be used.** It is documented as unique only *within a
+  Fusion/Inventor document*, so the same physical cutter in two designs yields two
+  ids. It is the plausible-looking wrong answer.
+- **`vendor` + `productId`** is the real key — exact, not fuzzy — with `comment`
+  as the operator-controlled fallback.
+- Geometry (`type`, `cornerRadius`, `numberOfFlutes`, `diameter`) discriminates but
+  cannot key: upcut, downcut and compression spirals are all
+  `TOOL_MILLING_END_FLAT` at the same diameter and corner radius.
+
+Recommended emission, for #9 to accept or replace:
+
+```
+(TOOLID T2 VENDOR=Amana PRODUCT=46170-K FLUTES=3 TYPE=TOOL_MILLING_END_FLAT D=12.7 CR=0.)
+```
+
+**The consequence is a scope problem.** `vendor` and `productId` are operator-
+maintained fields in the Fusion tool library. §7 currently rules *CAM-side tool
+hygiene* out of scope as "a parallel effort". That was decided when VCarve was
+primary and CAM data could not reach the app at all. If identity keys on
+`productId`, hygiene is **a precondition of this feature, not a parallel track** —
+a blank or reused field produces exactly the wrong-tool merge the map exists to
+prevent. The map must either adopt "every physical cutter has a unique, populated
+`vendor`+`productId`" as a stated precondition, or accept `comment`-based identity
+and say so plainly. **Operator's call — not re-scoped here.**
+
+### 6.3 Recommended shape for the geometry guarantee (#12)
 
 Generate the master G-code twice from identical placements — once with the
 identity pocket map, once remapped — and assert the outputs are **token-for-token
