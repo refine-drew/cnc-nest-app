@@ -63,44 +63,57 @@ RAIL_DEFAULTS = {
 
 # ── machine envelope ──────────────────────────────────────────────────────────
 #
-# Programmed coordinates are TOOL CENTRE with no cutter compensation — the posts
-# emit G40 and computer-compensated toolpaths — so the cutting edge stands one
-# tool radius outside every number in the file, and the gantry and dust boot are
-# wider still. The envelope check therefore compares the toolpath footprint
-# INFLATED by the part's largest tool radius against the travel limit pulled in
-# by an edge margin, and rejects at placement time rather than at the control.
+# The outer extents of the MACHINABLE SURFACE, measured off the machine layout
+# drawing on 2026-08-17 and read in inches:
+#
+#     X 2.421 → 63.248     (60.827" of usable width)
+#     Y 0.984 → 121.969    (120.985" of usable length)
 #
 # These are NOT bed_x_mm / bed_y_mm. Those drive canvas and PDF extents and the
-# utilisation figure only; these are the axis travel limits in machine
-# coordinates and they gate the cut path.
+# utilisation figure only; these gate the cut path.
 #
-# NONE OF THESE LIMITS ARE MEASURED, so every one is None and the check is
-# dormant — an axis with None limits is skipped. See issue #19.
+# Programmed coordinates are TOOL CENTRE with no cutter compensation — the posts
+# emit G40 and computer-compensated toolpaths — so the cutting edge stands one
+# tool radius outside every number in the file. What that implies differs per
+# axis, because the two axes fail differently:
 #
-# The park block ends `G00 G53 X0 Y3048`, and the two numbers in it are the only
-# machine-frame coordinates anywhere in the output. Both were read as limits
-# once. Both readings were wrong:
+#   X is an OBSTRUCTION axis. There is a hard stop just outside each end of X
+#   travel, so the cutter itself must stay inside the surface: the footprint is
+#   INFLATED by the part's largest tool radius and then held inside the limit
+#   less the edge margin. Overrunning X is a crash.
 #
-#   Y 3048 is a position the machine REACHES, which makes it a lower bound on Y
-#   travel, not the limit. It is also exactly 120.000" — the nominal bed length,
-#   a design round number rather than an axis end. Real Y travel runs well past
-#   it, because the tool changer sits beyond that end of the rail. Asserting
-#   3048 as the limit put A rail slot 0 (datum Y 3034.700) inside the edge
-#   margin and made the slot unusable.
+#   Y is an OPEN axis. Nothing obstructs either end, so the tool is allowed to
+#   hang over the edge of the surface — y_max + radius and y_min - radius are
+#   both acceptable. Y is therefore checked on TOOL CENTRE with no edge margin,
+#   which is what keeps A rail slot 0 (datum Y 3034.700) usable.
 #
-#   X 0 → 1524 (60") contradicts the measured B rail corner at X 1534.160, which
-#   every B-rail part cuts inboard from. The machine cannot both reach that
-#   corner and stop at 1524.
+#   Y_FLOOR_MM is the one hard bound on the open axis: the machine does not go
+#   below Y 0 at all, so the cutter EDGE has to stay above it. With y_min at
+#   24.99 this only bites for a cutter over ~2" in diameter — it is a backstop,
+#   not the working limit.
 #
-# Guessing is harmful in both directions: too tight rejects placements that cut
-# fine today, too loose licenses a real overtravel. Fill in
-# advanced.machine_travel once the limits are read off the machine and each axis
-# starts checking itself.
+# Z is still unmeasured and ships as None; an axis with None limits is skipped.
+#
+# Superseded reading, kept so it is not re-derived: the park block's
+# `G00 G53 X0 Y3048` is the only machine-frame coordinate in the output, and both
+# its numbers were once read as limits. Y 3048 is a position the machine REACHES
+# (a lower bound on travel, and exactly 120.000" — a design round number); the
+# real Y surface runs to 3098.013 and travel runs past that to the tool changer.
+# X 0 → 1524 contradicted the measured B rail corner at 1534.160 that every
+# B-rail part cuts inboard from; the real X surface reaches 1606.499.
+#
+# tests/test_collision.py::test_travel_defaults_match_the_measured_machine_surface
+# pins the readouts. Re-measure and update the test, this comment and config.json
+# together.
 TRAVEL_DEFAULTS = {
-    "x_min": None, "x_max": None,
-    "y_min": None, "y_max": None,
-    "z_min": None, "z_max": None,
+    "x_min":   61.4934, "x_max": 1606.4992,   # 2.421" → 63.248"
+    "y_min":   24.9936, "y_max": 3098.0126,   # 0.984" → 121.969"
+    "z_min": None,      "z_max": None,        # unmeasured — issue #19
 }
+
+# The machine does not travel below Y 0. Unlike the surface bounds above this is
+# an axis end, so the cutting edge — not just the tool centre — must clear it.
+Y_FLOOR_MM = 0.0
 
 EDGE_MARGIN_DEFAULT_IN = 0.5
 
@@ -216,42 +229,63 @@ def check_envelope(
     advanced: Optional[dict] = None,
 ) -> CollisionResult:
     """
-    Check one placement against the machine travel limits, less the edge margin.
+    Check one placement against the machinable surface.
 
-    The footprint measured is the toolpath inflated by the part's largest tool
-    radius, not the tool-centre extents: the file's numbers are tool centre, so
-    the cutting edge already stands a radius outside them.
+    The two axes are checked differently, because they fail differently — see
+    the TRAVEL_DEFAULTS comment:
+
+      X  cutter edge (toolpath inflated by the largest tool radius) inside the
+         limit less the edge margin. There is a hard stop out there.
+      Y  tool centre inside the limit, no margin. Nothing obstructs either end,
+         so overhang is fine — except that the edge must clear Y_FLOOR_MM.
     """
     limits = travel_limits(advanced)
     margin = edge_margin_mm(advanced)
-    r = toolpath_rect(placed, rails, _max_tool_radius(placed))
+    radius = _max_tool_radius(placed)
+    centre = toolpath_rect(placed, rails)
+    edge = toolpath_rect(placed, rails, radius)
     slot = slot_label(placed.rail, placed.slot_inches)
     tool = _largest_tool_str(placed) or "cutter "
+    # Across the bed is fixed by the rail and the part, so no slot helps.
+    hard_stop = ("There is a hard stop at each end of X travel, and this job "
+                 f"keeps a {margin / MM_PER_IN:.2g}\" margin from it. Moving the "
+                 "part along the rail will not help — this is how far it "
+                 "reaches across the bed. Use a narrower part, the other rail, "
+                 "or check that the file's origin is its bottom-left corner.")
 
-    for axis, lo_key, hi_key, reach_lo, reach_hi in (
-        ("X", "x_min", "x_max", r.min_x, r.max_x),
-        ("Y", "y_min", "y_max", r.min_y, r.max_y),
-    ):
-        lo, hi = limits[lo_key], limits[hi_key]
-        if lo is not None and reach_lo < lo + margin:
-            return _envelope_result(placed, slot, tool, axis, reach_lo, lo + margin, lo, margin)
-        if hi is not None and reach_hi > hi - margin:
-            return _envelope_result(placed, slot, tool, axis, reach_hi, hi - margin, hi, margin)
+    # X — the cutter itself has to fit, with the margin held back from the stop.
+    lo, hi = limits["x_min"], limits["x_max"]
+    if lo is not None and edge.min_x < lo + margin:
+        return _envelope_result(placed, slot, tool, "X", edge.min_x, lo + margin, hard_stop)
+    if hi is not None and edge.max_x > hi - margin:
+        return _envelope_result(placed, slot, tool, "X", edge.max_x, hi - margin, hard_stop)
+
+    # Y — tool centre against the surface; the tool may hang off either end.
+    # This one IS a slot problem: the slot is what sets where the part sits.
+    move = " Move the part to a slot further from the end of the bed."
+    surface = ("The tool may hang over the end of the surface on Y, but its "
+               "centre has to stay on it." + move)
+    lo, hi = limits["y_min"], limits["y_max"]
+    if lo is not None and centre.min_y < lo:
+        return _envelope_result(placed, slot, tool, "Y", centre.min_y, lo, surface)
+    if hi is not None and centre.max_y > hi:
+        return _envelope_result(placed, slot, tool, "Y", centre.max_y, hi, surface)
+    if edge.min_y < Y_FLOOR_MM:
+        return _envelope_result(
+            placed, slot, tool, "Y", edge.min_y, Y_FLOOR_MM,
+            f"The machine does not travel below Y {Y_FLOOR_MM:.0f}." + move)
 
     return CollisionResult(collides=False)
 
 
 def _envelope_result(placed: PlacedPart, slot: str, tool: str, axis: str,
-                     reach: float, keepout: float, limit: float,
-                     margin: float) -> CollisionResult:
+                     reach: float, bound: float, why: str) -> CollisionResult:
     return CollisionResult(
         collides=True,
         message=(
             f"Cannot place {placed.part.filename} at slot {slot}: its {tool}"
             f"would reach machine {axis} {reach:.1f} mm, past the safe limit of "
-            f"{keepout:.1f} mm. The machine stops at {axis} {limit:.1f} mm and this "
-            f"job keeps a {margin / MM_PER_IN:.2g}\" margin. "
-            "Move the part to a slot further from the end of the bed."
+            f"{bound:.1f} mm. {why}"
         ),
     )
 

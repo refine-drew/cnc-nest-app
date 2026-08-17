@@ -131,37 +131,69 @@ available; nothing in the cut path depends on them.
 
 #### Machine envelope
 
-Separate from `bed_x_mm`/`bed_y_mm`: `advanced.machine_travel` holds the **axis
-travel limits** and `advanced.edge_margin_in` the keep-out from them.
-`collision.check_envelope` rejects a placement whose footprint — the toolpath
-**inflated by the part's largest tool radius** — crosses `limit − margin`.
+Separate from `bed_x_mm`/`bed_y_mm`: `advanced.machine_travel` holds the outer
+extents of the **machinable surface** and `advanced.edge_margin_in` the keep-out
+from them. `collision.check_envelope` gates placement on both.
 
-The inflation is the point. Programmed coordinates are **tool centre** with no
+Measured off the machine layout drawing on 2026-08-17, in inches:
+
+```
+X  2.421 → 63.248      (60.827" usable)     ->   61.4934 → 1606.4992 mm
+Y  0.984 → 121.969     (120.985" usable)    ->   24.9936 → 3098.0126 mm
+Z  unmeasured                               ->   null (skipped) — issue #19
+```
+
+**The two axes are checked differently, because they fail differently.** This
+asymmetry is the whole design; flattening it breaks the app in one direction or
+the machine in the other.
+
+| | bound on | margin | why |
+|---|---|---|---|
+| **X** | cutter **edge** (toolpath inflated by largest tool radius) | yes | a **hard stop** sits just outside each end — overrunning it is a crash |
+| **Y** | tool **centre** | no | both ends are **open**; the tool may hang off the surface, so `y_max + radius` and `y_min − radius` are both fine |
+
+The X inflation is the point. Programmed coordinates are **tool centre** with no
 cutter comp (`G40`, computer-compensated toolpaths), so the cutting edge stands
-one radius outside every number in the file.
+one radius outside every number in the file. On Y that same radius is exactly
+what is *allowed* to hang over, which is why the bound sits on centre there.
 
-**No limit is measured yet, so all six ship as `null` and the check is dormant**
-— an axis with `null` limits is skipped. Issue #19 tracks measuring them.
+`collision.Y_FLOOR_MM = 0.0` is the one hard bound on the open axis: the machine
+does not travel below Y 0, so the cutter **edge** must clear it. With `y_min` at
+24.994 that only bites for a cutter over ~2" diameter — a backstop, not the
+working limit.
 
-Do not infer them from the park block again. Its `G00 G53 X0 Y3048` is the only
-machine-frame coordinate in the output, and reading those two numbers as limits
-was wrong twice over. `Y 3048` is a position the machine *reaches*, which bounds
-travel from below rather than fixing it; it is also exactly 120.000", the
-nominal bed length. Real Y travel runs well past it — the tool changer sits
-beyond that end of the rail. Asserting 3048 put **A slot 0** (datum Y 3034.700,
-13.3 mm short of it) inside the edge margin and made the slot unusable, which is
-what `test_a_slot_zero_is_usable_with_the_shipped_config` now guards. `X 0 →
-1524` contradicts the measured B rail corner at 1534.160 that every B-rail part
-cuts inboard from.
+Checking Y like X is what made **A slot 0** unusable (datum Y 3034.700);
+`test_a_slot_zero_is_usable_with_the_shipped_config` guards it. Checking X like
+Y would license a real crash.
 
-Guessing is harmful both ways: too tight rejects placements that cut fine today,
-too loose licenses a real overtravel. Fill in `advanced.machine_travel` from the
-machine and each axis starts checking itself.
+Do not re-derive these from the park block. Its `G00 G53 X0 Y3048` is the only
+machine-frame coordinate in the output, and both numbers were read as limits
+once. `Y 3048` is a position the machine *reaches* — a lower bound on travel,
+and exactly 120.000", a design round number; the surface actually runs to
+3098.013 and travel runs past that to the tool changer. `X 0 → 1524`
+contradicted the measured B rail corner at 1534.160 that every B-rail part cuts
+inboard from; the surface reaches 1606.499.
+
+`gcode_validator` mirrors this per-axis policy (`_MARGINED_AXES`). It reads
+tool-centre coordinates out of the finished file and has no radius to inflate
+them by, so on X it is one radius **more permissive** than the placement gate —
+a backstop, not the primary guard. That direction is deliberate: the stricter
+check must be the one that runs first.
 
 `_max_tool_radius` reads `part.tools[...]["diameter_inches"]` straight from the
 parsed file, not the resolved `ToolLibrary`. The Fusion post writes `(T2 D=12.7
 … )` rather than `{0.5 inches}`, so those files parse to diameter 0 and both the
 envelope check and the existing tool-radius collision check under-inflate them.
+
+**Every parse assumes the file's origin is the blank's registration corner** —
+the VCarve convention, where all coordinates are positive. Nothing checks it.
+Turning the envelope on immediately caught two library files that violate it:
+`1001-combined.nc` and `1001-combined-Zbottom_1.nc` are hand-merged Fusion
+output with `G54` at the blank **centre**, so their toolpaths run
+−195.798 → +208.369 across the bed. Placed on the A rail with the corner-datum
+transform, the cutter lands at machine X −61.2 — 122 mm past the hard stop.
+Both are now rejected at every slot on both rails, which is correct but reads as
+a placement failure rather than the file-origin mismatch it is. Issue #23.
 
 #### Arc planes
 
@@ -193,3 +225,5 @@ Collision detection compares **both rails against each other**, not just parts
 sharing a rail: everything is in machine coordinates. The rail datums are 1399.5 mm
 (55.1") apart, so two parts whose across-bed dimensions sum to more than that
 overlap in X and can genuinely interfere.
+
+SS2 = Laguna SmartShop2 Pro 5x10

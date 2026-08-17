@@ -207,21 +207,23 @@ def test_g53_retract_without_g00_is_an_error():
 
 # ── envelope ─────────────────────────────────────────────────────────────────
 
-# No travel limit is measured yet (issue #19), so config.json ships every one as
-# null and this check is dormant. These tests supply limits explicitly to
-# exercise the mechanism that has to keep working once real numbers arrive.
+# This mirrors collision.check_envelope, which checks the two axes differently:
+# X keeps the edge margin because a hard stop sits outside it, Y takes no margin
+# because the tool is free to hang off the end of the surface. The validator
+# reads tool-centre coordinates out of the finished file with no radius to
+# inflate them by, so on X it is the more permissive of the two — a backstop
+# behind the placement gate, not the primary guard.
+#
+# The shipped surface bounds are X 61.493 → 1606.499, Y 24.994 → 3098.013.
 
 WITH_LIMITS = {**ADVANCED,
                "machine_travel": {"x_min": 0.0, "x_max": 1524.0,
                                   "y_min": 0.0, "y_max": 3048.0}}
 
 
-def test_no_axis_is_checked_while_its_travel_is_unmeasured():
-    # Reading the park block's G53 X0 Y3048 as a limit is what made A rail slot
-    # 0 unusable; it is a reachable position, not an axis end. Nothing is
-    # asserted until it is measured.
-    wild = CLEAN.replace("Y100.0000", "Y9999.0000").replace("X100.0000", "X9999.0000")
-    assert "envelope" not in checks(wild)
+def test_an_unmeasured_axis_is_not_checked():
+    # Z ships as null (issue #19) and is skipped rather than guessed at.
+    assert "envelope" not in checks(CLEAN.replace("Z-5.0000", "Z-9999.0000"))
 
 
 def test_move_past_a_configured_travel_limit_is_an_error():
@@ -229,12 +231,22 @@ def test_move_past_a_configured_travel_limit_is_an_error():
     assert "envelope" in checks(broken, ERROR, WITH_LIMITS)
 
 
-def test_move_inside_the_edge_margin_is_a_warning():
-    # 3044.023 mm — the actual max Y from nest_20260815_103400.nc, 3.98 mm short
-    # of a 3048 limit and well inside a 1/2" margin.
-    broken = CLEAN.replace("Y100.0000", "Y3044.0230")
-    assert "envelope" in checks(broken, WARNING, WITH_LIMITS)
-    assert "envelope" not in checks(broken, ERROR, WITH_LIMITS)
+def test_y_takes_no_edge_margin_because_overhang_is_allowed():
+    # 3044.023 mm — the actual max Y from nest_20260815_103400.nc. It sits
+    # 3.98 mm short of the old 3048 bound, which the margin once made a
+    # warning. Nothing obstructs that end of Y, so a tool centre still on the
+    # surface is simply legal.
+    inside = CLEAN.replace("Y100.0000", "Y3044.0230")
+    assert "envelope" not in checks(inside, advanced=WITH_LIMITS)
+    # Past the bound it is still an error — the centre may not leave the surface.
+    assert "envelope" in checks(CLEAN.replace("Y100.0000", "Y3050.0000"),
+                                ERROR, WITH_LIMITS)
+
+
+def test_x_keeps_its_edge_margin_because_a_hard_stop_sits_outside_it():
+    inside = CLEAN.replace("X100.0000", "X1520.0000")   # 4 mm short of 1524
+    assert "envelope" in checks(inside, WARNING, WITH_LIMITS)
+    assert "envelope" not in checks(inside, ERROR, WITH_LIMITS)
 
 
 def test_x_is_checked_once_its_travel_is_configured():
@@ -300,13 +312,16 @@ def test_every_reviewed_file_would_have_been_blocked(key):
 
 
 @missing
-def test_reviewed_files_crowd_the_y_limit_once_one_is_configured():
-    # 3044.023 mm and 3041.365 mm — inside a 1/2" margin of a 3048 bound. The
-    # review flagged these as too close to the end of travel; whether 3048 is
-    # the actual limit is issue #19, but the check has to catch them when it is.
-    for key in ("103400", "105420"):
-        assert "envelope" in checks(
-            FILES[key].read_text(errors="replace"), advanced=WITH_LIMITS)
+@pytest.mark.parametrize("key", list(FILES))
+def test_reviewed_files_clear_the_measured_envelope(key):
+    # The 2026-08-15 review flagged 3044.023 and 3041.365 as crowding the end of
+    # Y travel. That was measured against 3048, which is the park position and
+    # not the end of anything. The surface actually runs to 3098.013, and Y is
+    # open at that end besides — so all three files are clean on the envelope,
+    # which matches the fact that every one of them ran without alarming.
+    # Their other defects are asserted above; this pins that the envelope no
+    # longer manufactures a finding on top of them.
+    assert "envelope" not in checks(FILES[key].read_text(errors="replace"))
 
 
 def test_format_findings_reports_counts():

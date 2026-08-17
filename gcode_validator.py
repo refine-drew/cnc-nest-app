@@ -453,6 +453,13 @@ def _check_motion_height(n: int, raw: str, st: _State, axes: dict,
     return []
 
 
+# Y takes no edge margin: nothing obstructs either end of the machinable
+# surface, so the tool is allowed to hang off it and only the tool centre is
+# bounded. X keeps its margin — there is a hard stop out there. This mirrors
+# collision.check_envelope exactly; see _envelope_config.
+_MARGINED_AXES = ("X", "Z")
+
+
 def _check_envelope(n: int, raw: str, axes: dict, limits: dict,
                     margin: float) -> List[Finding]:
     out = []
@@ -460,28 +467,35 @@ def _check_envelope(n: int, raw: str, axes: dict, limits: dict,
         if axis not in axes:
             continue
         val = axes[axis]
+        band = margin if axis in _MARGINED_AXES else 0.0
         lo, hi = limits.get(f"{axis.lower()}_min"), limits.get(f"{axis.lower()}_max")
         if lo is not None:
             if val < lo:
                 out.append(_envelope_finding(ERROR, n, raw, axis, val, lo, "below"))
-            elif val < lo + margin:
-                out.append(_envelope_finding(WARNING, n, raw, axis, val, lo + margin, "below"))
+            elif band and val < lo + band:
+                out.append(_envelope_finding(WARNING, n, raw, axis, val, lo + band, "below"))
         if hi is not None:
             if val > hi:
                 out.append(_envelope_finding(ERROR, n, raw, axis, val, hi, "past"))
-            elif val > hi - margin:
-                out.append(_envelope_finding(WARNING, n, raw, axis, val, hi - margin, "past"))
+            elif band and val > hi - band:
+                out.append(_envelope_finding(WARNING, n, raw, axis, val, hi - band, "past"))
     return out
 
 
 def _envelope_finding(severity: str, n: int, raw: str, axis: str, val: float,
                       bound: float, word: str) -> Finding:
     what = "the travel limit" if severity == ERROR else "the edge margin"
+    # On Y the overhang is allowed, so the radius note would be actively
+    # misleading — it is the reason the bound sits on tool centre in the first
+    # place. On X the cutting edge is the thing the hard stop meets.
+    note = ("This bound is on tool centre; the tool may overhang the end of "
+            "the surface on Y, but its centre may not leave it."
+            if axis == "Y" else
+            "Coordinates are tool centre with no cutter compensation, so the "
+            "cutting edge stands a further tool radius outside this.")
     return Finding(
         severity, "envelope", n, raw.strip(),
-        f"{axis} {val:.4f} is {word} {what} of {bound:.4f}. Coordinates are tool "
-        "centre with no cutter compensation, so the cutting edge stands a further "
-        "tool radius outside this.",
+        f"{axis} {val:.4f} is {word} {what} of {bound:.4f}. {note}",
     )
 
 
@@ -514,10 +528,14 @@ def _envelope_config(advanced: dict):
     """
     Travel limits and edge margin — the same resolver collision.py's placement
     gate uses, so a layout accepted at placement time cannot be rejected by the
-    validator over a different set of numbers.
+    validator over a different set of numbers. The per-axis policy has to match
+    too: margin on X, none on Y (see _MARGINED_AXES).
 
-    Every limit is None until measured (issue #19), which leaves this check
-    dormant rather than guessing.
+    This check reads tool-centre coordinates out of the finished file and has no
+    tool radius to inflate them by, so on X it is one radius more permissive
+    than the placement gate. That direction is safe — the gate is the stricter
+    of the two — but it means the validator is a backstop on X, not the primary
+    guard. Z is still unmeasured and stays dormant (issue #19).
     """
     from collision import travel_limits, edge_margin_mm
     return travel_limits(advanced), edge_margin_mm(advanced)

@@ -44,10 +44,10 @@
       }
     },
     "machine_travel": {
-      "x_min": null,
-      "x_max": null,
-      "y_min": null,
-      "y_max": null,
+      "x_min": 61.4934,
+      "x_max": 1606.4992,
+      "y_min": 24.9936,
+      "y_max": 3098.0126,
       "z_min": null,
       "z_max": null
     },
