@@ -181,16 +181,19 @@ the tool-change count. Whether that reordering is acceptable is open — see #12
 
 ---
 
-## 5. Counting is currently wrong (decided: must be fixed)
+## 5. Counting was wrong (#7 — fixed)
 
-`app.py:232` computes `"tool_changes": max(0, len(ordered_tools) - 1)` — distinct
+`app.py` computed `"tool_changes": max(0, len(ordered_tools) - 1)` — distinct
 tools minus one. The true figure is `len(blocks)`, which is strictly greater
 whenever a tool recurs: part A running `[T1, T2]` and part B running `[T2, T1]`
 produces blocks `T1, T2, T1, T2` — four changes for two tools.
 
-The app therefore **understates tool changes today**, which understates run time
-and understates the cost of the always-on-touch-off posture. This must be fixed
-before the posture tradeoff (#8) can be evaluated with real numbers.
+The app therefore **understated tool changes**, which understated run time and
+understated the cost of the always-on-touch-off posture. It now counts off
+`gcode_generator.block_tool_sequence` (live) and off the emitted file's own
+`T# M06` lines (report). The count matters here beyond run time: touch-off is
+charged **per change, not per distinct tool**, so this figure — not `tool_count` —
+is what multiplies the 30 s in §6.1.
 
 ---
 
@@ -200,8 +203,7 @@ Frontier (takeable now):
 
 | # | Ticket | Type | Why it matters |
 |---|---|---|---|
-| [#6](https://github.com/refine-drew/cnc-nest-app/issues/6) | Measure one touch-off cycle on the SS2 | task | **Needs the machine.** Turns the posture fork into arithmetic |
-| [#7](https://github.com/refine-drew/cnc-nest-app/issues/7) | Fix the tool-change undercount | task | Nothing about posture cost is trustworthy until this is honest |
+| [#8](https://github.com/refine-drew/cnc-nest-app/issues/8) | Choose the safety posture | grilling | **Now unblocked** — #6 and #7 are both resolved, so the tradeoff is arithmetic. See §6.1 |
 | [#20](https://github.com/refine-drew/cnc-nest-app/issues/20) | Parse Fusion tool headers | task | 9 of 26 library files yield no tool identity at all; identity matching has nothing to match on for them. **Now the primary path, not a compatibility patch** |
 | [#12](https://github.com/refine-drew/cnc-nest-app/issues/12) | Define the no-geometry-change guarantee and its proving test | grilling | Turns the hard constraint into a test |
 
@@ -209,6 +211,8 @@ Resolved:
 
 | # | Ticket | Answer |
 |---|---|---|
+| [#6](https://github.com/refine-drew/cnc-nest-app/issues/6) | How long is one touch-off cycle? | **Swap 27 s, swap + touch-off 57 s → touch-off is 30 s** (2026-08-17, timed on the machine). Charged on every `T# M06`. See §6.1 |
+| [#7](https://github.com/refine-drew/cnc-nest-app/issues/7) | Tool-change undercount | **Fixed** — counted off the emitted blocks, not distinct tools |
 | [#4](https://github.com/refine-drew/cnc-nest-app/issues/4) | Can tool identity come from the VCarve tool database? | **No** — see §3.1. The library is hand-maintained, with aliases |
 | [#5](https://github.com/refine-drew/cnc-nest-app/issues/5) | Does the SS2 control honour `G43 H#`? | **Assumed yes** (2026-08-17, operator's call) — see §4.1. Syntec documents `H` as a register index; the machine check was not run. The assumption is the strict branch, so `H`-follows-pocket is load-bearing and the geometry test must cover `H` |
 | [#21](https://github.com/refine-drew/cnc-nest-app/issues/21) | What stable per-tool identity can the Fusion REFINE post emit? | **`vendor` + `productId`**, or an explicit `comment`. No library-wide GUID exists; `toolId` is document-scoped and must not be used. Identity therefore rests on operator-maintained Fusion library fields — which puts CAM tool hygiene on the critical path, contesting an out-of-scope ruling. See §6.2 |
@@ -217,7 +221,6 @@ Blocked:
 
 | # | Ticket | Blocked by |
 |---|---|---|
-| [#8](https://github.com/refine-drew/cnc-nest-app/issues/8) | Choose the safety posture | #6, #7 |
 | [#9](https://github.com/refine-drew/cnc-nest-app/issues/9) | Define tool identity matching, and no-match behaviour | #20, #21 |
 | [#10](https://github.com/refine-drew/cnc-nest-app/issues/10) | Define pocket auto-assignment and conflict resolution | #9 |
 | [#11](https://github.com/refine-drew/cnc-nest-app/issues/11) | Tool changer interface: 8 pockets, drag to reassign | #10 |
@@ -244,12 +247,35 @@ that unobserved detail, so #8 cannot lean on "self-correcting" without checking
 it on the machine. Posture 1 needs no such check: it is correct under the
 assumption as it stands.
 
-The operator's objection to posture 2 is wasted time. That cost is likely much
-smaller than intuition suggests: order-of-operations merging already calls each
-tool **once per job, not once per part**, so nesting twelve parts that share a
-1/4" upcut costs *one* touch-off for that tool. The real cost is bounded by
-*block count* — order of 8–15 per job. But the app cannot currently prove this,
-because of §5. Fix the count, measure the cycle, then decide.
+#### The wasted-time objection, now priced (#6 resolved)
+
+The operator's objection to posture 2 is wasted time. Timed on the machine
+2026-08-17: **swap alone 27 s, swap + touch-off 57 s — touch-off is 30 s.**
+
+The 27 s is paid under both postures, so it is not part of the tradeoff. The
+30 s is the whole of it:
+
+- **Posture 2** pays it **per tool change, on every run of the job.** Order-of-
+  operations merging keeps that well below once-per-part — twelve parts sharing a
+  1/4" upcut do not touch off twelve times — but it is bounded by *block count*,
+  not distinct tools, so a tool the pass-index walk returns to is measured again.
+  At 8–15 blocks per job: **4.0–7.5 minutes**.
+- **Posture 1** pays it once per tool **physically loaded**, in setup rather than
+  in the cut cycle, and not at all when the changer already holds the tools.
+
+So the intuition was right in direction and the merging argument does not rescue
+posture 2: **the cost is real, it is minutes not seconds, and it recurs on every
+repeat run of the same nest.** That is the sharpest version of the tradeoff —
+posture 2 buys crash-immunity with a per-run tax that production quantities
+multiply, while posture 1 buys speed with a dependence on operator discipline at
+load time. Note also that posture 2's safety claim is itself unconfirmed (the
+`H`-register question above), so it is currently paying a known cost for an
+unverified benefit.
+
+The app prices the always-on posture by default
+(`DEFAULT_TOOL_CHANGE_SECONDS = 57.0`). Pricing the other branch is
+`tool_change_seconds=TOOL_SWAP_SECONDS`; the gap is
+`TOUCH_OFF_SECONDS × tool_change_count`.
 
 ### 6.2 Fusion identity, and a scope ruling that no longer holds
 

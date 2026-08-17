@@ -74,8 +74,23 @@ Per-part `GcodePart.runtime_seconds` **excludes** tool-change time
 nothing once the generator merges same-tool passes across parts, so the cost is
 charged once per emitted block at job level instead. The `.txt` report reads the
 finished file and is the precise figure; `_compute_job_stats` is the live
-approximation. The per-change cost is still `DEFAULT_TOOL_CHANGE_SECONDS = 30.0`,
-a placeholder until one cycle is actually timed (issue #6).
+approximation.
+
+**The per-change cost is measured, and it is two numbers, not one.** Timed on the
+SS2 2026-08-17 (issue #6): the swap alone is 27 s, swap plus touch-off is 57 s, so
+`TOOL_SWAP_SECONDS = 27.0`, `TOUCH_OFF_SECONDS = 30.0`, and
+`DEFAULT_TOOL_CHANGE_SECONDS` is their sum. Keep them split — the safety posture
+(issue #8) switches the touch-off on and off, and collapsing them back to one
+constant deletes the only arithmetic that decides it.
+
+Touch-off is charged on **every** `T# M06`, not once per distinct tool: with "auto
+tool" on, the control measures at every call, so a tool the pass-index walk
+returns to is measured again. The default therefore prices the always-on posture.
+Price the other one — touch off once as each tool is loaded, auto tool off — by
+passing `tool_change_seconds=TOOL_SWAP_SECONDS`; that moves the 30 s out of the cut
+cycle into setup, and the gap between postures is exactly
+`TOUCH_OFF_SECONDS × tool_change_count`. On a typical 8–15 block job that is 4–7.5
+minutes, which is what #8 is actually trading against.
 
 **`H` is assumed to be honoured, and `H` always equals `T`.** Decided
 2026-08-17 (issue #5): Syntec documents `H` as an index into a touch-off register,

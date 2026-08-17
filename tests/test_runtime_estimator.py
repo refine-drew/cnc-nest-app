@@ -7,6 +7,8 @@ from runtime_estimator import (
     DEFAULT_RAPID_MM_PER_MIN,
     DEFAULT_TOOL_CHANGE_SECONDS,
     MM_PER_INCH,
+    TOOL_SWAP_SECONDS,
+    TOUCH_OFF_SECONDS,
     estimate_lines_runtime,
     format_duration,
 )
@@ -111,10 +113,44 @@ def test_full_circle_when_endpoints_equal():
 
 # ── Tool changes ──────────────────────────────────────────────────────────────
 
-def test_tool_change_adds_thirty_seconds():
+def test_measured_tool_change_components():
+    """
+    Timed on the SS2, 2026-08-17 (issue #6): swap 27 s, swap + touch-off 57 s.
+
+    Pinned as literals because they are machine readouts, not derivations —
+    re-time the cycle and update this test, the comment in `runtime_estimator`,
+    and CLAUDE.md together. The sum is asserted separately so the default cannot
+    drift away from its own components.
+    """
+    assert TOOL_SWAP_SECONDS == 27.0
+    assert TOUCH_OFF_SECONDS == 30.0
+    assert DEFAULT_TOOL_CHANGE_SECONDS == 57.0
+    assert DEFAULT_TOOL_CHANGE_SECONDS == TOOL_SWAP_SECONDS + TOUCH_OFF_SECONDS
+
+
+def test_tool_change_charges_swap_plus_touch_off():
     result = estimate_lines_runtime(["T1 M06"])
     assert result["tool_changes"] == DEFAULT_TOOL_CHANGE_SECONDS
     assert result["seconds"] == DEFAULT_TOOL_CHANGE_SECONDS
+
+
+def test_swap_only_posture_costs_the_touch_off_per_change():
+    """
+    Touching off once at load (auto tool off) is priced by passing the swap alone.
+
+    The gap between the postures is `TOUCH_OFF_SECONDS` times the *change* count,
+    not the distinct-tool count — T1 recalled after T2 is measured a second time.
+    This is the arithmetic #8 turns on, so it is pinned rather than left implied.
+    """
+    lines = ["T1 M06", "T2 M06", "T1 M06", "T2 M06"]
+    always_on = estimate_lines_runtime(lines)
+    at_load = estimate_lines_runtime(lines, tool_change_seconds=TOOL_SWAP_SECONDS)
+
+    assert at_load["tool_change_count"] == always_on["tool_change_count"] == 4
+    assert at_load["tool_changes"] == 4 * TOOL_SWAP_SECONDS
+    assert always_on["tool_changes"] - at_load["tool_changes"] == pytest.approx(
+        4 * TOUCH_OFF_SECONDS,
+    )
 
 
 def test_multiple_tool_changes():
@@ -142,13 +178,15 @@ def test_blank_and_misc_lines_skipped():
 
 def test_combined_estimate_sums_buckets():
     lines = [
-        "T1 M06",         # +30s
+        "T1 M06",         # one tool change
         "G00 X10",        # 10" rapid
         "G01 X20 F60",    # 10" cut at 60 in/min = 10s
-        "T2 M06",         # +30s
+        "T2 M06",         # one tool change
     ]
     r = estimate_lines_runtime(lines)
-    expected = 60 + 10 + 10 / DEFAULT_RAPID_MM_PER_MIN * 60
+    expected = (
+        2 * DEFAULT_TOOL_CHANGE_SECONDS + 10 + 10 / DEFAULT_RAPID_MM_PER_MIN * 60
+    )
     assert r["seconds"] == pytest.approx(expected, rel=1e-6)
     assert r["seconds"] == pytest.approx(
         r["cutting"] + r["rapid"] + r["tool_changes"], rel=1e-9

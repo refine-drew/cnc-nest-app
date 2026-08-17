@@ -232,9 +232,11 @@ def _compute_job_stats() -> dict:
 
     # Per-part runtimes deliberately exclude tool-change time (the generator
     # merges same-tool passes across parts, so a part's own change count means
-    # nothing in a merged job). Charge it once per emitted block instead. The
-    # .txt report runs the estimator over the actual merged G-code for the
-    # precise number; this is the live approximation.
+    # nothing in a merged job). Charge it once per emitted block instead — per
+    # block, not per distinct tool, because the 30 s touch-off inside
+    # DEFAULT_TOOL_CHANGE_SECONDS is paid again every time a tool is called back
+    # (issue #6). The report runs the estimator over the actual merged G-code for
+    # the precise number; this is the live approximation.
     runtime_seconds = (
         sum(p.part.runtime_seconds for p in _placements.values())
         + len(block_tools) * DEFAULT_TOOL_CHANGE_SECONDS

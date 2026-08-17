@@ -7,7 +7,7 @@ and current XYZ. Sums cutting time (distance / feedrate) and rapid time
 
 Per project convention:
   - Default rapid rate: 1800 in/min (Smartshop 2).
-  - Default tool change: 30 s per T# M06.
+  - Default tool change: 57 s per T# M06 — a 27 s swap plus a 30 s touch-off.
   - Z-only G1 plunges are ignored (treated as zero time).
   - F-words and coordinates are interpreted under the currently-modal units;
     G20/G70 lines switch to inches, G21/G71 lines switch to mm.
@@ -36,7 +36,27 @@ _G71_PATTERN = re.compile(r"\bG71\b")
 
 MM_PER_INCH = 25.4
 DEFAULT_RAPID_MM_PER_MIN = 1800.0 * MM_PER_INCH   # 1800 in/min
-DEFAULT_TOOL_CHANGE_SECONDS = 30.0
+
+# Timed on the SS2, 2026-08-17 (issue #6). Two constants, not one, because the
+# safety posture (#8) switches exactly one of them on and off:
+#
+#   swap alone ........ 27 s   carousel move, spindle release/clamp
+#   swap + touch-off .. 57 s   -> touch-off costs 30 s
+#
+# Touch-off is charged on **every** `T# M06`, not once per distinct tool: with
+# "auto tool" left on the control measures at every call, so a tool the
+# pass-index walk returns to is measured again. That is why the change *count*
+# (issue #7) had to be honest before this number meant anything — the cost is
+# `count * DEFAULT_TOOL_CHANGE_SECONDS`, and count > distinct tools whenever the
+# parts disagree about tool order.
+#
+# The other posture — touch off once as each tool is loaded into the changer,
+# auto tool off — moves the 30 s out of the cut cycle into setup. Price it by
+# passing `tool_change_seconds=TOOL_SWAP_SECONDS`; the difference between the
+# postures is exactly `TOUCH_OFF_SECONDS * tool_change_count`.
+TOOL_SWAP_SECONDS = 27.0
+TOUCH_OFF_SECONDS = 30.0
+DEFAULT_TOOL_CHANGE_SECONDS = TOOL_SWAP_SECONDS + TOUCH_OFF_SECONDS   # 57.0
 
 
 def estimate_lines_runtime(
@@ -49,9 +69,10 @@ def estimate_lines_runtime(
 
     Returns a dict: {seconds, cutting, rapid, tool_changes} — each in seconds —
     plus `tool_change_count`, the number of `T# M06` events seen. The count is
-    reported separately because it survives `tool_change_seconds=0.0`, and
-    because a per-tool-change cost that is still being measured (issue #6) must
-    not be the only record that the change happened.
+    reported separately because it is invariant while the seconds are not: it
+    survives `tool_change_seconds=0.0` (how per-part runtimes are parsed), and it
+    is what reprices the job when the posture changes which of
+    `TOOL_SWAP_SECONDS` / `TOUCH_OFF_SECONDS` applies.
     """
     cutting_s = 0.0
     rapid_s = 0.0
