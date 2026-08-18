@@ -1,0 +1,866 @@
+<title>Tool Changer Dock — CNC Nest prototype</title>
+<style>
+/* ───────────────────────────────────────────────────────────────────────────
+   Palette and type are lifted from templates/index.html so the mock reads as
+   the app, not as a slide about the app. The page frame around it is the same
+   material, one step darker. Dark only, on purpose: CNC Nest has no light
+   theme and a light frame around a dark screenshot would fight it.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root{
+  --void:#141416;      /* page ground, one step under the app */
+  --bg:#1c1c1e;        /* app ground */
+  --chrome:#242426;    /* bars, sidebars */
+  --panel:#2c2c2e;     /* raised surfaces */
+  --line:#333;
+  --line-soft:#2a2a2a;
+  --ink:#e0e0e0;
+  --ink-dim:#aaa;
+  --ink-mute:#888;
+  --ink-faint:#5f5f63;
+  --accent:#0a84ff;
+  --good:#30d158;
+  --warn:#ffd60a;
+  --bad:#ff453a;
+  --sans:system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--void);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55;
+     -webkit-font-smoothing:antialiased}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ── page scaffolding ── */
+.wrap{max-width:1280px;margin:0 auto;padding:34px 24px 80px;display:flex;flex-direction:column;gap:30px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint)}
+h1{font-size:27px;line-height:1.2;font-weight:600;margin:6px 0 0;text-wrap:balance}
+.standfirst{max-width:64ch;color:var(--ink-dim);margin:10px 0 0}
+h2{font-size:17px;font-weight:600;margin:0 0 2px}
+h3{font-size:13px;font-weight:600;margin:0;color:var(--ink)}
+p{margin:0}
+a{color:var(--accent)}
+code,.m{font-family:var(--mono);font-size:.88em}
+code{color:#cfd6dd}
+.hr{height:1px;background:var(--line);border:0}
+
+/* ── the app mock ───────────────────────────────────────────────────────── */
+.screen{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--bg);
+        font-size:13px;box-shadow:0 24px 60px -30px #000;display:flex;flex-direction:column;height:640px;min-width:0}
+.screen button{cursor:pointer;border:1px solid #444;background:var(--panel);color:var(--ink);border-radius:4px;
+        padding:4px 10px;font-size:12px;font-family:inherit}
+.screen button:hover:not(:disabled){background:#3a3a3c}
+.screen button:disabled{opacity:.4;cursor:not-allowed}
+.screen button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.screen button.primary:disabled{background:#2b4a6d;border-color:#2b4a6d;color:#cfe3f7}
+.screen h2{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-mute);
+        padding:8px 10px 4px;border-bottom:1px solid var(--line);margin:0}
+
+.topbar{flex:none;height:40px;display:flex;align-items:center;gap:8px;padding:0 10px;background:var(--chrome);
+        border-bottom:1px solid var(--line)}
+.topbar .title{font-weight:600;color:#ccc}
+.main{flex:1;display:grid;grid-template-columns:230px 6px 1fr 6px 250px;overflow:hidden;min-height:0}
+.side{background:var(--chrome);display:flex;flex-direction:column;overflow:auto;min-width:0}
+.rh{background:#2a2a2a}
+.canvas-area{position:relative;background:#111;overflow:hidden}
+.canvas-area canvas{display:block;width:100%;height:100%}
+.statusbar{flex:none;height:26px;display:flex;align-items:center;background:var(--chrome);
+        border-top:1px solid var(--line);font-size:11px;color:var(--ink-mute)}
+.sb-item{padding:0 12px;border-right:1px solid var(--line);line-height:26px;white-space:nowrap}
+.sb-item b{color:#ccc;font-weight:500}
+
+.tray-item{padding:5px 8px;display:flex;gap:6px;border-bottom:1px solid var(--line-soft);align-items:flex-start}
+.tray-item .dot{width:9px;height:9px;border-radius:50%;flex:none;margin-top:4px}
+.tray-item .nm{color:#ddd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tray-item .sub{color:var(--ink-mute);font-size:11px}
+.tags{display:flex;gap:3px;margin-top:2px;flex-wrap:wrap}
+.tag{padding:0 4px;border-radius:2px;font-size:10px;background:#333;color:#bbb;font-family:var(--mono)}
+.tag.unknown{background:#3a3413;color:var(--warn)}
+.pl-row{padding:4px 10px;display:flex;gap:6px;font-size:12px;border-bottom:1px solid var(--line-soft);align-items:center}
+.pl-row .slot{font-weight:600;min-width:30px;font-family:var(--mono)}
+.pl-row .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#ccc}
+.pl-row .frees{font-size:10px;color:var(--ink-faint);white-space:nowrap}
+.jobinfo{padding:8px 10px;font-size:12px;color:var(--ink-mute);line-height:1.9}
+.jobinfo b{color:#ccc;font-weight:500}
+.reclaimed{margin:8px;padding:6px 8px;border:1px dashed #3d3d40;border-radius:4px;color:var(--ink-faint);font-size:11px}
+
+/* ── THE DOCK ───────────────────────────────────────────────────────────── */
+.dock{flex:none;background:var(--chrome);border-top:1px solid var(--line)}
+.dock-head{display:flex;align-items:center;gap:10px;padding:0 10px;height:28px;cursor:pointer;user-select:none}
+.dock-head .lbl{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-mute)}
+.dock-head .verdict{font-size:11.5px;display:flex;align-items:center;gap:6px;min-width:0}
+.dock-head .verdict .sym{font-family:var(--mono)}
+.dock-head .grow{flex:1}
+.dock-head .chev{color:var(--ink-mute);font-size:10px;padding:0 2px}
+.dock-head.locked{cursor:default}
+.dock-head.locked .chev{opacity:.3}
+.v-bad{color:var(--bad)}.v-warn{color:var(--warn)}.v-good{color:var(--good)}
+.dock-body{padding:0 8px 8px;display:flex;flex-direction:column;gap:6px}
+.dock.collapsed .dock-body{display:none}
+
+.pockets{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:5px}
+.pocket{background:#202022;border:1px solid var(--line);border-radius:5px;min-height:92px;display:flex;
+        flex-direction:column;transition:border-color .12s,background .12s;min-width:0}
+.pocket-no{font-family:var(--mono);font-size:10px;color:var(--ink-faint);padding:3px 6px 2px;letter-spacing:.06em;
+        display:flex;justify-content:space-between;align-items:center}
+.pocket-no .free{text-transform:uppercase;letter-spacing:.1em;font-size:9px}
+.pocket-cards{flex:1;display:flex;flex-direction:column;gap:3px;padding:0 4px 4px}
+.pocket.over{border-color:var(--accent);background:#16232f}
+.pocket.dbl{border-color:var(--bad);background:#251618;box-shadow:inset 0 0 0 1px #4a1e1e}
+.pocket.dbl .pocket-no{color:var(--bad)}
+.pocket .empty{flex:1;display:flex;align-items:center;justify-content:center;color:#4a4a4e;font-size:11px;
+        border:1px dashed #303034;border-radius:4px;margin:0 0 1px}
+.pocket.over .empty{color:var(--accent);border-color:var(--accent)}
+
+.card{background:var(--panel);border:1px solid #3c3c40;border-left:3px solid #4dabf7;border-radius:4px;
+        padding:4px 6px;cursor:grab;min-width:0}
+.card:hover{background:#343438}
+.card.dragging{opacity:.35}
+.card .nm{font-size:11.5px;color:#e6e6e6;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card .geo{font-size:10px;color:var(--ink-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .row{display:flex;gap:4px;align-items:center;margin-top:3px;flex-wrap:wrap}
+.chip{font-family:var(--mono);font-size:9.5px;padding:0 3px;border-radius:2px;background:#38383c;color:#b9b9bd;
+        white-space:nowrap}
+.chip.remap{background:#1f3348;color:#8fc4ff}
+.chip.parts{background:#333;color:#a8a8ac}
+.chip.home{background:#3a3413;color:var(--warn)}
+.card.orphan{border-left-color:var(--warn);background:#2e2a1c;cursor:default}
+.card.orphan .nm{color:var(--warn)}
+
+.staging{display:flex;align-items:flex-start;gap:8px;background:#232320;border:1px solid #3a3a2e;
+        border-left:3px solid var(--warn);border-radius:5px;padding:5px 7px;transition:border-color .12s}
+.staging.over{border-color:var(--accent);background:#16232f}
+.staging .st-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--warn);padding-top:4px;
+        white-space:nowrap;flex:none}
+.staging .st-cards{display:flex;gap:5px;flex-wrap:wrap;flex:1}
+.staging .st-cards .card{width:190px}
+.staging .st-hint{font-size:11px;color:var(--ink-mute);flex:none;padding-top:4px;max-width:290px;text-align:right}
+.advice{background:#251618;border:1px solid #4a1e1e;border-left:3px solid var(--bad);border-radius:5px;
+        padding:5px 8px;font-size:11.5px;color:#dcc}
+.advice .sym{font-family:var(--mono);color:var(--bad);margin-right:5px}
+
+/* hover detail */
+.pop{position:absolute;z-index:40;width:290px;background:#2a2a2c;border:1px solid #4a4a4e;border-radius:6px;
+     padding:9px 10px;font-size:11.5px;box-shadow:0 14px 34px -12px #000;pointer-events:none;display:none}
+.pop.show{display:block}
+.pop .p-nm{font-size:12.5px;font-weight:600;color:#fff;display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.pop .p-code{font-family:var(--mono);font-size:10px;color:var(--accent);flex:none}
+.pop .p-geo{color:var(--ink-dim);margin-top:2px}
+.pop .p-slot{margin-top:5px;color:var(--ink-mute)}
+.pop .p-slot .off{color:var(--warn)}
+.pop .p-h{margin-top:7px;font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-faint)}
+.pop table{width:100%;border-collapse:collapse;margin-top:2px}
+.pop td{padding:1px 0;color:#cfcfd3;font-size:11px}
+.pop td.t{font-family:var(--mono);color:#8fc4ff;text-align:right;width:52px}
+.pop .p-sole{margin-top:7px;padding-top:6px;border-top:1px solid #3c3c40;color:var(--warn);font-size:11px}
+
+/* ── prototype controls (not part of the app) ── */
+.controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-mute)}
+.controls .seg{display:flex;border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.controls .seg button{background:var(--chrome);border:0;border-right:1px solid var(--line);color:var(--ink-dim);
+        padding:5px 11px;font:inherit;font-size:12px;cursor:pointer}
+.controls .seg button:last-child{border-right:0}
+.controls .seg button.on{background:var(--accent);color:#fff}
+.controls .reset{background:var(--chrome);border:1px solid var(--line);color:var(--ink-dim);border-radius:5px;
+        padding:5px 11px;font:inherit;font-size:12px;cursor:pointer}
+.scn-note{font-size:12.5px;color:var(--ink-mute);max-width:70ch}
+.scn-note b{color:var(--ink-dim);font-weight:500}
+
+/* ── notes ── */
+.block{display:flex;flex-direction:column;gap:12px}
+.qgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+.decided{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:1fr 1fr;gap:9px 30px}
+@media (max-width:900px){.qgrid,.decided{grid-template-columns:1fr}.main{grid-template-columns:0 0 1fr 0 0}}
+.decided li{display:grid;grid-template-columns:auto 1fr;gap:9px;font-size:13px;color:var(--ink-dim)}
+.decided .ref{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);padding-top:3px;white-space:nowrap}
+.q{border:1px solid var(--line);border-radius:7px;padding:12px 14px;background:#191919;display:flex;
+   flex-direction:column;gap:6px}
+.q .qh{display:flex;gap:9px;align-items:baseline}
+.q .qn{font-family:var(--mono);font-size:11px;color:var(--accent);flex:none;padding-top:1px}
+.q p{font-size:12.5px;color:var(--ink-dim)}
+.q .built{font-size:12.5px;color:var(--ink-mute)}
+.q .built b{color:var(--good);font-weight:500}
+.q .alt{font-size:12.5px;color:var(--ink-mute)}
+.q .alt b{color:var(--warn);font-weight:500}
+.foot{font-size:12px;color:var(--ink-faint);max-width:78ch}
+</style>
+
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Prototype · issue #11 · 17 Aug 2026</div>
+    <h1>Tool changer dock: eight pockets, drag to reassign</h1>
+    <p class="standfirst">A working mock of the changer surface, wired to the real declared library and real
+    library files. Drag the cards between pockets. Everything reacts — the pocket markers, the header verdict,
+    the Generate button. Nothing is saved and no G-code exists behind it.</p>
+  </header>
+
+  <div class="controls">
+    <span>Nest:</span>
+    <div class="seg" id="scn"></div>
+    <button class="reset" id="reset">Reset pockets</button>
+  </div>
+  <p class="scn-note" id="scn-note"></p>
+
+  <!-- ── the mock ───────────────────────────────────────────────────────── -->
+  <div class="screen" id="screen">
+    <div class="topbar">
+      <span class="title">CNC Nest Tool</span>
+      <span class="grow" style="flex:1"></span>
+      <span style="font-size:11px;color:#888">Job:</span>
+      <input type="text" value="" placeholder="auto" readonly
+             style="width:140px;background:var(--panel);border:1px solid #444;color:var(--ink);border-radius:4px;
+                    padding:3px 8px;font-size:12px;font-family:inherit"/>
+      <button class="primary" id="btn-gen" disabled>Generate G-code</button>
+      <span style="width:1px;height:20px;background:#444;margin:0 4px"></span>
+      <button>Audit Library</button>
+      <button>⚙</button>
+    </div>
+
+    <div class="main">
+      <div class="side">
+        <h2>Library</h2>
+        <div style="padding:6px 8px;border-bottom:1px solid var(--line)">
+          <input type="text" placeholder="Search files…" readonly
+                 style="width:100%;background:var(--panel);border:1px solid #444;color:var(--ink);border-radius:4px;
+                        padding:3px 8px;font-size:12px;font-family:inherit"/>
+        </div>
+        <div style="padding:4px 0;color:#bbb;font-size:12px" id="lib-tree"></div>
+        <h2>Parts Tray</h2>
+        <div id="tray" style="overflow:auto"></div>
+      </div>
+      <div class="rh"></div>
+      <div class="canvas-area"><canvas id="bed"></canvas></div>
+      <div class="rh"></div>
+      <div class="side">
+        <h2>Placements</h2>
+        <div id="placements"></div>
+        <div class="reclaimed">“Tool Compatibility” lived here. The dock replaces it — this is where the
+          screen budget came from.</div>
+        <h2>Job Info</h2>
+        <div class="jobinfo" id="jobinfo"></div>
+      </div>
+    </div>
+
+    <!-- dock -->
+    <div class="dock" id="dock">
+      <div class="dock-head" id="dock-head">
+        <span class="lbl">Tool changer</span>
+        <span class="verdict" id="verdict"></span>
+        <span class="grow"></span>
+        <span class="chev" id="chev">▼</span>
+      </div>
+      <div class="dock-body">
+        <div class="pockets" id="pockets"></div>
+        <div id="staging-wrap"></div>
+      </div>
+    </div>
+
+    <div class="statusbar" id="statusbar"></div>
+    <div class="pop" id="pop"></div>
+  </div>
+
+  <p class="foot">Keyboard, for a touchless demo: tab to a card, then press <code>1</code>–<code>8</code> to send
+  it to that pocket or <code>0</code> to send it back to “needs a home”.</p>
+
+  <hr class="hr"/>
+
+  <!-- ── notes ──────────────────────────────────────────────────────────── -->
+  <div class="block">
+    <h2>Already decided — built in, not up for grabs</h2>
+    <p style="font-size:13px;color:var(--ink-dim)">These came out of the spec and the 17 Aug brainstorm. They are
+    here so you can see them being honoured, and so a “why does it do that” has an answer.</p>
+    <ul class="decided" id="decided"></ul>
+  </div>
+
+  <div class="block">
+    <h2>Your call</h2>
+    <p style="font-size:13px;color:var(--ink-dim)">Each one names what the mock does and the live alternative.
+    Reply by number.</p>
+    <div id="questions" class="qgrid"></div>
+  </div>
+
+  <hr class="hr"/>
+  <p class="foot">Files and tool numbers are read from the real corpus in <code>~/Documents/cnc_library</code>;
+  tools, diameters, flute directions and default slots are the ten rows of
+  <code>Source Data/Refine Tools&nbsp;-&nbsp;Sheet1.csv</code>. The shop codes shown on each tool
+  (<code>EM-0512</code> and friends) are placeholders — the <code>Product ID</code> column is still empty on all
+  ten rows, and filling it is the one thing that has to happen before any of this can match a file for real.</p>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   Data. Library = the ten declared rows. Nests = real files and the real T
+   numbers they post.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const LIB = {
+  ball05  : {name:'.5" Ball Nose',          dia:0.5,    cls:'Ball Nose',     flute:'upcut',    slot:1, code:'BN-0500'},
+  em05x125: {name:'0.5" x 1.25 End Mill',   dia:0.5,    cls:'Flat End Mill', flute:'downcut',  slot:2, code:'EM-0512', loc:1.25},
+  em05x20 : {name:'0.5" x 2.0 End Mill',    dia:0.5,    cls:'Flat End Mill', flute:'downcut',  slot:2, code:'EM-0520', loc:2.0},
+  rn10    : {name:'1" Round Nose',          dia:1.0,    cls:'Ball Nose',     flute:'straight', slot:3, code:'RN-1000', vendor:'Freud'},
+  em075   : {name:'0.75" End Mill',         dia:0.75,   cls:'Flat End Mill', flute:'downcut',  slot:4, code:'EM-0750'},
+  em8mm   : {name:'8mm End Mill',           dia:0.3149, cls:'Flat End Mill', flute:'downcut',  slot:4, code:'EM-08MM'},
+  ro18    : {name:'1/8 Roundover',          dia:0.3,    cls:'Roundover',     flute:'straight', slot:5, code:'RO-0125'},
+  stiff   : {name:'Table Stiffener',        dia:2.38,   cls:'Custom Form',   flute:'straight', slot:6, code:'CF-2380'},
+  handle  : {name:'Side Handle Bit',        dia:1.5,    cls:'Custom Form',   flute:'straight', slot:7, code:'CF-1500', vendor:'Rockler'},
+  bowl    : {name:'.25 Bowl Bit',           dia:0.75,   cls:'Bowl Bit',      flute:'straight', slot:null, code:'BB-0250', vendor:'Whiteside'},
+};
+
+/* An orphan is a file tool that matched nothing in the library. Keyed by the
+   raw header text, because that is all we know about it. */
+const CHAMFER = {orphan:'chamfer45', desc:'CHAMFER MILL D=12.7 TAPER=45DEG', from:'Fusion header'};
+
+const SCENARIOS = [
+  {
+    id:'contested',
+    label:'Contested pocket',
+    note:'<b>The nest the feature exists for.</b> <code>39x35</code> needs the 2" long ½" end mill, ' +
+         '<code>18G</code> and <code>603060-A</code> need the 1.25" one. Both are declared into pocket 2, so ' +
+         'both are sitting in it. Drag one to a free pocket and Generate lights up.',
+    parts:[
+      {file:'39x35.nc',            slot:'A2', tools:[['T2','em05x20'],['T4','stiff']]},
+      {file:'18G.NC',              slot:'A5', tools:[['T2','em05x125'],['T1','ball05']]},
+      {file:'603060-A.NC',         slot:'B0', tools:[['T2','em05x125'],['T4','em075'],['T5','ro18']]},
+      {file:'Vacuum Puck.nc',      slot:'B3', tools:[['T2','em05x20']]},
+    ],
+  },
+  {
+    id:'unknown',
+    label:'A tool the library has never seen',
+    note:'The four Rail files post a 45° chamfer mill that has <b>no library entry at all</b>. It cannot go in a ' +
+         'pocket, because nothing knows what it is. Everything else about this nest is fine.',
+    parts:[
+      {file:'18G.NC',              slot:'A5', tools:[['T2','em05x125'],['T1','ball05']]},
+      {file:'A1 Rail.nc',          slot:'B6', tools:[['T2','em05x125'],['T3',CHAMFER]]},
+    ],
+  },
+  {
+    id:'full',
+    label:'Changer full',
+    note:'Nine tools, eight pockets. Park the bowl bit and pull one ½" mill out of pocket 2, and you are still ' +
+         'stuck on pocket 4 with nowhere left to go — <b>dragging cannot fix this one</b>. A part has to come ' +
+         'off the bed, and the dock names which ones would actually free a pocket. <b>Hypothetical nest:</b> ' +
+         'the last two files are invented, since nothing in the corpus posts the 8mm mill or the round nose yet.',
+    parts:[
+      {file:'39x35.nc',            slot:'A2', tools:[['T2','em05x20'],['T4','stiff']]},
+      {file:'18G.NC',              slot:'A5', tools:[['T2','em05x125'],['T1','ball05']]},
+      {file:'603060-A.NC',         slot:'B0', tools:[['T2','em05x125'],['T4','em075'],['T5','ro18']]},
+      {file:'8mm-inlay.nc',        slot:'B3', tools:[['T3','em8mm']]},
+      {file:'christmas-set.nc',    slot:'B7', tools:[['T2','em05x20'],['T6','rn10'],['T7','bowl']]},
+    ],
+  },
+];
+
+const PALETTE = ["#4dabf7","#69db7c","#ffd43b","#f783ac","#a9e34b","#74c0fc","#63e6be","#ffa94d"];
+const POCKETS = 8;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   State
+   ═══════════════════════════════════════════════════════════════════════════ */
+let scnIdx = 0;
+let nest   = null;   // {parts, tools:[{key,lib,usages}], orphans:[...]}
+let map    = {};     // library key → pocket number, or 0 for "needs a home"
+let collapsed = false;
+
+function buildNest(scn){
+  const parts = scn.parts.map((p,i)=>({...p, color:PALETTE[i%PALETTE.length], instance:1}));
+  const tools = new Map();      // lib key → {key, lib, usages:[{part,t}]}
+  const orphans = new Map();    // orphan key → {desc, usages:[...]}
+  for (const p of parts){
+    for (const [t,ref] of p.tools){
+      if (typeof ref === 'string'){
+        if (!tools.has(ref)) tools.set(ref, {key:ref, lib:LIB[ref], usages:[]});
+        tools.get(ref).usages.push({part:p, t});
+      } else {
+        if (!orphans.has(ref.orphan)) orphans.set(ref.orphan, {...ref, usages:[]});
+        orphans.get(ref.orphan).usages.push({part:p, t});
+      }
+    }
+  }
+  return {parts, tools:[...tools.values()], orphans:[...orphans.values()]};
+}
+
+function seedMap(){
+  map = {};
+  for (const tool of nest.tools) map[tool.key] = tool.lib.slot ?? 0;   // no declared slot → staged
+}
+
+function loadScenario(i){
+  scnIdx = i;
+  nest = buildNest(SCENARIOS[i]);
+  seedMap();
+  collapsed = false;
+  document.getElementById('scn-note').innerHTML = SCENARIOS[i].note;
+  [...document.querySelectorAll('#scn button')].forEach((b,bi)=>b.classList.toggle('on', bi===i));
+  render();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Derived state — the validity gate, spec §3.4
+   ═══════════════════════════════════════════════════════════════════════════ */
+function occupants(pocket){ return nest.tools.filter(t => map[t.key] === pocket); }
+
+function state(){
+  const staged   = nest.tools.filter(t => map[t.key] === 0);
+  const doubled  = [];
+  const free     = [];
+  for (let p=1;p<=POCKETS;p++){
+    const n = occupants(p).length;
+    if (n > 1) doubled.push(p);
+    if (n === 0) free.push(p);
+  }
+  const unknown = nest.orphans;
+  const valid = !staged.length && !doubled.length && !unknown.length;
+  /* Dragging can only help while a pocket is free. Once it isn't, the only move
+     left is taking a part off the bed — §3.4.1's "two messages off one state". */
+  const needsRemoval = !free.length && (staged.length > 0 || doubled.length > 0);
+  return {staged, doubled, free, unknown, valid, needsRemoval};
+}
+
+/* Which placed parts are the only user of some tool — §3.4.1, "name the part". */
+function soleOwned(part){
+  const out = [];
+  for (const t of nest.tools){
+    const users = new Set(t.usages.map(u=>u.part.file));
+    if (users.size === 1 && users.has(part.file)) out.push(t);
+  }
+  for (const o of nest.orphans){
+    const users = new Set(o.usages.map(u=>u.part.file));
+    if (users.size === 1 && users.has(part.file)) out.push(o);
+  }
+  return out;
+}
+
+/* "Removing X frees a pocket" — cheapest first, since one pocket is usually all
+   that is wanted. A part that shares every tool cannot help and is not named. */
+function removalAdvice(){
+  const cands = nest.parts.map(p=>({p, owns:soleOwned(p).length}))
+                          .filter(x=>x.owns).sort((a,b)=>a.owns-b.owns);
+  if (!cands.length) return 'Every part shares its tools with another, so no single part frees a pocket.';
+  return 'Removing ' + cands.slice(0,2).map(c=>
+    `<b style="color:#ccc;font-weight:500">${c.p.file}</b> frees ${c.owns} pocket${c.owns>1?'s':''}`
+  ).join('; ') + '.';
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Render
+   ═══════════════════════════════════════════════════════════════════════════ */
+function fmtDia(d){ return (Math.round(d*1000)/1000) + '"'; }
+
+/* Diameter and flute direction only. Cutting length is already in the name of
+   the one pair it distinguishes, and repeating it is what truncates the line. */
+function toolGeo(lib){
+  return fmtDia(lib.dia) + ' · ' + lib.flute;
+}
+
+/* The T numbers the files call this tool by, and the one it will be cut as.
+   Only a *change* earns the blue chip — an unchanged T number is just a fact. */
+function remapChip(tool){
+  const src = [...new Set(tool.usages.map(u=>u.t))].sort();
+  const pocket = map[tool.key];
+  const dest = pocket ? 'T'+pocket : null;
+  if (dest && src.length === 1 && src[0] === dest)
+    return `<span class="chip">${dest}</span>`;
+  return `<span class="chip remap">${src.join(',')} → ${dest || '?'}</span>`;
+}
+
+function cardEl(tool){
+  const el = document.createElement('div');
+  const lib = tool.lib;
+  const pocket = map[tool.key];
+  const offHome = lib.slot && pocket && pocket !== lib.slot;
+  el.className = 'card';
+  el.draggable = true;
+  el.tabIndex = 0;
+  el.dataset.key = tool.key;
+  el.style.borderLeftColor = PALETTE[nest.tools.indexOf(tool) % PALETTE.length];
+  const parts = new Set(tool.usages.map(u=>u.part.file)).size;
+  el.innerHTML =
+    `<div class="nm" title="${lib.name}">${lib.name}</div>
+     <div class="geo">${toolGeo(lib)}</div>
+     <div class="row">
+       ${remapChip(tool)}
+       <span class="chip parts">${parts} part${parts>1?'s':''}</span>
+       ${offHome ? `<span class="chip home" title="Declared pocket is ${lib.slot}">home ${lib.slot}</span>` : ''}
+       ${!lib.slot ? `<span class="chip home" title="The library declares no pocket for this tool">no default</span>` : ''}
+     </div>`;
+  el.addEventListener('dragstart', e=>{
+    e.dataTransfer.setData('text/plain', tool.key);
+    e.dataTransfer.effectAllowed = 'move';
+    el.classList.add('dragging'); hidePop();
+  });
+  el.addEventListener('dragend', ()=>el.classList.remove('dragging'));
+  el.addEventListener('mouseenter', ()=>showPop(el, tool));
+  el.addEventListener('focus',      ()=>showPop(el, tool));
+  el.addEventListener('mouseleave', hidePop);
+  el.addEventListener('blur',       hidePop);
+  el.addEventListener('keydown', e=>{
+    if (!/^[0-8]$/.test(e.key)) return;
+    e.preventDefault();
+    map[tool.key] = Number(e.key);
+    render();
+    const again = document.querySelector(`.card[data-key="${tool.key}"]`);
+    if (again) again.focus();
+  });
+  return el;
+}
+
+function orphanCardEl(o){
+  const el = document.createElement('div');
+  el.className = 'card orphan';
+  el.tabIndex = 0;
+  const parts = new Set(o.usages.map(u=>u.part.file)).size;
+  const ts = [...new Set(o.usages.map(u=>u.t))].sort().join(',');
+  el.innerHTML =
+    `<div class="nm">Not in your library</div>
+     <div class="geo">${o.desc}</div>
+     <div class="row">
+       <span class="chip">${ts}</span>
+       <span class="chip parts">${parts} part${parts>1?'s':''}</span>
+       <span class="chip home">identify…</span>
+     </div>`;
+  el.addEventListener('mouseenter', ()=>showPop(el, null, o));
+  el.addEventListener('focus',      ()=>showPop(el, null, o));
+  el.addEventListener('mouseleave', hidePop);
+  el.addEventListener('blur',       hidePop);
+  return el;
+}
+
+function dropTarget(el, pocket){
+  el.addEventListener('dragover', e=>{ e.preventDefault(); el.classList.add('over'); });
+  el.addEventListener('dragleave', ()=>el.classList.remove('over'));
+  el.addEventListener('drop', e=>{
+    e.preventDefault(); el.classList.remove('over');
+    const key = e.dataTransfer.getData('text/plain');
+    if (!key || !(key in map)) return;
+    map[key] = pocket;                 // coexist, never swap, never refuse
+    render();
+  });
+}
+
+function renderDock(){
+  const st = state();
+
+  // pockets
+  const row = document.getElementById('pockets');
+  row.innerHTML = '';
+  for (let p=1;p<=POCKETS;p++){
+    const here = occupants(p);
+    const cell = document.createElement('div');
+    cell.className = 'pocket' + (here.length>1 ? ' dbl' : '');
+    const head = `<div class="pocket-no"><span>POCKET ${p}</span>${
+        here.length>1 ? '<span class="free" style="color:var(--bad)">2 tools</span>' : ''}</div>`;
+    cell.innerHTML = head + '<div class="pocket-cards"></div>';
+    const cards = cell.querySelector('.pocket-cards');
+    if (!here.length){
+      const e = document.createElement('div'); e.className='empty'; e.textContent='empty'; cards.appendChild(e);
+    } else {
+      here.forEach(t=>cards.appendChild(cardEl(t)));
+    }
+    dropTarget(cell, p);
+    row.appendChild(cell);
+  }
+
+  // staging strip — only when something is in it
+  const wrap = document.getElementById('staging-wrap');
+  wrap.innerHTML = '';
+  if (st.staged.length || st.unknown.length){
+    const box = document.createElement('div');
+    box.className = 'staging';
+    box.innerHTML = `<div class="st-lbl">Needs a home</div><div class="st-cards"></div>`;
+    const cards = box.querySelector('.st-cards');
+    st.staged.forEach(t=>cards.appendChild(cardEl(t)));
+    st.unknown.forEach(o=>cards.appendChild(orphanCardEl(o)));
+    const hint = document.createElement('div');
+    hint.className = 'st-hint';
+    if (st.unknown.length && !st.staged.length){
+      hint.innerHTML = 'Add it to the tool library and give it a pocket.';
+    } else if (!st.free.length){
+      hint.innerHTML = 'No free pockets. ' + removalAdvice();
+    } else {
+      hint.innerHTML = `${st.free.length} pocket${st.free.length>1?'s':''} free: ${st.free.join(', ')}.`;
+    }
+    box.appendChild(hint);
+    dropTarget(box, 0);
+    wrap.appendChild(box);
+  }
+  /* When no pocket is free there may be nothing staged, so the advice needs its
+     own line — otherwise the one actionable sentence has nowhere to live. */
+  if (st.needsRemoval && !st.staged.length && !st.unknown.length){
+    const bar = document.createElement('div');
+    bar.className = 'advice';
+    bar.innerHTML = `<span class="sym">✕</span> All 8 pockets are taken. ${removalAdvice()}`;
+    wrap.appendChild(bar);
+  }
+
+  // header verdict — two messages off one state, §3.4.1
+  const v = document.getElementById('verdict');
+  const msgs = [];
+  const room = st.free.length;   // "drag it somewhere" is only advice if somewhere exists
+  if (st.doubled.length){
+    const which = `Pocket ${st.doubled.join(' and ')} hold${st.doubled.length>1?'':'s'} two tools`;
+    msgs.push(room
+      ? [`<span class="sym">⚠</span> ${which} — drag one to a free pocket`, 'v-bad']
+      : [`<span class="sym">✕</span> ${which} and every pocket is taken — take a part off the bed`, 'v-bad']);
+  }
+  if (st.unknown.length)
+    msgs.push([`<span class="sym">⚠</span> ${st.unknown.length} tool${st.unknown.length>1?'s':''} in this nest ${st.unknown.length>1?'are':'is'} not in your library`, 'v-bad']);
+  if (st.staged.length)
+    msgs.push(room
+      ? [`<span class="sym">◇</span> ${st.staged.length} tool${st.staged.length>1?'s':''} need${st.staged.length>1?'':'s'} a pocket — ${room} free`, 'v-warn']
+      : [`<span class="sym">✕</span> ${st.staged.length} tool${st.staged.length>1?'s':''} ${st.staged.length>1?'have':'has'} no home and the changer is full — take a part off the bed`, 'v-bad']);
+  if (!msgs.length)
+    msgs.push([`<span class="sym">✓</span> ${nest.tools.length} tools in ${nest.tools.length} pockets`, 'v-good']);
+  v.innerHTML = msgs.map(([m,c])=>`<span class="${c}">${m}</span>`).join('<span style="color:#555">·</span>');
+
+  // collapse is locked while the map is invalid
+  const dock = document.getElementById('dock');
+  const head = document.getElementById('dock-head');
+  const locked = !st.valid;
+  if (locked) collapsed = false;
+  dock.classList.toggle('collapsed', collapsed);
+  head.classList.toggle('locked', locked);
+  head.title = locked ? 'Cannot be collapsed while Generate is blocked' : 'Collapse';
+  document.getElementById('chev').textContent = collapsed ? '▲' : '▼';
+
+  // Generate
+  const gen = document.getElementById('btn-gen');
+  gen.disabled = !st.valid;
+  gen.title = st.valid ? '' : 'Tool changer map is not valid yet';
+  return st;
+}
+
+function renderSides(st){
+  document.getElementById('lib-tree').innerHTML = SCENARIOS[scnIdx].parts
+    .map(p=>`<div style="padding:3px 8px 3px 20px;color:#bbb">${p.file}</div>`).join('');
+
+  document.getElementById('tray').innerHTML = nest.parts.map(p=>{
+    const tags = p.tools.map(([t,ref])=>
+      `<span class="tag${typeof ref==='string'?'':' unknown'}">${t}</span>`).join('');
+    return `<div class="tray-item"><div class="dot" style="background:${p.color}"></div>
+      <div style="min-width:0"><div class="nm">${p.file}</div>
+      <div class="sub">${p.tools.length} tool${p.tools.length>1?'s':''}</div>
+      <div class="tags">${tags}</div></div></div>`;
+  }).join('');
+
+  document.getElementById('placements').innerHTML = nest.parts.map(p=>{
+    const owns = soleOwned(p).length;
+    return `<div class="pl-row"><span class="slot" style="color:${p.color}">${p.slot}</span>
+      <span class="nm">${p.file}</span>
+      ${owns && st.needsRemoval ? `<span class="frees">frees ${owns}</span>` : ''}
+      <span style="color:#666">×</span></div>`;
+  }).join('');
+
+  const seq = [...new Set(nest.tools.map(t=>map[t.key]).filter(Boolean))].sort((a,b)=>a-b);
+  document.getElementById('jobinfo').innerHTML =
+    `Parts placed: <b>${nest.parts.length}</b><br>
+     Tools: <b>${nest.tools.length}${st.unknown.length?` + ${st.unknown.length} unknown`:''}</b><br>
+     Pocket order: <b>${seq.length?seq.map(p=>'T'+p).join(' → '):'—'}</b><br>
+     Est. runtime: <b>${st.valid?'1h 12m':'—'}</b>`;
+
+  document.getElementById('statusbar').innerHTML =
+    `<div class="sb-item"><b>${nest.parts.length}</b> placed</div>
+     <div class="sb-item"><b>${26-nest.parts.length}</b> empty slots</div>
+     <div class="sb-item">Tools: <b>${seq.length?seq.map(p=>'T'+p).join(' → '):'—'}</b></div>
+     <div class="sb-item">Util: <b>${st.valid?'34%':'34%'}</b></div>
+     <div class="sb-item" style="flex:1;border:0;color:${st.valid?'#888':'#ff453a'}">${
+       st.valid?'':'Generate blocked — see tool changer'}</div>`;
+}
+
+function render(){
+  const st = renderDock();
+  renderSides(st);
+  drawBed();
+}
+
+/* ── hover detail: identity, parents, and the sole-user hint ── */
+const pop = document.getElementById('pop');
+function showPop(anchor, tool, orphan){
+  const screen = document.getElementById('screen').getBoundingClientRect();
+  const r = anchor.getBoundingClientRect();
+  if (tool){
+    const lib = tool.lib, pocket = map[tool.key];
+    const off = lib.slot && pocket && pocket !== lib.slot;
+    const rows = tool.usages.map(u=>
+      `<tr><td>${u.part.file} <span style="color:#666">${u.part.slot}</span></td><td class="t">${u.t}</td></tr>`).join('');
+    const users = new Set(tool.usages.map(u=>u.part.file));
+    const sole = users.size===1
+      ? `Only <b style="color:#ddd;font-weight:500">${[...users][0]}</b> needs this. Take it off the bed and pocket ${pocket||'—'} frees up.`
+      : '';
+    pop.innerHTML =
+      `<div class="p-nm"><span>${lib.name}</span><span class="p-code">${lib.code}</span></div>
+       <div class="p-geo">${lib.cls} · ${fmtDia(lib.dia)} · ${lib.flute}${lib.loc?` · ${lib.loc}" cutting length`:''}${lib.vendor?` · ${lib.vendor}`:''}</div>
+       <div class="p-slot">${lib.slot
+          ? (off ? `Belongs in pocket ${lib.slot} — <span class="off">now in ${pocket}</span>`
+                 : `Pocket ${pocket||'—'}, its declared home`)
+          : `No declared pocket in the library`}</div>
+       <div class="p-h">Needed by</div><table>${rows}</table>
+       ${sole?`<div class="p-sole">${sole}</div>`:''}`;
+  } else {
+    const rows = orphan.usages.map(u=>
+      `<tr><td>${u.part.file} <span style="color:#666">${u.part.slot}</span></td><td class="t">${u.t}</td></tr>`).join('');
+    pop.innerHTML =
+      `<div class="p-nm"><span style="color:var(--warn)">Not in your library</span></div>
+       <div class="p-geo">Posted as <code style="color:#cfd6dd">${orphan.desc}</code></div>
+       <div class="p-slot">No identity, so no pocket and no true diameter for the envelope check.</div>
+       <div class="p-h">Needed by</div><table>${rows}</table>
+       <div class="p-sole">Add it to the tool library to clear this.</div>`;
+  }
+  pop.classList.add('show');
+  const pr = pop.getBoundingClientRect();
+  let left = r.left - screen.left + r.width/2 - pr.width/2;
+  left = Math.max(6, Math.min(left, screen.width - pr.width - 6));
+  pop.style.left = left + 'px';
+  pop.style.top  = (r.top - screen.top - pr.height - 8) + 'px';
+}
+function hidePop(){ pop.classList.remove('show'); }
+
+/* ── bed canvas: same orientation as bed.js (machine Y across, X down) ── */
+function drawBed(){
+  const c = document.getElementById('bed');
+  const box = c.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  c.width = box.width*dpr; c.height = box.height*dpr;
+  const g = c.getContext('2d'); g.scale(dpr,dpr);
+  g.clearRect(0,0,box.width,box.height);
+
+  const BX = 1606.5, BY = 3098.0;                       // machine extents, mm
+  const s = Math.min((box.width-24)/BY, (box.height-24)/BX);
+  const ox = (box.width - BY*s)/2, oy = (box.height - BX*s)/2;
+  const px = (my,mx)=>[ox + (BY-my)*s, oy + (BX-mx)*s];
+
+  g.fillStyle='#191919'; g.fillRect(ox,oy,BY*s,BX*s);
+  g.strokeStyle='#333'; g.lineWidth=1; g.strokeRect(ox,oy,BY*s,BX*s);
+
+  // rails: A at machine X 134.6 (screen bottom), B at 1534.2 (screen top)
+  for (const [x,lbl] of [[134.628,'A'],[1534.16,'B']]){
+    const [, y] = px(0,x);
+    g.strokeStyle='#2f3d4d'; g.lineWidth=2;
+    g.beginPath(); g.moveTo(ox,y); g.lineTo(ox+BY*s,y); g.stroke();
+    g.fillStyle='#4a5a6a'; g.font='10px system-ui';
+    g.fillText(lbl+' rail', ox+4, y + (lbl==='A' ? 12 : -5));
+  }
+
+  // blanks: slot number → machine Y, per collision.slot_mark_y
+  const SLOTS=[0,13,19.5,26,39,52,58.5,65,78,91,97.5,104,117];
+  for (const p of nest.parts){
+    const rail = p.slot[0], idx = Number(p.slot.slice(1));
+    const inches = SLOTS[Math.min(idx, SLOTS.length-1)];
+    const geom = rail==='A' ? {x:134.628, y0:3034.7, sd:-1, xd:1} : {x:1534.16, y0:88.3, sd:1, xd:-1};
+    const mark = geom.y0 + geom.sd*inches*25.4;
+    const along = 24*25.4, across = 18*25.4;            // representative blank
+    const [x1,y1] = px(mark, geom.x);
+    const [x2,y2] = px(mark + geom.sd*along, geom.x + geom.xd*across);
+    g.fillStyle = p.color+'33'; g.strokeStyle = p.color; g.lineWidth=1.5;
+    const rx=Math.min(x1,x2), ry=Math.min(y1,y2), rw=Math.abs(x2-x1), rh=Math.abs(y2-y1);
+    g.fillRect(rx,ry,rw,rh); g.strokeRect(rx,ry,rw,rh);
+    g.fillStyle=p.color; g.font='9px system-ui';
+    g.fillText(p.slot, rx+4, ry+12);
+  }
+}
+window.addEventListener('resize', ()=>{ drawBed(); hidePop(); });
+
+/* ── prototype chrome ── */
+document.getElementById('scn').innerHTML =
+  SCENARIOS.map(s=>`<button type="button">${s.label}</button>`).join('');
+[...document.querySelectorAll('#scn button')].forEach((b,i)=>b.addEventListener('click',()=>loadScenario(i)));
+document.getElementById('reset').addEventListener('click', ()=>{ seedMap(); collapsed=false; render(); });
+document.getElementById('dock-head').addEventListener('click', ()=>{
+  if (!state().valid) return;
+  collapsed = !collapsed; render();
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Notes
+   ═══════════════════════════════════════════════════════════════════════════ */
+const DECIDED = [
+  ['§3.4.1', 'Full window width, above the status bar, collapsible — and it <b>cannot</b> be collapsed while ' +
+             'Generate is blocked. A disabled button always has a visible reason.'],
+  ['§3.4.1', 'It replaces the right sidebar’s “Tool Compatibility” panel. That panel existed to show the ' +
+             'symptom this feature removes.'],
+  ['§3.2.1', 'Dropping onto an occupied pocket makes the two <b>coexist</b>. It does not swap and it is never ' +
+             'refused — a swap has to pass through a doubled pocket, so refusing the drop would deadlock it.'],
+  ['§3.2.1', 'A drag is job-scoped. It never writes back to the library, so the app re-proposes the declared ' +
+             'pocket on the next job. That nag is deliberate.'],
+  ['§3.2.1', 'Nothing is refused when you place a part — not even a ninth tool. Only Generate is gated.'],
+  ['§3.2.1', 'A tool with no declared pocket is staged, never dropped into the lowest free one. The app never ' +
+             'invents a pocket and never breaks a tie.'],
+  ['§4',     'A reassignment rewrites two lines and nothing else: <code>T4 M06</code> and <code>G43 H4</code>. ' +
+             'No X, Y, Z, I, J, R or F word is touched.'],
+];
+
+const QUESTIONS = [
+  {q:'Is pocket 1 on the left?',
+   body:'The dock counts 1→8 left to right, on the argument that it matches how you read the machine.',
+   built:'Pocket 1 leftmost.',
+   alt:'If the changer reads right-to-left from where you stand, this flips and the fix is one line.'},
+
+  {q:'Is “empty” the right word, and should empty pockets be droppable?',
+   body:'An empty pocket shows a dashed box reading <code>empty</code>, and takes a drop anywhere in the cell.',
+   built:'Dashed <code>empty</code>, whole cell is a target.',
+   alt:'Or it could say nothing at all and read as a plain slot. The dashed box was chosen so the drop target ' +
+       'is obvious before you start dragging.'},
+
+  {q:'Is a card carrying the right four facts?',
+   body:'Each card shows the library name, then <code>0.5" · downcut</code>, then the T number — blue with an ' +
+        'arrow when the pocket rewrites it, plain when it does not — and how many parts need it. Hover for the ' +
+        'shop code, vendor, class, cutting length, and the exact parts with their T numbers.',
+   built:'Name, geometry, T number, part count. Everything else on hover.',
+   alt:'The T chip is the one I am least sure of — it is the only place the file’s <code>T2</code> and the ' +
+       'pocket it will be cut from appear together, which matters when you are reading the setup sheet, but it ' +
+       'is also jargon on a card that is otherwise plain English.'},
+
+  {q:'Is the multi-file case readable?',
+   body:'A tool needed by three parts is <b>one card</b> with a <code>3 parts</code> chip; hovering lists the ' +
+        'parts and the differing T numbers each file calls it by. This is the case the whole feature exists to ' +
+        'serve, so it is worth being blunt about whether it works.',
+   built:'One card, count chip, parts on hover.',
+   alt:'The parts could be listed on the card itself. At ~150px per pocket that costs two lines per tool, and ' +
+       'a doubled pocket then will not fit.'},
+
+  {q:'Does “needs a home” belong below the pockets?',
+   body:'It appears as a strip under the pocket row, only when something is in it, and it is a drop target — ' +
+        'you can drag a tool back out of the changer.',
+   built:'Strip below, appears on demand, ~34px.',
+   alt:'Or a permanent ninth cell to the right of pocket 8. That keeps the layout stable but spends pocket ' +
+       'width on something usually empty.'},
+
+  {q:'Is a tool that is not in the library handled right?',
+   body:'The 45° chamfer mill in the Rail files has no library entry. It sits in “needs a home” in amber, ' +
+        'cannot be dragged into a pocket, and offers <code>identify…</code>. Generate is blocked with its own ' +
+        'message, separate from a pocket conflict.',
+   built:'Amber, unpocketable, distinct message.',
+   alt:'Or the prompt fires the moment you place the part, before you ever see the dock — the way the unknown ' +
+       'diameter dialog works today.'},
+
+  {q:'Is the off-home marker enough of a nag, or too much of one?',
+   body:'A tool sitting away from its declared pocket wears <code>home 4</code> in amber. Try the contested ' +
+        'nest: drag one ½" mill to pocket 8 and it wears the badge for the rest of the job.',
+   built:'Amber chip naming the declared pocket.',
+   alt:'This is the open question from spec §3.5.6. Two tools declaring one pocket is <b>permanent</b> for ' +
+       'the ½" pair and the pocket-4 pair — the library cannot hold them both, ever. So the badge is honest ' +
+       'the first time and noise every job after. Worth a “these two share a home on purpose” flag in the ' +
+       'library, or do you want the nag every time?'},
+
+  {q:'Are the blocked messages worth reading?',
+   body:'Three different states, three different sentences: <i>drag one out</i>, <i>2 tools need a pocket — ' +
+        '3 free</i>, and <i>the changer is full — take a part off the bed</i>. The last one also names which ' +
+        'parts would actually free a pocket.',
+   built:'Verdict in the dock header, detail in the strip and on the placement rows.',
+   alt:'Try all three nests and tell me if any of them would send you hunting for something that is not there.'},
+];
+
+document.getElementById('decided').innerHTML = DECIDED.map(([ref,txt])=>
+  `<li><span class="ref">${ref}</span><span>${txt}</span></li>`).join('');
+
+document.getElementById('questions').innerHTML = QUESTIONS.map((q,i)=>
+  `<div class="q">
+     <div class="qh"><span class="qn">${String(i+1).padStart(2,'0')}</span><h3>${q.q}</h3></div>
+     <p>${q.body}</p>
+     <div class="built">Built: <b>${q.built}</b></div>
+     <div class="alt"><b>Instead:</b> ${q.alt}</div>
+   </div>`).join('');
+
+/* #contested / #unknown / #full opens straight into a nest */
+const fromHash = SCENARIOS.findIndex(s => s.id === decodeURIComponent(location.hash.slice(1)));
+loadScenario(fromHash >= 0 ? fromHash : 0);
+</script>
