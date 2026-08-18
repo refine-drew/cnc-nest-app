@@ -1,7 +1,43 @@
 # Tool Changer Pocket Management — Spec
 
-**Status: incomplete by design.** Sections 1–5 are settled and safe to build
-against. Section 6 lists the decisions that are still open.
+**Status: built (2026-08-17).** Every decision below is settled and implemented.
+The spec is now a **record of why**, not a plan — read it before changing any of
+the behaviour it explains, because most of these rules look like arbitrary
+choices until you know what they are refusing to do.
+
+> **2026-08-17 — the feature is built.** #11, #12, #13 and #24 all landed, along
+> with #2, #20, #25, #26, #28 and #29. What shipped:
+>
+> - **`tool_library.py` / `tool_library.json`** — identity keyed on a shop code,
+>   matched exactly, with guard (a) and the description seal (§3.1, §3.5).
+> - **`pocket_map.py`** — the assigner that makes no arbitrary choices, and the
+>   §3.4 validity gate. `_tool_compatibility` is **deleted**; both layers of the
+>   Generate gate now read the three rules (§3.4, §1.1).
+> - **`gcode_generator.IdentityMap`** — blocks grouped and ordered by identity,
+>   so a remap rewrites `T# M06` and `G43 H#` and nothing else (§4, §4.2).
+> - **`tests/test_geometry_guarantee.py`** — #12's proving test, in the strong
+>   whole-file form, asserting both that `T#` moved as the map says and that every
+>   `H` still equals its preceding `T` (§6.3).
+> - **`static/changer.js` / `static/toollib.js`** — the dock and the library UI.
+> - **The setup sheet** — the PDF's ATC graphic re-keyed onto pockets, plus
+>   `<job>_setup.txt`, with off-home pockets called out as temporary (#13).
+>
+> **The one prerequisite that remains is the operator's**: the ten shop codes are
+> seeded in `tool_library.json` (`EM-0512`, `EM-0520`, `EM-0750`, `EM-08MM`,
+> `BN-0500`, `RN-1000`, `RO-0125`, `CF-2380`, `CF-1500`, `BB-0250`) and need typing
+> into Fusion's Product id and the VCarve tool names. Until then every file orphans
+> to a one-time manual bind, which is the safe default working — but nothing
+> auto-matches, so the feature is not yet exercised end to end (§3.5.5).
+>
+> Two things the build confirmed against the real corpus. The motivating case of
+> §3.5.6 reproduces exactly: `39x35` and `18G300` open with pocket 2 doubled and
+> Generate dark, one drag clears it, and the emitted file carries `T8`/`H8` for the
+> moved cutter with no other word changed. And **no placement changed** when the
+> library became the diameter authority — the correct radii do not push any current
+> part over the envelope bound.
+
+**Everything below this line is the original spec, preserved.** Sections 1–5 are
+settled; section 6's open decisions are all resolved.
 
 > **2026-08-17 — #9 is resolved, and the gate is fully open.** Identity is a
 > **shop-assigned code** the operator types into Fusion's Product id and VCarve's tool

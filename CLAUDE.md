@@ -6,6 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CNC Nest is a Flask web app for optimizing CNC cutting layouts on a 5×10 ft dual-rail bed. Users load VCarve G-code files from a library folder, drag-place parts onto A/B rails, get live collision detection, then generate a merged master G-code file that combines all parts using order-of-operations (grouping cuts by tool across all parts).
 
+**Tool identity and tool pocket are separate concerns, and that split is the app's
+newest and most load-bearing idea** (issues #9, #10, #11, #12, #13, #24; spec
+`docs/tool-changer-pocket-management-spec.md`). A `T#` in a posted file used to mean
+both "which cutter" and "which pocket" at once, so two programs authored at different
+times routinely used different cutters in the same pocket number and the generator
+merged them into one block. Identity now comes from a shop-assigned code matched against
+`tool_library.json`; the pocket is job state the operator drags in the changer dock. The
+sections below assume that split throughout.
+
 ## Commands
 
 ```bash
@@ -33,8 +42,14 @@ No build step, linter, or type checker is configured.
 - `_loaded`: dict of parsed parts (filename → `GcodePart`)
 - `_placements`: dict of placed parts (placement ID → placement dict with rail, slot, transforms)
 - `_instance_counts`: tracks how many times each part has been placed (for unique IDs)
-- Key API routes: `/api/load-library`, `/api/place`, `/api/remove-placement`, `/api/generate`
-- `/api/save-job` and `/api/load-job` still exist (and are still tested) but have no GUI — the Save/Load Job buttons were removed as unused. Nothing in the app calls them. **Slated for deletion** (2026-08-17, issue #10): a nest is quick enough to rebuild that reloading one was never worth the format. Do not build on them, and do not add pocket assignment to `.cnj` — the pocket map is deliberately in-memory job state, like `_placements`.
+- `_tool_binds`: `path → {T#: code}` — the operator's job-scoped answers for files that carry no shop code
+- `_pocket_overrides`: `code → pocket` — the operator's drags in the changer dock
+- Key API routes: `/api/load-library`, `/api/place`, `/api/generate`, `/api/changer`, `/api/tool-library`, `/api/bind-tool`
+- **Save/load job is gone** (issue #26, 2026-08-17). The routes, the `.cnj` format and
+  its tests were deleted: a nest is quick enough to rebuild that reloading one was never
+  worth the format. Do not reintroduce it, and do not persist the pocket map — it is
+  deliberately in-memory job state, like `_placements`, which is what makes the whole
+  class of "stale override in a saved job" problems not exist.
 
 **`gcode_parser.py`** — parses `.nc`/`.mmg` VCarve G-code files into `GcodePart` dataclasses. Extracts blank dimensions, material thickness, tool info, XYZ bounding boxes per pass, and validates Z depths.
 
@@ -78,8 +93,12 @@ is what would spend the budget), and the one unbounded field, the description, s
 its own `TOOLDESC` line where a truncation can only cost free text. Adding a field to
 the `TOOLID` line means re-checking that budget.
 
-`TOOLDESC` lands in `cam_description`, deliberately **not** in `description` — the
-latter is what `_tool_compatibility` compares, and free text must not move that signal.
+`TOOLDESC` lands in `cam_description`, deliberately **not** in `description`.
+`cam_description` is what the **description seal** reads (`tool_library.resolve_part`),
+which is the only cross-file detector of one code on two physical cutters; `description`
+feeds display and the orphan-binding dialog. Keeping free text out of the second was
+originally about `_tool_compatibility`'s signal — that function is gone, but the split
+now does a load-bearing job for the seal instead.
 
 **`collision.py`** — rectangle overlap collision detection. Handles the two coordinate systems: A rail uses additive XY offsets; B rail applies 180° rotation (mirroring) around the bed center before offset.
 
@@ -166,11 +185,42 @@ the full load alone: keep the strict reading, and make the #12 geometry test cov
 `docs/tool-changer-pocket-management-spec.md` §6.1. Touch-off is per **pocket**,
 not per cutter, so when pocket remapping lands, `H` moves with the pocket.
 
-**`tool_library.py`** — simple tool registry. Resolves tool diameters from file headers or user-supplied overrides.
+**`tool_library.py`** — the identity library, **keyed on a shop-assigned code**, and
+the sole diameter authority. Built 2026-08-17 (issues #9, #24); data lives in
+`tool_library.json`, which is operator data with its own lifecycle and deliberately
+**not** inside `config.json`.
 
-**Pocket assignment: the assigner makes no arbitrary choices.** Decided 2026-08-17
+**Identity is matched exactly or not at all, and no string is ever compared.**
+`code_in_file_tool` looks in two places, because there are two CAM apps: Fusion's
+`PRODUCT=` from the `TOOLID` comment, and — for VCarve, whose post lets only the tool
+*name* reach a file — a code-shaped token inside the description. A file either carries
+a code the library knows, or the tool **orphans** to an explicit operator decision.
+`End Mill` never finds anything, which is what kills §3.1's dangerous direction: a
+stale copy-pasted description making two different cutters look like one.
+
+Three rules in that module are load-bearing:
+
+- **`diameter_inches` is the tool's *maximum cutting diameter*** — its widest point,
+  which no file supplies. `.25 Bowl Bit` is declared 0.75 and `1/8 Roundover` is 0.3;
+  the declared number governs and the name is only a label. Over-declaring costs a
+  placement that would have fit; under-declaring puts the cutting edge somewhere the
+  check called clear.
+- **Guard (a): resolution is injective within a single file.** Two distinct `T#` in one
+  `.nc` must never resolve to one library tool — CAM already asserted they differ by
+  giving them different pockets. Hard stop, never a merge. Per file only: two
+  *different* files' `T4` resolving to one tool is the feature working.
+- **The description seal (`cam_descriptions[]`) stores a set, never a single value.**
+  Replace-on-confirm thrashes forever after a rename — new files carry the new string,
+  old files still carry the old one — which trains click-through and destroys the only
+  cross-file detector of one code on two physical cutters. It **blocks** rather than
+  warns, and it deliberately **does not learn from a manual bind**: a bind identifies a
+  file that carries no code, so its description says nothing about what that code posts.
+
+**`pocket_map.py`** — job-scoped pocket assignment and the §3.4 validity gate.
+
+**The assigner makes no arbitrary choices.** Decided 2026-08-17
 (issue #10), specified in `docs/tool-changer-pocket-management-spec.md` §3.2.1, §3.4
-and §3.5; not built yet. It seeds each tool's declared default slot and stops —
+and §3.5. It seeds each tool's declared default slot and stops —
 **no tie-break** (two tools declaring one pocket both sit in it, visibly and
 invalidly), **no fill rule** (a tool with no declared slot is staged, never dropped
 into the lowest free pocket), **no write-back** (a drag is a job-scoped override; the
@@ -181,17 +231,26 @@ tool resolved, every resolved tool in exactly one pocket, no pocket holding two.
 Determinism is therefore a *consequence*, not a rule to enforce; don't add a
 tie-break "for stability" — that would be the one thing that breaks it.
 
-Two traps for whoever builds it. **The assigner must read identity-ordered data,
-never the remapped `T` numbers**: `_build_blocks` sorts by the `T#` string, so
-reading post-remap numbers makes the output depend on an assignment that depends on
-the output. And **the Generate gate already exists** — `static/job.js:36` and
-`app.py:661` both block on `_tool_compatibility`'s `has_conflict`. That gate is not
-missing, its *signal* is unsound: `conflict` fires only when descriptions **differ**,
-so two different cutters sharing a stale identical string are never flagged (the
-library has this case — `T2` and `T9` post `End Mill {0.5 inch}` byte-for-byte in one
-file). Re-point the gate; don't add another.
+**The assigner reads identity-ordered data, never the remapped `T` numbers.** An
+assigner reading post-remap numbers would make the emitted output depend on an
+assignment that depends on the output. `_identity_map` in `app.py` is built off
+library codes and declared slots and never touches a pocket number as an input.
 
-**`config.py`** — loads/saves `config.json`. Config defines library paths (a list of candidates; the first that exists locally wins), output path, tool definitions, bed dimensions, per-rail geometry (`advanced.rails` — see Coordinate Systems), `tool_capacity` (generation is blocked above it), fence-origin offsets, safe Z, and slot positions.
+**The Generate gate was re-pointed, not added.** It has existed in both layers since
+the original build (`static/job.js`, `app.py`'s 422); what was unsound was its
+*signal*. `_tool_compatibility`'s `has_conflict` fired only when one `T#` carried
+**differing** description strings, so two genuinely different cutters sharing a stale
+identical string were never flagged and sailed into a merged block — the library has
+exactly that case (`T2` and `T9` post `End Mill {0.5 inch}` byte-for-byte in one file).
+`_tool_compatibility` is **deleted**; both layers now read `_changer_state()["valid"]`.
+
+**`config.py`** — loads/saves `config.json`. Config defines library paths (a list of candidates; the first that exists locally wins), output path, bed dimensions, per-rail geometry (`advanced.rails` — see Coordinate Systems), `tool_capacity` (generation is blocked above it), fence-origin offsets, safe Z, and slot positions.
+
+**`config.json` no longer has a `tools` map, and it must not get one back.** It was
+junk in its entirety (operator, 2026-08-17): `T4` "Table Stiff" declared 0.75" for a
+cutter that is actually 2.38", so migrating it would have imported a number that
+under-inflates the X envelope by 1.6" on a real tool. Nothing keyed by *pocket*
+survives into a library keyed by *identity*. `/api/config` ignores a `tools` key.
 
 ### Frontend (Vanilla JS + Canvas)
 
@@ -199,18 +258,50 @@ No framework, no bundler. Files in `/static/`:
 
 - **`bed.js`** — HTML5 Canvas renderer. Draws the bed, rails, slots, placed parts with color coding, and ghost preview during drag. This is the largest and most complex frontend file.
 - **`sidebar.js`** — library tree (left) and placement tray (right) UI
-- **`placement.js`** — drag-and-drop placement logic, communicates with `/api/place`
+- **`placement.js`** — drag-and-drop placement logic, `/api/place`, and the resolver
+  dialog for a tool the library cannot identify
+- **`changer.js`** — the tool changer dock: 8 pockets, drag to reassign (#11)
+- **`toollib.js`** — the tool library manager and the description-seal prompt (#24)
+- **`layout.js`** — panel sizing, collapse, and `localStorage` persistence (#29)
 - **`job.js`** — the Generate G-code button
 - **`config.js`** — settings panel, reads/writes `/api/config`
+
+**Colour carries two meanings and they are a mode apart, not merged** (#28). Identity
+colouring (a colour per file) answers "which part is which" and is not confined to the
+canvas — the library dot, the tray label and `pdf_report.PALETTE` all read it. Thickness
+banding answers "is every part on this rail the same stock", which is a *categorical*
+comparison, so it bins on the distinct values present rather than running a ramp.
+**Quantize before binning**: nominally-identical stock does not arrive byte-identical
+(19.05 vs 19.0 vs a planed 18.9), and binning raw millimetres paints one board as two,
+which is the gut check failing in the worst direction. Unknown thickness is hatched and
+says so in words — an unknown mistaken for 3/4" is the error the feature exists to catch.
+
+**Layout state lives in `localStorage`, never in `config.json`.** Layout is
+per-workstation; `config.json` holds shop truth and is the file you copy to a second
+machine. The dock's height floor is load-bearing rather than cosmetic — §3.4.1
+force-expands the dock while the map is invalid, so a height drag with no floor would be
+a collapse by the back door.
 
 ### Data Flow
 
 1. User picks library folder → `/api/load-library` → `gcode_parser` → populates `_loaded` → sidebar tree
-2. User drags part to bed slot → `/api/place` → `collision.py` validates → adds to `_placements` → bed canvas redraws
-3. User clicks Generate → `/api/generate` → `gcode_generator` merges all `_placements` → writes `.nc` + `.txt` report
+2. User drags part to bed slot → `/api/place` → **tools resolve against the identity
+   library first** (`tool_library.resolve_part`) → `collision.py` validates → adds to
+   `_placements` → bed canvas and changer dock redraw
+3. The dock seeds each resolved tool's declared pocket; the operator drags to resolve
+   collisions → `/api/changer/assign`
+4. User clicks Generate → `/api/generate` gates on the §3.4 validity rules →
+   `gcode_generator` merges all `_placements` **by identity** and rewrites `T#`/`H#`
+   for the pocket map → writes `.nc`, `.pdf`, `<job>_setup.txt`
 
-Placements live only in memory for the life of the server process; there is no
-GUI path to persist or restore a layout.
+**Resolution is strict and happens before the bed** (§3.5.3): an unresolved tool has no
+declared radius, the library is its only source, and the app must not invent one.
+Resolve or do not place. The dock still renders an unresolved state, because a library
+edit can un-resolve a placed part retroactively (§3.5.4) — the one path in the app where
+an already-validated placement becomes wrong after the fact.
+
+Placements, tool binds and the pocket map all live only in memory for the life of the
+server process. There is no GUI path to persist or restore a layout, deliberately.
 
 ### Coordinate Systems
 
@@ -335,8 +426,12 @@ them by, so on X it is one radius **more permissive** than the placement gate �
 a backstop, not the primary guard. That direction is deliberate: the stricter
 check must be the one that runs first.
 
-`_max_tool_radius` reads `part.tools[...]["diameter_inches"]` straight from the
-parsed file, not the resolved `ToolLibrary`.
+`_max_tool_radius` reads **`PlacedPart.tool_diameters`** — the declared diameters the
+identity library supplied at placement time — and does not consult the parsed header at
+all when they are present. Mixing the two would silently prefer whichever number
+happened to be larger, and the parsed one is wrong in the crash direction on every
+profile bit. `tool_diameters` is `None` only off the placement path (the audit sweep),
+where it falls back to the header.
 
 **The Fusion side of that is fixed (#20, 2026-08-17).** The post writes
 `(T2 D=12.7 CR=0. - ZMIN=0. - FLAT END MILL)` rather than `{0.5 inches}`, and
@@ -354,17 +449,17 @@ Two things about that parse are load-bearing, not incidental:
 - **`D=` is millimetres and must be converted.** The file's own units word decides
   (`file_is_inch`, first `G70`/`G71`/`G20`/`G21` in a non-comment line, metric
   default). Reading `12.7` as inches is a 25.4× under-inflation — the crash
-  direction. The Fusion branch also `continue`s before `_extract_diameter`, whose
-  bare-decimal fallback would do exactly that.
+  direction. The Fusion branch also `continue`s before `_extract_diameter`.
 - **`ZMIN` is excluded from `description`.** It is the job's Z range, not a property
   of the cutter, so one physical tool posts `ZMIN=0.` in one file and `ZMIN=-19.05`
-  in another. `app._tool_compatibility` flags a conflict when descriptions for one
-  `T#` differ, so carrying `ZMIN` would make a tool conflict with itself and block
-  Generate on two compatible files. The description is built from the stable fields
+  in another. This mattered acutely when `_tool_compatibility` compared descriptions
+  per `T#`; that function is gone, but the reason survives — `cam_description` is the
+  **description seal's** input now, and an unstable field there would prompt on every
+  job. The description is built from the stable fields
   (`FLAT END MILL D=12.7 CR=0.`) — type alone would collapse every ½" and ¼" flat
   mill onto one string, which is the dangerous direction.
 
-**Still the destination, and now the *sole* authority:** the identity library supplies
+**Now built, and the *sole* authority:** the identity library supplies
 the diameter (spec §3.5.2), because a file whose header is absent or wrong still needs
 a true radius. Under #9 the parsed figure stops being authoritative entirely — every
 tool resolves through its code, so the notation mess (four diameter notations, one
