@@ -6,10 +6,50 @@ info) and produces a single merged .nc file following the order-of-operations
 merge rules and nearest-neighbor travel sort from the spec.
 """
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from collision import PlacedPart, rail_geom, slot_mark_y
+
+
+# ── identity and pocket ───────────────────────────────────────────────────────
+
+@dataclass
+class IdentityMap:
+    """Which physical cutter each file's `T#` means, and which pocket it runs from.
+
+    The `T#` in a source file carries two meanings at once — *identity* and *pocket*
+    (spec §1). This splits them: `codes` says what a file's `T4` **is**, and `pockets`
+    says where that cutter **sits** for this run. A remap therefore rewrites exactly two
+    things (§4) — the `T# M06` line and the matching `G43 H#` line — and touches no `X`,
+    `Y`, `Z`, `I`, `J`, `R` or `F` word.
+
+    **Blocks are ordered by identity, not by the `T#` string** (§4.2). `sorted()` over a
+    `T#` string puts `"T10"` before `"T2"`, so renumbering pockets would reorder blocks
+    within a pass index and move the tool-change count — and hence the runtime estimate
+    — for a job whose geometry did not change at all. Sorting by code makes the whole
+    file invariant under a remap except at `T#`/`H#`, which is what lets the #12 test
+    take its strong whole-file form.
+
+    With no map supplied, identity *is* the `T#` and the pocket is the one it names, so
+    an unremapped job emits exactly what it always did.
+    """
+
+    codes: Dict[str, Dict[str, str]] = field(default_factory=dict)   # instance_id → {T#: code}
+    pockets: Dict[str, int] = field(default_factory=dict)            # code → pocket number
+
+    def code_for(self, placed: PlacedPart, tool_number: str) -> str:
+        per_part = self.codes.get(placed.instance_id) or {}
+        return per_part.get(tool_number.upper()) or tool_number
+
+    def word_for(self, code: str) -> str:
+        """The tool word the file will carry — `T6` for pocket 6."""
+        pocket = self.pockets.get(code)
+        return f"T{int(pocket)}" if pocket else code
+
+
+_IDENTITY = IdentityMap()
 
 # ── compiled patterns ─────────────────────────────────────────────────────────
 
@@ -26,17 +66,19 @@ _Z_RETRACT = re.compile(r"^G0?0\s+Z[+-]?\d*\.?\d+\s*$", re.IGNORECASE)
 
 # ── public entry point ────────────────────────────────────────────────────────
 
-def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
+def generate_master_gcode(placements: List[PlacedPart], settings: Dict,
+                          identity: Optional[IdentityMap] = None) -> str:
     """
     Build a merged master G-code string from a list of placed parts.
 
     Order of operations:
       Walk pass indices 0, 1, 2... across all parts.
-      At each index, group by tool number.
-      Consecutive blocks with the same tool are merged (no tool change inserted).
+      At each index, group by tool **identity** (see IdentityMap).
+      Consecutive blocks with the same identity are merged (no tool change inserted).
       Within each merged block, segments are sorted by nearest-neighbor to
       minimise rapid-travel distance without violating per-part operation order.
     """
+    identity = identity or _IDENTITY
     adv = settings["advanced"]
     rails = adv.get("rails")
     tool_capacity = int(adv.get("tool_capacity", 8))
@@ -55,18 +97,28 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
     safe_z_driver = safe_z_info.get("driven_by") or ""
 
     filenames = [p.part.filename for p in placements]
-    all_tools: List[str] = []
+    # Distinct *physical cutters*, not distinct `T#` strings. Under identity merging the
+    # two differ in both directions: two files' `T4` can be one cutter, and one file's
+    # `T4` can be a different cutter from another's.
+    all_codes: List[str] = []
     for p in placements:
         for gp in p.part.passes:
-            if gp.tool_number not in all_tools:
-                all_tools.append(gp.tool_number)
+            code = identity.code_for(p, gp.tool_number)
+            if code not in all_codes:
+                all_codes.append(code)
+    all_tools = [identity.word_for(c) for c in all_codes]
 
     # The tool changer holds a fixed number of tools (default 8). A job needing
     # more cannot be loaded on the machine, so fail loudly rather than emitting
     # G-code that will stall mid-run at an unavailable tool.
-    if len(all_tools) > tool_capacity:
+    #
+    # This is a **backstop**, not the primary guard — the §3.4 validity gate refuses to
+    # generate long before here, because rules 2 and 3 (every tool in exactly one
+    # pocket, no pocket holding two) make a ninth tool unsatisfiable. The stricter
+    # check runs first; the second line of defence stays.
+    if len(all_codes) > tool_capacity:
         raise ValueError(
-            f"Job needs {len(all_tools)} tools ({', '.join(all_tools)}) but the "
+            f"Job needs {len(all_codes)} tools ({', '.join(all_tools)}) but the "
             f"Smartshop 2 tool changer holds only {tool_capacity}. "
             "Remove parts or reduce distinct tools."
         )
@@ -99,10 +151,15 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
     ]
 
     # ── tool blocks ───────────────────────────────────────────────────────────
-    blocks = _build_blocks(placements, rails, x_off_mm, y_off_mm)
+    blocks = _build_blocks(placements, rails, x_off_mm, y_off_mm, identity)
 
     for block_num, block in enumerate(blocks, start=1):
         tool = block["tool"]
+        # H follows the POCKET, not the cutter (spec §4.1). The shop loads a tool and
+        # touches it off immediately, so the offset table is pocket-indexed: a remap
+        # that moved `T` without moving `H` would apply the wrong tool-length offset —
+        # wrong Z, crash or air-cut. Deriving H from the emitted tool word is what makes
+        # that automatic. `gcode_validator._check_g43` rejects a mismatch at ERROR.
         h_num = re.sub(r"\D", "", tool)  # "T2" → "2"
         segs = _nearest_neighbor_sort(block["segments"])
 
@@ -159,55 +216,71 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict) -> str:
 
 # ── block building ────────────────────────────────────────────────────────────
 
-def _iter_pass_groups(placements: List[PlacedPart]):
+def _iter_pass_groups(placements: List[PlacedPart],
+                      identity: Optional[IdentityMap] = None):
     """
-    Yield `(tool, [(placed, GcodePass), ...])` in the order blocks are emitted.
+    Yield `(code, [(placed, GcodePass), ...])` in the order blocks are emitted.
 
     Walk pass indices 0..max in order; at each index, group that index's passes
-    by tool. This is the single source of the emitted block order — both
-    `_build_blocks` and `block_tool_sequence` walk it, so a count taken from one
-    can never disagree with the file produced by the other.
+    by **identity**, not by the raw `T#`. This is the single source of the emitted
+    block order — both `_build_blocks` and `block_tool_sequence` walk it, so a
+    count taken from one can never disagree with the file produced by the other.
+
+    Grouping by identity is what fixes §1's defect: two files that both say `T4`
+    while meaning different cutters no longer merge into one block, and two files
+    that say `T2` and `T4` for the *same* cutter now do.
     """
+    identity = identity or _IDENTITY
     max_passes = max((len(p.part.passes) for p in placements), default=0)
     for idx in range(max_passes):
-        by_tool: Dict[str, list] = {}
+        by_code: Dict[str, list] = {}
         for placed in placements:
             if idx < len(placed.part.passes):
                 gp = placed.part.passes[idx]
-                by_tool.setdefault(gp.tool_number, []).append((placed, gp))
+                by_code.setdefault(
+                    identity.code_for(placed, gp.tool_number), []).append((placed, gp))
 
-        for tool in sorted(by_tool):
-            yield tool, by_tool[tool]
+        for code in sorted(by_code):
+            yield code, by_code[code]
 
 
-def block_tool_sequence(placements: List[PlacedPart]) -> List[str]:
+def block_tool_sequence(placements: List[PlacedPart],
+                        identity: Optional[IdentityMap] = None) -> List[str]:
     """
-    The tool of every block the generator will emit, in order.
+    The tool word of every block the generator will emit, in order.
 
     Each block opens with its own `T# M06`, so `len()` of this list is the job's
     tool-change count. It is NOT the distinct-tool list: a tool that recurs at a
     later pass index appears again, because the machine really does change back
     to it. `[T1, T2, T1, T2]` is two tools and four changes.
+
+    The count is **invariant under remapping** — blocks are grouped and ordered by
+    identity, so moving a cutter to another pocket cannot merge or split a block.
     """
+    identity = identity or _IDENTITY
     seq: List[str] = []
-    for tool, _group in _iter_pass_groups(placements):
-        if not seq or seq[-1] != tool:
-            seq.append(tool)
+    for code, _group in _iter_pass_groups(placements, identity):
+        word = identity.word_for(code)
+        if not seq or seq[-1] != word:
+            seq.append(word)
     return seq
 
 
 def _build_blocks(placements: List[PlacedPart], rails: Optional[dict] = None,
-                  x_off_mm: float = 0.0, y_off_mm: float = 0.0) -> list:
+                  x_off_mm: float = 0.0, y_off_mm: float = 0.0,
+                  identity: Optional[IdentityMap] = None) -> list:
     """
     Produce an ordered list of tool blocks from all placements.
 
-    Append to the previous block when the tool matches; otherwise start a new
+    Append to the previous block when the identity matches; otherwise start a new
     one. This preserves each part's internal operation order while merging
     identical consecutive tools across parts.
     """
+    identity = identity or _IDENTITY
     blocks: list = []
 
-    for tool, group in _iter_pass_groups(placements):
+    for code, group in _iter_pass_groups(placements, identity):
+        tool = identity.word_for(code)
         segs: list = []
         description = ""
         spindle_speed = 18000
@@ -232,10 +305,11 @@ def _build_blocks(placements: List[PlacedPart], rails: Optional[dict] = None,
                 seg.insert(0, f"({gp.operation_name})")
             segs.append(seg)
 
-        if blocks and blocks[-1]["tool"] == tool:
+        if blocks and blocks[-1]["code"] == code:
             blocks[-1]["segments"].extend(segs)
         else:
             blocks.append({
+                "code": code,
                 "tool": tool,
                 "description": description,
                 "spindle_speed": spindle_speed,

@@ -4,28 +4,6 @@
   ],
   "output_path": "~/Downloads",
   "job_name_format": "nest_{timestamp}",
-  "tools": {
-    "T1": {
-      "name": "1/4\" upcut spiral",
-      "diameter_inches": 0.25
-    },
-    "T2": {
-      "name": "1/2\" end mill",
-      "diameter_inches": 0.5
-    },
-    "T4": {
-      "name": "Table Stiff",
-      "diameter_inches": 0.75
-    },
-    "T5": {
-      "name": "",
-      "diameter_inches": 0.375
-    },
-    "T99": {
-      "name": "test",
-      "diameter_inches": 0.1
-    }
-  },
   "advanced": {
     "bed_x_mm": 1606.4992,
     "bed_y_mm": 3098.0126,

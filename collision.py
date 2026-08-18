@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, NamedTuple, Optional
+from typing import Dict, List, NamedTuple, Optional
 
 from gcode_parser import GcodePart
 
@@ -17,6 +17,13 @@ class PlacedPart:
     rail: str           # 'A' or 'B'
     slot_inches: float
     instance_id: str
+    # `T#` → declared diameter in inches, resolved through the identity library. The
+    # library is the **sole** diameter authority (spec §3.5.2): a Fusion header's `D=`
+    # is the tool's nominal size, not its widest cutting point, and three library files
+    # yield no parseable diameter at all. When this is set it is used and the parsed
+    # file is not consulted; None means nothing resolved it, which only happens off the
+    # placement path (the audit sweep), never for a part on the bed.
+    tool_diameters: Optional[Dict[str, float]] = None
 
 
 @dataclass
@@ -201,11 +208,25 @@ def toolpath_rect(placed: PlacedPart, rails: Optional[dict] = None,
     return r
 
 
+def _tool_diameters(placed: PlacedPart) -> dict:
+    """`T#` → diameter in inches, from the identity library when it resolved this part.
+
+    The library is authoritative and the parsed header is not consulted at all when it
+    is present — mixing the two would silently prefer whichever number happened to be
+    larger, and the parsed one is wrong in the crash direction on every profile bit
+    (`.25 Bowl Bit` posts a nominal 0.25 and is 0.75 across).
+    """
+    if placed.tool_diameters is not None:
+        return dict(placed.tool_diameters)
+    return {num: (info.get("diameter_inches") or 0.0)
+            for num, info in placed.part.tools.items()}
+
+
 def _max_tool_radius(placed: PlacedPart) -> float:
-    """Largest tool radius in mm across all tools defined in the part."""
+    """Largest tool radius in mm across all tools this part cuts with."""
     best = 0.0
-    for info in placed.part.tools.values():
-        r = (info.get("diameter_inches") or 0) * 25.4 / 2
+    for dia in _tool_diameters(placed).values():
+        r = (dia or 0) * 25.4 / 2
         if r > best:
             best = r
     return best
@@ -214,8 +235,8 @@ def _max_tool_radius(placed: PlacedPart) -> float:
 def _largest_tool_str(placed: PlacedPart) -> str:
     """'T2 (0.5\" dia) ' label for the largest-diameter tool, or '' if none defined."""
     best_num, best_dia = "", 0.0
-    for num, info in placed.part.tools.items():
-        dia = info.get("diameter_inches") or 0
+    for num, dia in _tool_diameters(placed).items():
+        dia = dia or 0
         if dia > best_dia:
             best_dia, best_num = dia, num
     if not best_dia:

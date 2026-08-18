@@ -26,7 +26,7 @@ and generate a merged master G-code file.
    - If macOS blocks it: right-click → Open → Open
    - The launcher checks for Python and installs Flask automatically on first run
 
-5. Your browser opens to [http://localhost:5000](http://localhost:5000) automatically.
+5. Your browser opens to [http://localhost:5001](http://localhost:5001) automatically.
 
 ### Windows
 
@@ -43,9 +43,7 @@ and generate a merged master G-code file.
 4. **Double-click `launch.bat`** inside the cloned folder.
    - The launcher checks for Python and installs Flask automatically on first run
 
-5. Your browser opens to [http://localhost:5000](http://localhost:5000) automatically.
-
-> **Note:** Windows Firewall may ask to allow Python network access — click **Allow**.
+5. Your browser opens to [http://localhost:5001](http://localhost:5001) automatically.
 
 ---
 

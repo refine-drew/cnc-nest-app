@@ -5,7 +5,7 @@ import pytest
 from gcode_parser import parse_vcarve_text
 from audit_metrics import extract_pass_metrics, extract_tool_metrics
 from audit_library import audit_part, build_thresholds, scan_library, summarize_toolpath_feeds
-from tool_library import ToolLibrary
+from tool_library import LibraryTool, ToolLibrary
 
 MM_PER_INCH = 25.4
 
@@ -14,7 +14,7 @@ MM_PER_INCH = 25.4
 # cut 5080 (=200 ipm). Spindle 18000 RPM.
 SAMPLE_GOOD = """( Material Size)
 ( X= 457.200, Y= 304.800, Z= 19.050)
-(T2 = End Mill {0.5 inches})
+(T2 = EM-0500 End Mill {0.5 inches})
 G71
 G43 H2 Z44.4754
 T2 M06
@@ -31,7 +31,7 @@ M30
 # Legacy top-of-material convention (large negative Z) — must be blocked by validate_z.
 SAMPLE_LEGACY = """( Material Size)
 ( X= 457.200, Y= 304.800, Z= 19.050)
-(T2 = End Mill {0.5 inches})
+(T2 = EM-0500 End Mill {0.5 inches})
 G71
 G43 H2 Z25.4254
 T2 M06
@@ -47,7 +47,7 @@ M30
 # Out-of-range feed (12700 mm/min = 500 ipm) and spindle (30000 RPM).
 SAMPLE_OUT_OF_RANGE = """( Material Size)
 ( X= 457.200, Y= 304.800, Z= 19.050)
-(T2 = End Mill {0.5 inches})
+(T2 = EM-0500 End Mill {0.5 inches})
 G71
 G43 H2 Z44.4754
 T2 M06
@@ -81,7 +81,7 @@ M30
 # where one tool runs several toolpaths at different feeds.
 SAMPLE_MULTI_FEED = """( Material Size)
 ( X= 457.200, Y= 304.800, Z= 19.050)
-(T2 = End Mill {0.5 inches})
+(T2 = EM-0500 End Mill {0.5 inches})
 G71
 G43 H2 Z44.4754
 T2 M06
@@ -100,19 +100,20 @@ M05
 M30
 """
 
-LIBRARY_TOOLS = {
-    "T2": {"name": "1/2\" end mill", "diameter_inches": 0.5},
-}
+LIBRARY_TOOLS = [
+    LibraryTool(code="EM-0500", name='1/2" end mill', diameter_inches=0.5,
+                geometry_class="Flat End Mill", flute_direction="down", default_slot=2),
+]
 
 
 @pytest.fixture()
 def tool_lib():
-    return ToolLibrary(LIBRARY_TOOLS)
+    return ToolLibrary(list(LIBRARY_TOOLS))
 
 
 @pytest.fixture()
 def thresholds():
-    return build_thresholds({"tools": LIBRARY_TOOLS})
+    return build_thresholds({})
 
 
 def _approx_ipm(value_ipm, expected):
@@ -198,7 +199,8 @@ def test_good_file_is_ok(tool_lib, thresholds):
     assert row["spindle_max_rpm"] == 18000
     assert row["tools"] == "T2"
     assert len(tool_rows) == 1
-    assert tool_rows[0]["diameter_source"] == "header"
+    assert tool_rows[0]["diameter_source"] == "library"
+    assert tool_rows[0]["tool_code"] == "EM-0500"
     # One toolpath, single feed → not flagged as varying.
     assert row["toolpath_count"] == 1
     assert row["feed_varies"] == ""
@@ -223,24 +225,43 @@ def test_out_of_range_feed_and_spindle_warn(tool_lib, thresholds):
     assert "Spindle" in row["flags"]
 
 
-def test_header_library_diameter_mismatch_warns(tool_lib, thresholds):
-    # Header declares T2 = 0.25", but the library says T2 = 0.5".
-    text = SAMPLE_GOOD.replace("(T2 = End Mill {0.5 inches})", "(T2 = End Mill {0.25 inches})")
+def test_a_posted_diameter_that_differs_from_the_declaration_is_shown_not_flagged(
+        tool_lib, thresholds):
+    """Guard (b) is retired, and this is what replaced it (spec §3.5.3).
+
+    `diameter_inches` is the tool's **maximum cutting diameter**, which differs from a
+    posted nominal `D=` by design on every profile bit — `.25 Bowl Bit` is declared 0.75
+    against a nominal 0.25. A rule comparing them would refuse correctly declared tools,
+    so both numbers are carried as columns and the operator reads them.
+    """
+    text = SAMPLE_GOOD.replace("{0.5 inches}", "{0.25 inches}")
     part = parse_vcarve_text(text, filename="mismatch.nc")
     row, tool_rows, _ = audit_part(part, "mismatch.nc", tool_lib, thresholds)
-    assert row["status"] == "warning"
-    assert "library" in row["flags"]
-    assert tool_rows[0]["header_diameter_in"] == 0.25
-    assert tool_rows[0]["library_diameter_in"] == 0.5
+    assert row["status"] == "ok"
+    assert "library" not in row["flags"]
+    assert tool_rows[0]["header_diameter_in"] == 0.25   # posted, display only
+    assert tool_rows[0]["library_diameter_in"] == 0.5   # declared, authoritative
+    assert tool_rows[0]["diameter_in"] == 0.5
 
 
-def test_unknown_tool_blocked(tool_lib, thresholds):
+def test_a_file_with_no_shop_code_is_flagged_as_the_setup_task_it_is(
+        tool_lib, thresholds):
+    """Every file in the library predates the code, so this is the expected steady state
+    until the ten codes are typed in — a warning naming the work, not a mystery."""
+    text = SAMPLE_GOOD.replace("EM-0500 ", "")
+    part = parse_vcarve_text(text, filename="uncoded.nc")
+    row, tool_rows, _ = audit_part(part, "uncoded.nc", tool_lib, thresholds)
+    assert "No shop code on T2" in row["flags"]
+    assert tool_rows[0]["resolution"] == "orphan"
+
+
+def test_a_tool_with_no_identity_is_blocked(tool_lib, thresholds):
     part = parse_vcarve_text(SAMPLE_UNKNOWN_TOOL, filename="unknown.nc")
     row, tool_rows, _ = audit_part(part, "unknown.nc", tool_lib, thresholds)
     assert row["status"] == "blocked"
-    assert "Unknown tool" in row["flags"]
+    assert "No tool identity" in row["flags"]
     assert "T7" in row["unknown_tools"]
-    assert tool_rows[0]["diameter_source"] == "unknown"
+    assert tool_rows[0]["diameter_source"] == "unresolved"
 
 
 # --- scan_library end to end ----------------------------------------------

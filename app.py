@@ -1,8 +1,7 @@
-import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 from flask import Flask, abort, jsonify, render_template, request
 
@@ -21,24 +20,37 @@ from config import (
     load_config, save_config,
     _sanitize_path_str, normalize_library_paths, resolve_library_root,
 )
-from gcode_generator import block_tool_sequence, generate_master_gcode
+from gcode_generator import IdentityMap, block_tool_sequence, generate_master_gcode
 from gcode_parser import GcodePart, parse_vcarve_text
 from gcode_validator import format_findings, validate_gcode
 from pdf_report import generate_layout_pdf, palette_color as pdf_palette_color
+from pocket_map import STAGED, build_changer_state
 from runtime_estimator import (
     DEFAULT_TOOL_CHANGE_SECONDS, estimate_lines_runtime, format_duration,
 )
-from tool_library import ToolLibrary
+from tool_library import (
+    FLUTE_DIRECTIONS, GEOMETRY_CLASSES, LibraryTool, ToolLibrary, ToolLibraryError,
+    normalize_code, resolve_part,
+)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
 config = load_config()
+
+# Operator data with its own lifecycle — kept out of config.json deliberately, so a
+# growing library never lands in the file the settings panel writes (spec §3.5).
+tool_library = ToolLibrary.load()
 
 # In-memory session state — single user, local app
 _loaded: Dict[str, GcodePart] = {}      # library-relative path → GcodePart
 _placements: Dict[str, PlacedPart] = {} # instance_id → PlacedPart
 _placement_paths: Dict[str, str] = {}   # instance_id → library-relative path
 _instance_counts: Dict[str, int] = {}   # filename stem → counter for unique IDs
+
+# Job-scoped and deliberately never persisted (spec §3.2). Save/load job is sunset, so
+# the whole class of "stale override in a saved job" problems does not exist.
+_tool_binds: Dict[str, Dict[str, str]] = {}   # library-relative path → {T#: code}
+_pocket_overrides: Dict[str, int] = {}        # code → pocket; the operator's drags
 
 VALID_EXT = {".nc", ".mmg"}
 MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -287,51 +299,140 @@ def _compute_job_stats() -> dict:
     }
 
 
-def _tool_compatibility() -> dict:
-    """Tool compatibility matrix across all placed parts, ordered by job execution sequence."""
-    if not _placements:
-        return {"matrix": [], "has_conflict": False}
+def _resolve(rel: str, part: GcodePart):
+    """Resolve one file's tools against the identity library, with this run's binds."""
+    return resolve_part(tool_library, part, _tool_binds.get(rel))
 
-    # Build execution-ordered unique tool list (mirrors _build_blocks pass-index walk)
-    max_passes = max(len(p.part.passes) for p in _placements.values())
-    ordered_tools: list = []
-    seen_tools: set = set()
-    for idx in range(max_passes):
-        by_tool: set = set()
-        for placed in _placements.values():
-            if idx < len(placed.part.passes):
-                by_tool.add(placed.part.passes[idx].tool_number)
-        for tn in sorted(by_tool):
-            if tn not in seen_tools:
-                seen_tools.add(tn)
-                ordered_tools.append(tn)
 
-    # Collect one usage entry per (tool, placed-part) pair using pass membership
-    usages_by_tool: Dict[str, list] = {tn: [] for tn in ordered_tools}
-    for placed in _placements.values():
-        pass_tools = {gp.tool_number for gp in placed.part.passes}
-        for tn in ordered_tools:
-            if tn not in pass_tools:
-                continue
-            info = placed.part.tools.get(tn, {})
-            entry = {
-                "filename": placed.part.filename,
-                "description": info.get("description", ""),
-                "diameter_inches": info.get("diameter_inches"),
-            }
-            if entry not in usages_by_tool[tn]:
-                usages_by_tool[tn].append(entry)
+def _changer_state() -> dict:
+    """The tool-changer map and the §3.4 validity gate, recomputed from scratch.
 
-    matrix = []
-    has_conflict = False
-    for tn in ordered_tools:
-        usages = usages_by_tool[tn]
-        conflict = len({u["description"] for u in usages}) > 1
-        if conflict:
-            has_conflict = True
-        matrix.append({"tool_number": tn, "usages": usages, "conflict": conflict})
+    Nothing here is cached, and that is the point: the map is a *pure function* of
+    (resolved tools, declared default slots) plus the operator's drags, so recomputing
+    it can never disagree with itself. See `pocket_map` for why determinism is a
+    consequence rather than a rule.
 
-    return {"matrix": matrix, "has_conflict": has_conflict}
+    This replaces `_tool_compatibility`, which the changer dock retires. That function
+    was sound in the safe direction and blind in the dangerous one: `conflict` fired
+    only when one `T#` carried *differing* description strings, so two genuinely
+    different cutters sharing a stale identical string sailed through (the library has
+    exactly that case — `T2` and `T9` post `End Mill {0.5 inch}` byte-for-byte in one
+    file). The gate it fed is unchanged; its *signal* is what was unsound (§1.1, §3.4).
+    """
+    entries = []
+    for instance_id, placed in _placements.items():
+        rel = _placement_paths.get(instance_id, placed.part.filename)
+        entries.append({
+            "instance_id": instance_id,
+            "filename": placed.part.filename,
+            "slot": slot_label(placed.rail, placed.slot_inches),
+            "resolution": _resolve(rel, placed.part),
+        })
+    return build_changer_state(
+        tool_library, entries, _pocket_overrides, _tool_capacity(),
+    )
+
+
+def _identity_map(state: dict) -> IdentityMap:
+    """Turn the changer state into the generator's identity/pocket map.
+
+    Built off the changer state, which is built off library codes and declared default
+    slots — **never off the remapped `T` numbers** (§3.2.1, §4.2). Reading post-remap
+    numbers here would make the emitted output depend on an assignment that depends on
+    the output.
+    """
+    codes: Dict[str, Dict[str, str]] = {}
+    for instance_id, placed in _placements.items():
+        rel = _placement_paths.get(instance_id, placed.part.filename)
+        res = _resolve(rel, placed.part)
+        codes[instance_id] = {
+            tn: b.library_code for tn, b in res.bindings.items() if b.library_code
+        }
+    pockets = {c: p for c, p in state["assignment"].items() if p != STAGED}
+    return IdentityMap(codes=codes, pockets=pockets)
+
+
+def _learn_descriptions(res) -> None:
+    """Adopt the first description a code is ever seen to post.
+
+    An empty `cam_descriptions` set has nothing to disagree with, so there is no prompt
+    to show — the seal is a *change* detector, not an approval queue (§3.5.3).
+    """
+    if not res.learned:
+        return
+    for code, description in res.learned:
+        tool_library.learn_description(code, description)
+    tool_library.save()
+
+
+def _resolution_block(rel: str, res) -> Optional[tuple]:
+    """The 422 payload for a file whose tools do not resolve, or None if it is clean.
+
+    Resolution is **strict and happens before placement** (§3.5.3): an unresolved tool
+    has no radius, the library is its only source, and the app must not invent one.
+    Resolve or do not place.
+    """
+    if res.duplicate_codes:
+        pairs = "; ".join(
+            f"{' and '.join(nums)} both resolve to {code}"
+            for code, nums in res.duplicate_codes
+        )
+        return ({
+            "ok": False,
+            "error": "duplicate_tool_code",
+            "message": (
+                f"{res.filename} uses one tool code for two different tools ({pairs}). "
+                "The CAM file already says these are different cutters by giving them "
+                "different tool numbers, so this has to be fixed in Fusion or VCarve — "
+                "the nest tool will not merge them."
+            ),
+            "duplicates": [{"library_code": c, "tool_numbers": n}
+                           for c, n in res.duplicate_codes],
+        }, 422)
+
+    if res.seal_prompts:
+        return ({
+            "ok": False,
+            "error": "description_changed",
+            "message": (
+                "A tool in this file posts a description it has never posted before. "
+                "Either it was renamed in CAM, or two different cutters have been given "
+                "the same tool code — which would cut one of them with the wrong tool."
+            ),
+            "path": rel,
+            "prompts": [{
+                "library_code": p.library_code,
+                "tool_number": p.tool_number,
+                "known": p.known,
+                "posted": p.posted,
+                "name": (tool_library.get(p.library_code).name
+                         if tool_library.get(p.library_code) else ""),
+            } for p in res.seal_prompts],
+        }, 422)
+
+    unresolved = res.unresolved
+    if unresolved:
+        return ({
+            "ok": False,
+            "error": "unresolved_tools",
+            "message": (
+                "This file uses tools the nest tool cannot identify. Add each one to "
+                "your tool library, or say which library tool it is for this job."
+            ),
+            "path": rel,
+            "tools": [{
+                "tool_number": b.tool_number,
+                "status": b.status,
+                "code": b.code,
+                "description": b.description,
+                "cam_description": b.cam_description,
+                # Display only, and never compared against the declaration — it is the
+                # nominal size, not the widest cutting point (§3.5.2, §3.5.3).
+                "posted_diameter_inches": b.posted_diameter_inches,
+            } for b in unresolved],
+        }, 422)
+
+    return None
 
 
 def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
@@ -437,8 +538,11 @@ def api_config_post():
         config["output_path"] = _sanitize_path_str(data["output_path"])
     if "job_name_format" in data:
         config["job_name_format"] = data["job_name_format"]
-    if "tools" in data:
-        config["tools"].update(data["tools"])
+    # `tools` is deliberately not accepted here any more. The pocket-keyed map is gone
+    # from config.json entirely (spec §8) — it was junk in its entirety, and its `T4`
+    # "Table Stiff" declared 0.75" for a cutter that is 2.38", an X-envelope
+    # under-inflation of 1.6" on a real tool. Tool data lives in tool_library.json,
+    # which the settings panel does not write.
     if "advanced" in data:
         adv_in = dict(data["advanced"])
         # `rails` is nested, so a shallow update would drop the rail the caller
@@ -559,7 +663,7 @@ def api_load_file():
 def api_placements_get():
     return jsonify({
         "placements": [_placement_dict(iid, p) for iid, p in _placements.items()],
-        "compatibility": _tool_compatibility(),
+        "changer": _changer_state(),
         "job_safe_z": _compute_job_safe_z(),
         **_compute_job_stats(),
     })
@@ -598,13 +702,20 @@ def api_place():
         msg = part.z_validation.messages[0] if part.z_validation.messages else "File failed Z validation."
         return jsonify({"ok": False, "error": "z_blocked", "message": msg}), 422
 
-    library = ToolLibrary(config.get("tools", {}))
-    unknown = library.find_unknown_tools(part)
-    if unknown:
-        return jsonify({"ok": False, "error": "unknown_tools", "tools": unknown}), 422
+    res = _resolve(rel, part)
+    blocked = _resolution_block(rel, res)
+    if blocked:
+        payload, status = blocked
+        return jsonify(payload), status
+    _learn_descriptions(res)
 
     instance_id = _make_instance_id(part.filename)
-    new_placed = PlacedPart(part=part, rail=rail, slot_inches=slot_inches, instance_id=instance_id)
+    new_placed = PlacedPart(
+        part=part, rail=rail, slot_inches=slot_inches, instance_id=instance_id,
+        # The declared diameters travel with the placement, so the collision and
+        # envelope checks read the library rather than the file (§3.5.2).
+        tool_diameters=res.diameters_by_tool_number(tool_library),
+    )
 
     result = check_placement(new_placed, list(_placements.values()),
                              _rails(), config["advanced"])
@@ -625,7 +736,7 @@ def api_place():
     return jsonify({
         "ok": True,
         **_placement_dict(instance_id, new_placed),
-        "compatibility": _tool_compatibility(),
+        "changer": _changer_state(),
         "job_safe_z": _compute_job_safe_z(),
     })
 
@@ -638,72 +749,314 @@ def api_remove_placement(instance_id: str):
     _placement_paths.pop(instance_id, None)
     return jsonify({
         "ok": True,
-        "compatibility": _tool_compatibility(),
+        "changer": _changer_state(),
         "job_safe_z": _compute_job_safe_z(),
     })
 
 
-@app.route("/api/compatibility")
-def api_compatibility():
-    return jsonify(_tool_compatibility())
+# ── the tool changer (issue #11) ──────────────────────────────────────────────
+
+@app.route("/api/changer")
+def api_changer():
+    return jsonify(_changer_state())
 
 
-@app.route("/api/resolve-tool", methods=["POST"])
-def api_resolve_tool():
-    """
-    Operator supplies a diameter for an unknown tool.
-    Optionally persists it to the tool library in config.json.
-    Updates any in-memory cached parts that reference this tool.
+@app.route("/api/changer/assign", methods=["POST"])
+def api_changer_assign():
+    """Move a tool to a pocket, or back to staging with pocket 0.
+
+    **Never refused and never a swap** (§3.2.1). Dropping onto an occupied pocket makes
+    the two coexist — visibly and invalidly — because swapping two tools is impossible
+    without transiting a double-occupied pocket, so refusing the drop would deadlock
+    the swap. Only *generation* is gated.
+
+    The override is job-scoped and **never written back to the library**: the declared
+    default slot is prescriptive, and the app re-proposing it next job is the intended
+    nag, not churn.
     """
     data = request.get_json(force=True) or {}
-    tool_number = (data.get("tool_number") or "").strip().upper()
-    diameter_raw = data.get("diameter_inches")
-    save_to_library = bool(data.get("save_to_library", False))
-
-    if not tool_number:
-        return jsonify({"error": "tool_number required"}), 400
+    code = normalize_code(data.get("code"))
     try:
-        diameter = float(diameter_raw)
+        pocket = int(data.get("pocket"))
     except (TypeError, ValueError):
-        return jsonify({"error": "diameter_inches must be a number"}), 400
-    if diameter <= 0:
-        return jsonify({"error": "diameter_inches must be positive"}), 400
+        return jsonify({"error": "pocket must be a number (0 stages the tool)"}), 400
 
-    if save_to_library:
-        config.setdefault("tools", {})[tool_number] = {
-            "name": data.get("description", ""),
-            "diameter_inches": diameter,
+    if not code:
+        return jsonify({"error": "code required"}), 400
+    capacity = _tool_capacity()
+    if pocket != STAGED and not (1 <= pocket <= capacity):
+        return jsonify({"error": f"Pocket must be between 1 and {capacity}, or 0 to stage"}), 400
+
+    _pocket_overrides[code] = pocket
+    return jsonify({"ok": True, "changer": _changer_state()})
+
+
+@app.route("/api/changer/reset", methods=["POST"])
+def api_changer_reset():
+    """Drop every drag and re-seed from the library's declared default slots."""
+    _pocket_overrides.clear()
+    return jsonify({"ok": True, "changer": _changer_state()})
+
+
+@app.route("/api/bind-tool", methods=["POST"])
+def api_bind_tool():
+    """Bind an orphaned toolpath to a library tool, **for this run only**.
+
+    Nothing is remembered: a bind is job-scoped, which is how pocket assignment already
+    works. All 26 files in the library predate the shop code, so every one of them
+    orphans until re-posted or renamed — that is the safe default working, not a
+    failure, which is why this path has to be pleasant rather than punitive (§3.5.3).
+    """
+    data = request.get_json(force=True) or {}
+    rel = (data.get("path") or "").strip()
+    tool_number = (data.get("tool_number") or "").strip().upper()
+    code = normalize_code(data.get("code"))
+
+    if not rel or not tool_number:
+        return jsonify({"error": "path and tool_number required"}), 400
+    if code and code not in tool_library:
+        return jsonify({"error": f"No tool in your library has the code {code}"}), 404
+
+    binds = _tool_binds.setdefault(rel, {})
+    if code:
+        binds[tool_number] = code
+    else:
+        binds.pop(tool_number, None)
+
+    part = _loaded.get(rel)
+    payload = {"ok": True, "changer": _changer_state()}
+    if part is not None:
+        res = _resolve(rel, part)
+        payload["resolution"] = {
+            "blocked": res.blocked,
+            "unresolved": [b.tool_number for b in res.unresolved],
         }
-        save_config(config)
+        # A bind is the operator identifying a file that carries no code, so its
+        # description says nothing about what that code posts. The seal deliberately
+        # does not learn from it (§3.5.3) — `_learn_descriptions` is not called here.
+    _refresh_placed_diameters()
+    return jsonify(payload)
 
-    # Patch all cached parts so /api/place no longer blocks on this tool
-    for part in _loaded.values():
-        if tool_number in part.tools:
-            part.tools[tool_number]["diameter_inches"] = diameter
+
+# ── the tool library (issue #24) ──────────────────────────────────────────────
+
+def _library_payload() -> dict:
+    used = _codes_in_use()
+    return {
+        "tools": [{
+            **t.to_dict(),
+            "display": t.display,
+            "in_use_by": used.get(t.code, []),
+        } for t in tool_library.sorted_tools()],
+        "geometry_classes": list(GEOMETRY_CLASSES),
+        "flute_directions": list(FLUTE_DIRECTIONS),
+        "capacity": _tool_capacity(),
+    }
+
+
+def _codes_in_use() -> Dict[str, list]:
+    """code → the placed instances that resolve to it. Powers delete-in-use refusal
+    and the dock's "removing bracket-L frees pocket 7" attribution (§3.4.1, §3.5.4)."""
+    used: Dict[str, list] = {}
+    for instance_id, placed in _placements.items():
+        rel = _placement_paths.get(instance_id, placed.part.filename)
+        for binding in _resolve(rel, placed.part).bindings.values():
+            if binding.library_code:
+                entry = {"instance_id": instance_id, "filename": placed.part.filename,
+                         "slot": slot_label(placed.rail, placed.slot_inches)}
+                bucket = used.setdefault(binding.library_code, [])
+                if entry not in bucket:
+                    bucket.append(entry)
+    return used
+
+
+def _refresh_placed_diameters() -> list:
+    """Re-resolve every placement against the current library and re-run the checks.
+
+    **Newly-colliding placements are DELETED, not flagged** (§3.5.4). A library edit
+    exists *because* the old data was wrong, so the corrected data is authoritative and
+    a placement derived from the error is invalid rather than merely suspect. This is
+    the only path in the app by which an already-validated placement can become wrong
+    retroactively — everything else is checked once, at drop time.
+    """
+    for instance_id, placed in _placements.items():
+        rel = _placement_paths.get(instance_id, placed.part.filename)
+        placed.tool_diameters = _resolve(rel, placed.part).diameters_by_tool_number(
+            tool_library)
+
+    removed = []
+    # Re-check in placement order, so an earlier part keeps its spot and the later one
+    # that now overlaps it is the one dropped — the same order the operator built in.
+    kept: list = []
+    for instance_id, placed in list(_placements.items()):
+        result = check_placement(placed, kept, _rails(), config["advanced"])
+        if result.collides:
+            removed.append({
+                "instance_id": instance_id,
+                "filename": placed.part.filename,
+                "slot": slot_label(placed.rail, placed.slot_inches),
+                "message": result.message,
+            })
+            del _placements[instance_id]
+            _placement_paths.pop(instance_id, None)
         else:
-            part.tools[tool_number] = {"diameter_inches": diameter, "description": ""}
+            kept.append(placed)
+    return removed
 
-    return jsonify({"ok": True, "tool_number": tool_number, "diameter_inches": diameter})
+
+@app.route("/api/tool-library")
+def api_tool_library():
+    return jsonify(_library_payload())
+
+
+@app.route("/api/tool-library", methods=["POST"])
+def api_tool_library_upsert():
+    """Create or edit a tool.
+
+    Two rules that are easy to get backwards:
+
+    - **Duplicate default slots must be permitted, never refused** (§3.5.6). The
+      declared library puts two tools in slot 2 and two in slot 4 on purpose — that
+      collision *is* the motivating case, and refusing it would make the case
+      undeclarable.
+    - **`diameter_inches` is the widest point, not the nominal size** (§3.5.2).
+      `.25 Bowl Bit` is 0.75 and `1/8 Roundover` is 0.3. Over-declaring costs a
+      placement that would have fit; under-declaring puts the cutting edge somewhere
+      the check called clear.
+    """
+    data = request.get_json(force=True) or {}
+    original = normalize_code(data.get("original_code") or data.get("code"))
+    existing = tool_library.get(original)
+
+    slot = data.get("default_slot")
+    if slot in ("", None):
+        slot = None
+    else:
+        try:
+            slot = int(slot)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Default slot must be a pocket number, or blank"}), 400
+        if not (1 <= slot <= _tool_capacity()):
+            return jsonify({
+                "error": f"Default slot must be between 1 and {_tool_capacity()}, or blank"
+            }), 400
+
+    payload = dict(data)
+    payload["default_slot"] = slot
+    # cam_descriptions is the seal's memory and is never editable from this form —
+    # it grows only through a confirmed rename (§3.5.3).
+    payload["cam_descriptions"] = (existing.cam_descriptions if existing else [])
+
+    try:
+        tool = LibraryTool.from_dict(payload)
+        geometry_changed = bool(
+            existing and (existing.diameter_inches != tool.diameter_inches
+                          or existing.geometry_class != tool.geometry_class))
+        if existing and existing.code != tool.code:
+            tool_library.delete(existing.code)
+        tool_library.upsert(tool)
+    except ToolLibraryError as e:
+        return jsonify({"error": str(e)}), 400
+    tool_library.save()
+
+    removed = _refresh_placed_diameters() if geometry_changed or existing is None else []
+    return jsonify({
+        "ok": True,
+        "tool": tool.to_dict(),
+        "library": _library_payload(),
+        "changer": _changer_state(),
+        "removed_placements": removed,
+    })
+
+
+@app.route("/api/tool-library/<code>", methods=["DELETE"])
+def api_tool_library_delete(code: str):
+    """Deleting a tool that is in use is refused, and the parts are named (§3.5.4)."""
+    code = normalize_code(code)
+    if code not in tool_library:
+        return jsonify({"error": f"No tool with the code {code}"}), 404
+    in_use = _codes_in_use().get(code, [])
+    if in_use:
+        names = ", ".join(f"{u['filename']} ({u['slot']})" for u in in_use)
+        return jsonify({
+            "error": "tool_in_use",
+            "message": (f"{code} is used by {names}. Take those parts off the bed "
+                        "first, or this job would have no way to cut them."),
+            "in_use_by": in_use,
+        }), 409
+    tool_library.delete(code)
+    tool_library.save()
+    _pocket_overrides.pop(code, None)
+    return jsonify({"ok": True, "library": _library_payload(), "changer": _changer_state()})
+
+
+@app.route("/api/tool-library/merge", methods=["POST"])
+def api_tool_library_merge():
+    """Fold one entry into another. The loser's code is dropped, not kept as a second
+    key — that would reintroduce many-keys-to-one-tool (§3.5.4)."""
+    data = request.get_json(force=True) or {}
+    try:
+        survivor = tool_library.merge(data.get("survivor"), data.get("loser"))
+    except ToolLibraryError as e:
+        return jsonify({"error": str(e)}), 400
+    tool_library.save()
+    _pocket_overrides.pop(normalize_code(data.get("loser")), None)
+    removed = _refresh_placed_diameters()
+    return jsonify({"ok": True, "tool": survivor.to_dict(),
+                    "library": _library_payload(), "changer": _changer_state(),
+                    "removed_placements": removed})
+
+
+@app.route("/api/tool-library/seal", methods=["POST"])
+def api_tool_library_seal():
+    """Answer the description seal (§3.5.3).
+
+    *"Same tool, I renamed it"* adds the string to the set — a **set**, never a
+    replacement, because replace-on-confirm thrashes forever after a rename and trains
+    click-through. *"Different tool"* means one code is on two physical cutters and has
+    to be fixed in CAM; the app records nothing and keeps blocking.
+    """
+    data = request.get_json(force=True) or {}
+    code = normalize_code(data.get("library_code"))
+    posted = str(data.get("posted") or "").strip()
+    answer = (data.get("answer") or "").strip().lower()
+
+    if code not in tool_library:
+        return jsonify({"error": f"No tool with the code {code}"}), 404
+    if answer != "rename":
+        return jsonify({
+            "ok": False,
+            "message": (
+                f"Two different cutters are sharing the code {code}. Fix it in Fusion or "
+                "VCarve by giving one of them its own code, then re-post the file — the "
+                "nest tool cannot tell them apart from here, and merging them would cut "
+                "one with the wrong tool."
+            ),
+        }), 409
+    if not posted:
+        return jsonify({"error": "posted description required"}), 400
+
+    tool_library.learn_description(code, posted)
+    tool_library.save()
+    return jsonify({"ok": True, "library": _library_payload(), "changer": _changer_state()})
 
 
 @app.route("/api/generate", methods=["POST"])
 def api_generate():
     if not _placements:
         return jsonify({"error": "No parts placed"}), 400
-    compat = _tool_compatibility()
-    if compat["has_conflict"]:
-        return jsonify({"error": "Resolve tool compatibility conflicts before generating"}), 422
 
-    distinct_tools = [m["tool_number"] for m in compat["matrix"]]
-    capacity = _tool_capacity()
-    if len(distinct_tools) > capacity:
+    # The §3.4 validity gate. This is the *same* gate that has always been here
+    # (`app.py`'s 422 and `static/job.js`'s disabled button) pointed at a sound signal:
+    # every file tool resolved, every resolved tool in exactly one pocket, no pocket
+    # holding two. Capacity is not a fourth rule — with eight pockets, rules 2 and 3
+    # make a ninth tool unsatisfiable on their own.
+    state = _changer_state()
+    if not state["valid"]:
         return jsonify({
-            "error": "tool_capacity_exceeded",
-            "message": (
-                f"This job needs {len(distinct_tools)} tools "
-                f"({', '.join(distinct_tools)}) but the Smartshop 2 tool changer holds "
-                f"only {capacity}. Remove parts or reduce the number of distinct tools."
-            ),
+            "error": "changer_map_invalid",
+            "message": " ".join(m["text"] for m in state["messages"]),
+            "changer": state,
         }), 422
 
     data = request.get_json(force=True) or {}
@@ -712,7 +1065,8 @@ def api_generate():
     settings = {**config, "job_name": job_name, "job_safe_z": safe_z}
 
     try:
-        gcode = generate_master_gcode(list(_placements.values()), settings)
+        gcode = generate_master_gcode(
+            list(_placements.values()), settings, _identity_map(state))
     except Exception as e:
         return jsonify({"error": f"Generation failed: {e}"}), 500
 
@@ -760,9 +1114,8 @@ def api_audit():
     if not os.path.isdir(root):
         return jsonify({"error": f"Library path does not exist: {root}"}), 400
 
-    tool_lib = ToolLibrary(config.get("tools", {}))
     thresholds = build_thresholds(config)
-    file_rows, tool_rows, toolpath_rows = scan_library(root, tool_lib, thresholds)
+    file_rows, tool_rows, toolpath_rows = scan_library(root, tool_library, thresholds)
 
     out = _output_dir()
     stamp = _timestamp()
@@ -790,117 +1143,10 @@ def api_audit():
     })
 
 
-@app.route("/api/save-job", methods=["POST"])
-def api_save_job():
-    if not _placements:
-        return jsonify({"error": "No parts placed"}), 400
-
-    data = request.get_json(force=True) or {}
-    job_name = _job_name(data)
-
-    job = {
-        "version": "1.1",
-        "created": datetime.now().isoformat(),
-        "job_name": job_name,
-        "placements": [
-            {
-                "filename": p.part.filename,
-                "path": _placement_paths.get(iid, p.part.filename),
-                "rail": p.rail,
-                "slot_inches": p.slot_inches,
-                "slot": slot_label(p.rail, p.slot_inches),
-                "instance_id": iid,
-                "vcarve_x_span": p.part.vcarve_x_span,
-                "vcarve_y_span": p.part.vcarve_y_span,
-            }
-            for iid, p in _placements.items()
-        ],
-    }
-    out = _output_dir()
-    cnj_path = os.path.join(out, f"{job_name}.cnj")
-    with open(cnj_path, "w", encoding="utf-8") as f:
-        json.dump(job, f, indent=2)
-
-    return jsonify({"ok": True, "path": cnj_path, "job_name": job_name})
-
-
-@app.route("/api/load-job", methods=["POST"])
-def api_load_job():
-    global _placements, _placement_paths, _instance_counts
-
-    data = request.get_json(force=True) or {}
-    path = data.get("path", "").strip()
-    if not path:
-        return jsonify({"error": "path required"}), 400
-
-    abs_path = os.path.expanduser(path)
-    if not os.path.isfile(abs_path):
-        return jsonify({"error": f"File not found: {path}"}), 404
-    try:
-        with open(abs_path, "r", encoding="utf-8") as f:
-            job = json.load(f)
-    except Exception as e:
-        return jsonify({"error": f"Could not read job file: {e}"}), 400
-
-    new_placements: Dict[str, PlacedPart] = {}
-    new_paths: Dict[str, str] = {}
-    new_counts: Dict[str, int] = {}
-    warnings = []
-
-    for entry in job.get("placements", []):
-        rel = entry.get("path") or entry.get("filename", "")
-        rail = entry.get("rail", "A").upper()
-        slot_inches = float(entry.get("slot_inches", 0))
-        instance_id = entry.get("instance_id", "")
-
-        if rel not in _loaded:
-            try:
-                abs_file = _resolve_library_path(rel)
-            except Exception:
-                warnings.append(f"Invalid path in job file: {rel} — skipped")
-                continue
-            if not os.path.isfile(abs_file):
-                warnings.append(f"File not found in library: {rel} — skipped")
-                continue
-            try:
-                _loaded[rel] = _parse_file(abs_file)
-            except Exception as e:
-                warnings.append(f"Could not parse {rel}: {e} — skipped")
-                continue
-
-        part = _loaded[rel]
-        saved_w = entry.get("vcarve_x_span") or entry.get("blank_width")   # back-compat
-        saved_h = entry.get("vcarve_y_span") or entry.get("blank_height")
-        if saved_w and saved_h:
-            if abs(part.vcarve_x_span - saved_w) > 0.1 or abs(part.vcarve_y_span - saved_h) > 0.1:
-                warnings.append(
-                    f"{rel}: dimensions changed since job was saved "
-                    f"({saved_w}×{saved_h} → {part.vcarve_x_span}×{part.vcarve_y_span}). "
-                    "Re-placement required."
-                )
-                continue
-
-        placed = PlacedPart(part=part, rail=rail, slot_inches=slot_inches, instance_id=instance_id)
-        new_placements[instance_id] = placed
-        new_paths[instance_id] = rel
-        stem = os.path.splitext(part.filename)[0]
-        new_counts[stem] = new_counts.get(stem, 0) + 1
-
-    _placements = new_placements
-    _placement_paths = new_paths
-    _instance_counts = new_counts
-
-    return jsonify({
-        "ok": True,
-        "job_name": job.get("job_name", ""),
-        "warnings": warnings,
-        "placements": [_placement_dict(iid, p) for iid, p in _placements.items()],
-        "compatibility": _tool_compatibility(),
-        "job_safe_z": _compute_job_safe_z(),
-        **_compute_job_stats(),
-    })
-
-
 if __name__ == "__main__":
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
-    app.run(host="0.0.0.0", port=5001, debug=debug)
+    # Loopback only. CNC Nest is a single-user desktop tool whose whole state is
+    # per-process in-memory globals; it has no reason to accept a connection from
+    # another machine, and binding wide is what raised the Windows Firewall prompt
+    # the operator was being trained to click through (issue #2).
+    app.run(host="127.0.0.1", port=5001, debug=debug)

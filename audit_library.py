@@ -19,7 +19,7 @@ Almost all parsing is reused from the app:
   - gcode_parser.parse_vcarve_text  → dimensions, thickness, tools, Z depths, safe Z, z_validation
   - audit_metrics.extract_pass_metrics → per-toolpath feed / plunge / spindle (the one new piece)
   - audit_metrics.extract_tool_metrics → the same rolled up per tool number
-  - tool_library.ToolLibrary → diameter resolution + unknown-tool detection
+  - tool_library.resolve_part → identity resolution against the shop tool library
   - runtime_estimator.format_duration → human-readable runtime
 
 Usage:
@@ -44,7 +44,7 @@ from pathlib import Path
 import config as config_module
 from gcode_parser import parse_vcarve_text
 from audit_metrics import extract_pass_metrics, extract_tool_metrics
-from tool_library import ToolLibrary
+from tool_library import ToolLibrary, resolve_part
 from runtime_estimator import format_duration
 
 MM_PER_INCH = 25.4
@@ -152,8 +152,12 @@ def audit_part(part, rel_path, tool_lib, thresholds):
     """Build the file-level row, per-tool rows, and per-toolpath rows for one part."""
     pass_metrics = extract_pass_metrics(part)
     metrics = extract_tool_metrics(part)
-    unknown = tool_lib.find_unknown_tools(part)
-    unknown_nums = [u["tool_number"] for u in unknown]
+    # Identity resolution, the same rule the app places on: a tool resolves through
+    # the shop code it carries, or it does not resolve at all (spec §3.5.3). "Unknown"
+    # here therefore means *unidentifiable*, not merely undimensioned.
+    resolution = resolve_part(tool_lib, part)
+    unknown_nums = [b.tool_number for b in resolution.unresolved]
+    lib_dia = {tn: d for tn, d in resolution.diameters_by_tool_number(tool_lib).items()}
     tools_used = [gp.tool_number for gp in part.passes]
     tools_unique = sorted(set(tools_used), key=lambda t: tools_used.index(t))
     units = detect_units(part.raw_lines)
@@ -176,14 +180,20 @@ def audit_part(part, rel_path, tool_lib, thresholds):
             flags.append((part.z_validation.status, msg))
 
     if unknown_nums:
-        flags.append(("blocked", f"Unknown tool diameter: {', '.join(unknown_nums)}"))
+        flags.append(("blocked",
+                      f"No tool identity: {', '.join(unknown_nums)} — the file carries "
+                      "no shop code the library knows, so it has no declared diameter"))
 
-    # Header diameter disagrees with the shop tool library — a silent mislabel.
-    for tn in tools_unique:
-        header_dia = part.tools.get(tn, {}).get("diameter_inches")
-        lib_dia = tool_lib.resolve_diameter(tn)
-        if header_dia is not None and lib_dia is not None and abs(header_dia - lib_dia) > 0.001:
-            flags.append(("warning", f"{tn} header diameter {header_dia}\" ≠ library {lib_dia}\""))
+    # A tool the library knows but whose CAM description has drifted is the seal's
+    # business, not the audit's. What the audit CAN say is which tools carry no code at
+    # all, since that is the one-time setup task blocking auto-matching (§3.5.5).
+    uncoded = [b.tool_number for b in resolution.bindings.values()
+               if b.status == "orphan"]
+    if uncoded:
+        flags.append(("warning",
+                      f"No shop code on {', '.join(sorted(uncoded))} — type the code "
+                      "into Fusion's Product id or the VCarve tool name so this file "
+                      "matches the library on its own"))
 
     if not part.tools and not metrics:
         flags.append(("blocked", "No tools found — file may be empty or malformed"))
@@ -282,21 +292,21 @@ def audit_part(part, rel_path, tool_lib, thresholds):
     tool_rows = []
     for tn in tools_unique:
         m = metrics.get(tn, {})
-        dia = tool_lib.resolve_for_part(part, tn)
-        if part.tools.get(tn, {}).get("diameter_inches") is not None:
-            dia_source = "header"
-        elif dia is not None:
-            dia_source = "library"
-        else:
-            dia_source = "unknown"
+        binding = resolution.bindings.get(tn)
+        dia = lib_dia.get(tn)
         tool_rows.append({
             "path": rel_path,
             "tool": tn,
+            "tool_code": (binding.code or "") if binding else "",
+            "resolution": binding.status if binding else "orphan",
             "description": part.tools.get(tn, {}).get("description", ""),
+            # The library is the sole authority (§3.5.2). The posted figure is carried
+            # alongside for the eye, never compared as a rule — it is the nominal size,
+            # not the widest cutting point.
             "diameter_in": fmt(dia, 4),
-            "diameter_source": dia_source,
+            "diameter_source": "library" if dia is not None else "unresolved",
             "header_diameter_in": fmt(part.tools.get(tn, {}).get("diameter_inches"), 4),
-            "library_diameter_in": fmt(tool_lib.resolve_diameter(tn), 4),
+            "library_diameter_in": fmt(dia, 4),
             "pass_count": m.get("pass_count", 0),
             "cut_feed_min_ipm": fmt(mm_to_in(m.get("cut_feed_min")), 1),
             "cut_feed_max_ipm": fmt(mm_to_in(m.get("cut_feed_max")), 1),
@@ -316,7 +326,7 @@ def audit_part(part, rel_path, tool_lib, thresholds):
             "toolpath": idx + 1,
             "tool": tn,
             "description": part.tools.get(tn, {}).get("description", ""),
-            "diameter_in": fmt(tool_lib.resolve_for_part(part, tn), 4),
+            "diameter_in": fmt(lib_dia.get(tn), 4),
             "cut_feed_min_ipm": fmt(mm_to_in(pm.get("cut_feed_min")), 1),
             "cut_feed_max_ipm": fmt(mm_to_in(pm.get("cut_feed_max")), 1),
             "plunge_feed_min_ipm": fmt(mm_to_in(pm.get("plunge_feed_min")), 1),
@@ -384,7 +394,8 @@ FILE_COLUMNS = [
 ]
 
 TOOL_COLUMNS = [
-    "path", "tool", "description", "diameter_in", "diameter_source",
+    "path", "tool", "tool_code", "resolution",
+    "description", "diameter_in", "diameter_source",
     "header_diameter_in", "library_diameter_in", "pass_count",
     "cut_feed_min_ipm", "cut_feed_max_ipm", "plunge_feed_max_ipm",
     "spindle_min_rpm", "spindle_max_rpm", "min_z_in", "max_z_in",
@@ -423,7 +434,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     cfg = config_module.load_config()
-    tool_lib = ToolLibrary(cfg.get("tools", {}))
+    tool_lib = ToolLibrary.load()
     thresholds = build_thresholds(cfg)
 
     library_path = args.library or cfg.get("library_path") or config_module.get_default_library_path()

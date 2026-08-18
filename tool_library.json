@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "code": "BB-0250",
+      "name": ".25 Bowl Bit",
+      "diameter_inches": 0.75,
+      "geometry_class": "Bowl Bit",
+      "flute_direction": "straight",
+      "cutting_length_in": null,
+      "cam_descriptions": [],
+      "default_slot": null,
+      "vendor": "Whiteside",
+      "product_link": ""
+    },
+    {
+      "code": "BN-0500",
+      "name": ".5\" Ball Nose",
+      "diameter_inches": 0.5,
+      "geometry_class": "Ball Nose",
+      "flute_direction": "up",
+      "cutting_length_in": null,
+      "cam_descriptions": [],
+      "default_slot": 1,
+      "vendor": "",
+      "product_link": ""
+    },
+    {
+      "code": "CF-1500",
+      "name": "Side Handle Bit",
+      "diameter_inches": 1.5,
+      "geometry_class": "Custom Form",
+      "flute_direction": "straight",
+      "cutting_length_in": null,
+      "cam_descriptions": [],
+      "default_slot": 7,
+      "vendor": "Rockler",
+      "product_link": ""
+    },
+    {
+      "code": "CF-2380",
+      "name": "Table Stiffener",
+      "diameter_inches": 2.38,
+      "geometry_class": "Custom Form",
+      "flute_direction": "straight",
+      "cutting_length_in": null,
+      "cam_descriptions": [],
+      "default_slot": 6,
+      "vendor": "",
+      "product_link": ""
+    },
+    {
+      "code": "EM-0512",
+      "name": "0.5\" x 1.25 End Mill",
+      "diameter_inches": 0.5,
+      "geometry_class": "Flat End Mill",
+      "flute_direction": "down",
+      "cutting_length_in": 1.25,
+      "cam_descriptions": [],
+      "default_slot": 2,
+      "vendor": "",
+      "product_link": ""
+    },
+    {
+      "code": "EM-0520",
+      "name": "0.5\" x 2.0 End Mill",
+      "diameter_inches": 0.5,
+      "geometry_class": "Flat End Mill",
+      "flute_direction": "down",
+      "cutting_length_in": 2.0,
+      "cam_descriptions": [],
+      "default_slot": 2,
+      "vendor": "",
+      "product_link": ""
+    },
+    {
+      "code": "EM-0750",
+      "name": "0.75\" End Mill",
+      "diameter_inches": 0.75,
+      "geometry_class": "Flat End Mill",
+      "flute_direction": "down",
+      "cutting_length_in": null,
+      "cam_descriptions": [],
+      "default_slot": 4,
+      "vendor": "",
+      "product_link": ""
+    },
+    {
+      "code": "EM-08MM",
+      "name": "8mm End Mill",
+      "diameter_inches": 0.3149,
+      "geometry_class": "Flat End Mill",
+      "flute_direction": "down",
+      "cutting_length_in": null,
+      "cam_descriptions": [],
+      "default_slot": 4,
+      "vendor": "",
+      "product_link": ""
+    },
+    {
+      "code": "RN-1000",
+      "name": "1\" Round Nose",
+      "diameter_inches": 1.0,
+      "geometry_class": "Ball Nose",
+      "flute_direction": "straight",
+      "cutting_length_in": null,
+      "cam_descriptions": [],
+      "default_slot": 3,
+      "vendor": "Freud",
+      "product_link": ""
+    },
+    {
+      "code": "RO-0125",
+      "name": "1/8 Roundover",
+      "diameter_inches": 0.3,
+      "geometry_class": "Roundover",
+      "flute_direction": "straight",
+      "cutting_length_in": null,
+      "cam_descriptions": [],
+      "default_slot": 5,
+      "vendor": "",
+      "product_link": ""
+    }
+  ]
+}

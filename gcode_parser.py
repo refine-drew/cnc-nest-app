@@ -178,17 +178,24 @@ def extract_blank_and_material(lines: List[str]) -> Tuple[float, float, Optional
 
 
 def _extract_diameter(text: str) -> Optional[float]:
-    """Extract tool diameter in inches from description text, trying multiple formats."""
-    # Pattern 1: {N inch...} — curly brace notation, singular or plural
+    """Tool diameter in inches from a VCarve description, or None.
+
+    **Display only.** The identity library is the sole diameter authority (spec §3.5.2):
+    it declares the tool's *maximum cutting diameter*, which no file supplies and which
+    differs from a posted nominal size by design on every profile bit.
+
+    The bare-decimal fallback that used to sit here — any `\\d+\\.\\d+` in the text — is
+    **retired and must not come back**. With identity now carried by a shop code typed
+    into the VCarve tool name, it would read `RK-004` as a 0.04" cutter: a 25×
+    under-inflation of the X envelope and the tool-radius collision check, which is the
+    crash direction.
+    """
+    # {N inch...} — curly brace notation, singular or plural
     m = re.search(r'\{([\d.]+)\s+inch', text, re.IGNORECASE)
     if m:
         return float(m.group(1))
-    # Pattern 2: N inch... — number before 'inch' without braces (e.g. ".5 inches Dia")
+    # N inch... — number before 'inch' without braces (e.g. ".5 inches Dia")
     m = re.search(r'([\d.]+)\s+inch', text, re.IGNORECASE)
-    if m:
-        return float(m.group(1))
-    # Pattern 3: bare decimal number only (e.g. ROUNDOVER 0.125); integer-only values ignored
-    m = re.search(r'\b(\d+\.\d+)\b', text)
     if m:
         return float(m.group(1))
     return None

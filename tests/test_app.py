@@ -14,50 +14,33 @@ from app import app
 from runtime_estimator import DEFAULT_TOOL_CHANGE_SECONDS
 
 
-@pytest.fixture(autouse=True)
-def reset_state():
-    """Clear in-memory state and restore config before every test."""
-    app_module._loaded.clear()
-    app_module._placements.clear()
-    app_module._placement_paths.clear()
-    app_module._instance_counts.clear()
-    yield
-
-
-@pytest.fixture()
-def client():
-    app.config["TESTING"] = True
-    with app.test_client() as c:
-        yield c
-
-
 # ── /api/config ───────────────────────────────────────────────────────────────
 
 def test_get_config(client):
     r = client.get("/api/config")
     assert r.status_code == 200
     data = r.get_json()
-    assert "tools" in data
     assert "advanced" in data
 
 
-def test_post_config_updates_tool(client, tmp_path, monkeypatch):
-    # Point config output at tmp_path so save_config doesn't touch the real file
+def test_config_no_longer_carries_a_tool_map(client, monkeypatch):
+    """`config.json`'s pocket-keyed `tools` map is deleted, not migrated (spec §8).
+
+    It was junk in its entirety: `T4` "Table Stiff" declared 0.75" for a cutter that is
+    actually 2.38", so carrying it over would have imported a number that under-inflates
+    the X envelope by 1.6" on a real tool. Nothing keyed by *pocket* survives into a
+    library keyed by *identity*, which is the whole point of §1.
+    """
     import config as cfg_mod
-    real_path = cfg_mod.get_config_path()
+    monkeypatch.setattr(cfg_mod, "save_config", lambda data: None)
+    monkeypatch.setattr(app_module, "save_config", lambda data: None)
 
-    def fake_save(data):
-        pass  # no-op for tests
+    assert "tools" not in client.get("/api/config").get_json()
 
-    monkeypatch.setattr(cfg_mod, "save_config", fake_save)
-    r = client.post(
-        "/api/config",
-        data=json.dumps({"tools": {"T99": {"name": "test", "diameter_inches": 0.1}}}),
-        content_type="application/json",
-    )
+    # And the settings panel cannot put one back.
+    r = client.post("/api/config", json={"tools": {"T99": {"diameter_inches": 0.1}}})
     assert r.status_code == 200
-    data = r.get_json()
-    assert "T99" in data["tools"]
+    assert "tools" not in r.get_json()
 
 
 def test_post_config_normalizes_library_paths(client, monkeypatch):
@@ -198,7 +181,7 @@ def test_library_scans_nc_files(client, tmp_path, monkeypatch):
     nc = tmp_path / "part.nc"
     nc.write_text(
         "( Material Size)\n( X= 100.0, Y= 200.0, Z= 19.0)\n"
-        "(T2 = End Mill {0.5 inches})\nG00 X0 Y0\nG01 X10 Y10\n"
+        "(T2 = EM-0500 End Mill {0.5 inches})\nG00 X0 Y0\nG01 X10 Y10\n"
     )
     monkeypatch.setitem(app_module.config, "library_path", str(tmp_path))
     r = client.get("/api/library")
@@ -228,7 +211,7 @@ def test_load_file_parses_and_returns_metadata(client, tmp_path, monkeypatch):
     nc = tmp_path / "602894-3.nc"
     nc.write_text(
         "( Material Size)\n( X= 426.0, Y= 648.0, Z= 19.05)\n"
-        "(T2 = End Mill {0.5 inches})\nG43 H2 Z44.4754\nT2 M06\n"
+        "(T2 = EM-0500 End Mill {0.5 inches})\nG43 H2 Z44.4754\nT2 M06\n"
         "G01 X10 Y10 Z-0.254\nM30\n"
     )
     monkeypatch.setitem(app_module.config, "library_path", str(tmp_path))
@@ -258,7 +241,7 @@ def test_load_file_path_traversal_blocked(client, tmp_path, monkeypatch):
 
 NC_CONTENT = (
     "( Material Size)\n( X= 100.0, Y= 100.0, Z= 19.05)\n"
-    "(T2 = End Mill {0.5 inches})\nG43 H2 Z44.4754\nT2 M06\n"
+    "(T2 = EM-0500 End Mill {0.5 inches})\nG43 H2 Z44.4754\nT2 M06\n"
     "G01 X50 Y50 Z-0.254\nM30\n"
 )
 
@@ -291,9 +274,12 @@ def test_job_safe_z_is_driven_by_stock_when_that_is_higher(client, tmp_path, mon
 
 def test_job_safe_z_honours_a_file_retract_above_stock_clearance(client, tmp_path, monkeypatch):
     """A part with a feature above the stock top retracts higher than the stock rule (#22)."""
+    # Fusion-posted, so the code arrives in the TOOLID comment's PRODUCT field rather
+    # than in a VCarve tool name. Note the blank VENDOR: emitted empty, never omitted.
     tall = (
         "( Material Size)\n( X= 100.0, Y= 100.0, Z= 19.05)\n"
         "(T2 D=12.7 CR=0. - ZMIN=14.605 - FLAT END MILL)\n"
+        "(TOOLID T2 VENDOR= PRODUCT=EM-0500 FLUTES=3)\n"
         "T2 M06\nG43 Z57.15 H02\nG01 X50 Y50 Z14.605\nM30\n"
     )
     _seed_library(tmp_path, monkeypatch, {"tall.nc": tall})
@@ -318,7 +304,7 @@ def test_place_invalid_rail_rejected(client, tmp_path, monkeypatch):
 def test_place_blocked_file_rejected(client, tmp_path, monkeypatch):
     legacy = (
         "( Material Size)\n( X= 100.0, Y= 100.0, Z= 19.05)\n"
-        "(T2 = End Mill {0.5 inches})\nT2 M06\nG01 X50 Y50 Z-19.304\nM30\n"
+        "(T2 = EM-0500 End Mill {0.5 inches})\nT2 M06\nG01 X50 Y50 Z-19.304\nM30\n"
     )
     _seed_library(tmp_path, monkeypatch, {"legacy.nc": legacy})
     r = client.post("/api/place", json={"path": "legacy.nc", "rail": "A", "slot_inches": 39})
@@ -334,7 +320,7 @@ def test_place_collision_returns_409(client, tmp_path, monkeypatch):
     # But with min_vx=-400, toolpath max_y = slot_mark - min_vx = 1727.2+400=2127.2 > 1857.4 → collision!
     oversized = (
         "( Material Size)\n( X= 200.0, Y= 100.0, Z= 19.05)\n"
-        "(T2 = End Mill {0.5 inches})\nT2 M06\n"
+        "(T2 = EM-0500 End Mill {0.5 inches})\nT2 M06\n"
         "G01 X100 Y10 Z-0.254\nG01 X-400 Y10 Z-0.254\nM30\n"
     )
     _seed_library(tmp_path, monkeypatch, {"big.nc": oversized})
@@ -377,38 +363,63 @@ def test_place_multiple_instances_get_unique_ids(client, tmp_path, monkeypatch):
     assert r1.get_json()["instance_id"] != r2.get_json()["instance_id"]
 
 
-# ── /api/compatibility ────────────────────────────────────────────────────────
+# ── /api/changer — what retired the compatibility panel ──────────────────────
 
-def test_compatibility_no_conflict(client, tmp_path, monkeypatch):
+def test_two_files_sharing_one_cutter_make_one_dock_entry(client, tmp_path, monkeypatch):
     same_tool = (
         "( Material Size)\n( X=100, Y=100, Z=19)\n"
-        "(T2 = End Mill {0.5 inches})\nT2 M06\nG01 X10 Y10 Z-0.254\nM30\n"
+        "(T2 = EM-0500 End Mill {0.5 inches})\nT2 M06\nG01 X10 Y10 Z-0.254\nM30\n"
     )
     _seed_library(tmp_path, monkeypatch, {"a.nc": same_tool, "b.nc": same_tool})
     client.post("/api/place", json={"path": "a.nc", "rail": "A", "slot_inches": 39})
     client.post("/api/place", json={"path": "b.nc", "rail": "A", "slot_inches": 26})
-    r = client.get("/api/compatibility")
-    data = r.get_json()
-    assert data["has_conflict"] is False
+
+    st = client.get("/api/changer").get_json()
+    assert [t["code"] for t in st["tools"]] == ["EM-0500"]
+    assert st["tools"][0]["part_count"] == 2
+    assert st["valid"] is True
 
 
-def test_compatibility_detects_conflict(client, tmp_path, monkeypatch):
+def test_two_files_whose_t2_is_a_different_cutter_do_not_merge(client, tmp_path, monkeypatch):
+    """The case `_tool_compatibility` was sound on. The dock separates them by identity
+    rather than by noticing their description strings differ."""
     file_a = (
         "( Material Size)\n( X=100, Y=100, Z=19)\n"
-        "(T2 = End Mill {0.5 inches})\nT2 M06\nG01 X10 Y10 Z-0.254\nM30\n"
+        "(T2 = EM-0500 End Mill {0.5 inches})\nT2 M06\nG01 X10 Y10 Z-0.254\nM30\n"
     )
     file_b = (
         "( Material Size)\n( X=100, Y=100, Z=19)\n"
-        "(T2 = Spiral Bit {0.5 inches})\nT2 M06\nG01 X10 Y10 Z-0.254\nM30\n"
+        "(T2 = SB-0500 Spiral Bit {0.5 inches})\nT2 M06\nG01 X10 Y10 Z-0.254\nM30\n"
     )
     _seed_library(tmp_path, monkeypatch, {"a.nc": file_a, "b.nc": file_b})
     client.post("/api/place", json={"path": "a.nc", "rail": "A", "slot_inches": 39})
     client.post("/api/place", json={"path": "b.nc", "rail": "A", "slot_inches": 26})
-    r = client.get("/api/compatibility")
-    data = r.get_json()
-    assert data["has_conflict"] is True
-    conflicts = [t for t in data["matrix"] if t["conflict"]]
-    assert any(t["tool_number"] == "T2" for t in conflicts)
+
+    st = client.get("/api/changer").get_json()
+    assert sorted(t["code"] for t in st["tools"]) == ["EM-0500", "SB-0500"]
+    # Different declared slots, so nothing to resolve — they simply do not merge.
+    assert st["valid"] is True
+
+
+def test_two_different_cutters_sharing_a_stale_description_are_still_separated(
+        client, tmp_path, monkeypatch):
+    """The case `_tool_compatibility` was BLIND to, and the reason its signal had to go.
+
+    `conflict` fired only when one `T#` carried *differing* description strings, so two
+    genuinely different cutters posting a byte-identical stale string sailed through
+    into a merged block — the inverse failure §3.1 warns about. The real library has
+    exactly this case. Identity is not read out of the string at all now.
+    """
+    body = "\nT2 M06\nG01 X10 Y10 Z-0.254\nM30\n"
+    header = "( Material Size)\n( X=100, Y=100, Z=19)\n"
+    file_a = header + "(T2 = EM-0500 End Mill {0.5 inches})" + body
+    file_b = header + "(T2 = SB-0500 End Mill {0.5 inches})" + body   # same words
+    _seed_library(tmp_path, monkeypatch, {"a.nc": file_a, "b.nc": file_b})
+    client.post("/api/place", json={"path": "a.nc", "rail": "A", "slot_inches": 39})
+    client.post("/api/place", json={"path": "b.nc", "rail": "A", "slot_inches": 26})
+
+    st = client.get("/api/changer").get_json()
+    assert sorted(t["code"] for t in st["tools"]) == ["EM-0500", "SB-0500"]
 
 
 # ── /api/generate ─────────────────────────────────────────────────────────────
@@ -433,29 +444,42 @@ def test_generate_writes_nc_and_pdf(client, tmp_path, monkeypatch):
         assert f.read(5) == b"%PDF-"
 
 
-def test_generate_blocked_by_tool_conflict(client, tmp_path, monkeypatch):
+def test_generate_blocked_by_a_contested_pocket(client, tmp_path, monkeypatch,
+                                                isolated_library):
+    """The gate is the same 422 that has always been here, pointed at a sound signal."""
+    from tests.conftest import make_tool
+    isolated_library.upsert(make_tool("EM-0500", default_slot=2))
+    isolated_library.upsert(make_tool("SB-0500", default_slot=2))    # same home
     file_a = (
         "( Material Size)\n( X=100, Y=100, Z=19)\n"
-        "(T2 = End Mill {0.5 inches})\nT2 M06\nG01 X10 Y10 Z-0.254\nM30\n"
+        "(T2 = EM-0500 End Mill {0.5 inches})\nT2 M06\nG01 X10 Y10 Z-0.254\nM30\n"
     )
     file_b = (
         "( Material Size)\n( X=100, Y=100, Z=19)\n"
-        "(T2 = Spiral Bit {0.5 inches})\nT2 M06\nG01 X10 Y10 Z-0.254\nM30\n"
+        "(T2 = SB-0500 Spiral Bit {0.5 inches})\nT2 M06\nG01 X10 Y10 Z-0.254\nM30\n"
     )
     _seed_library(tmp_path, monkeypatch, {"a.nc": file_a, "b.nc": file_b})
     client.post("/api/place", json={"path": "a.nc", "rail": "A", "slot_inches": 39})
     client.post("/api/place", json={"path": "b.nc", "rail": "A", "slot_inches": 26})
     r = client.post("/api/generate", json={})
     assert r.status_code == 422
+    assert r.get_json()["error"] == "changer_map_invalid"
 
 
 def test_generate_blocked_when_over_tool_capacity(client, tmp_path, monkeypatch):
-    """A job needing more distinct tools than the changer holds must be refused."""
+    """Nine tools, eight pockets.
+
+    Capacity is **not a rule of its own** (§3.4): rules 2 and 3 — every resolved tool in
+    exactly one pocket, no pocket holding two — make a ninth tool unsatisfiable on their
+    own, so it is simply a tool with nowhere to go, sitting in "needs a home" with
+    Generate disabled. Nothing is refused at *placement*, because identity merging can
+    still lower the count.
+    """
     header = "( Material Size)\n( X=100, Y=100, Z=19)\n"
     files = {}
     for n in range(1, 10):  # T1..T9 across nine parts = 9 distinct tools
         files[f"p{n}.nc"] = (
-            f"{header}(T{n} = Tool {n} {{0.25 inches}})\n"
+            f"{header}(T{n} = TT-{n:04d} Tool {n} {{0.25 inches}})\n"
             f"T{n} M06\nG01 X10 Y10 Z-0.254\nM30\n"
         )
     _seed_library(tmp_path, monkeypatch, files)
@@ -466,12 +490,15 @@ def test_generate_blocked_when_over_tool_capacity(client, tmp_path, monkeypatch)
     for n, slot in zip(range(1, 10), slots):
         client.post("/api/place", json={"path": f"p{n}.nc", "rail": "A", "slot_inches": slot})
 
+    # Every one of the nine placements is accepted — only generation is gated.
+    assert len(app_module._placements) == 9
+
     r = client.post("/api/generate", json={})
     assert r.status_code == 422
     body = r.get_json()
-    assert body["error"] == "tool_capacity_exceeded"
-    assert "9 tools" in body["message"]
-    assert "holds only 8" in body["message"]
+    assert body["error"] == "changer_map_invalid"
+    assert "no home" in body["message"] and "changer is full" in body["message"]
+    assert body["changer"]["staged"] == ["TT-0009"]
     # Nothing should have been written.
     assert not list(tmp_path.glob("*.nc")) or all(
         p.name.startswith("p") for p in tmp_path.glob("*.nc")
@@ -495,13 +522,13 @@ def test_placements_report_tool_capacity(client, tmp_path, monkeypatch):
 
 _T1_THEN_T2 = (
     "( Material Size)\n( X=100, Y=100, Z=19)\n"
-    "(T1 = End Mill {0.25 inches})\n(T2 = Spiral Bit {0.5 inches})\n"
+    "(T1 = EM-0250 End Mill {0.25 inches})\n(T2 = SB-0500 Spiral Bit {0.5 inches})\n"
     "T1 M06\nG01 X10 Y10 Z-0.254\nG53 G49 Z0\nM05\n"
     "T2 M06\nG01 X20 Y20 Z-0.254\nG53 G49 Z0\nM05\nM30\n"
 )
 _T2_THEN_T1 = (
     "( Material Size)\n( X=100, Y=100, Z=19)\n"
-    "(T1 = End Mill {0.25 inches})\n(T2 = Spiral Bit {0.5 inches})\n"
+    "(T1 = EM-0250 End Mill {0.25 inches})\n(T2 = SB-0500 Spiral Bit {0.5 inches})\n"
     "T2 M06\nG01 X10 Y10 Z-0.254\nG53 G49 Z0\nM05\n"
     "T1 M06\nG01 X20 Y20 Z-0.254\nG53 G49 Z0\nM05\nM30\n"
 )
@@ -548,57 +575,3 @@ def test_job_runtime_charges_every_tool_change(client, tmp_path, monkeypatch):
     assert info["runtime_seconds"] == pytest.approx(
         cutting + 4 * DEFAULT_TOOL_CHANGE_SECONDS, abs=0.01,
     )
-
-
-# ── /api/save-job and /api/load-job ──────────────────────────────────────────
-
-def test_save_and_reload_job(client, tmp_path, monkeypatch):
-    _seed_library(tmp_path, monkeypatch)
-    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
-    client.post("/api/place", json={"path": "part.nc", "rail": "A", "slot_inches": 39})
-
-    save_r = client.post("/api/save-job", json={"job_name": "myjob"})
-    assert save_r.status_code == 200
-    cnj_path = save_r.get_json()["path"]
-    assert os.path.isfile(cnj_path)
-
-    # Clear state and reload
-    app_module._placements.clear()
-    app_module._placement_paths.clear()
-
-    load_r = client.post("/api/load-job", json={"path": cnj_path})
-    assert load_r.status_code == 200
-    data = load_r.get_json()
-    assert data["ok"] is True
-    assert len(data["placements"]) == 1
-    assert data["placements"][0]["slot"] == "A39"
-
-
-def test_save_job_no_parts_returns_400(client):
-    r = client.post("/api/save-job", json={})
-    assert r.status_code == 400
-
-
-def test_load_job_missing_file_returns_404(client):
-    r = client.post("/api/load-job", json={"path": "/nonexistent/job.cnj"})
-    assert r.status_code == 404
-
-
-def test_load_job_missing_library_file_warns(client, tmp_path, monkeypatch):
-    monkeypatch.setitem(app_module.config, "library_path", str(tmp_path))
-    job = {
-        "version": "1.0",
-        "created": "2026-01-01T00:00:00",
-        "job_name": "test",
-        "placements": [
-            {"filename": "ghost.nc", "path": "ghost.nc", "rail": "A", "slot_inches": 39, "instance_id": "ghost_1"}
-        ],
-    }
-    cnj = tmp_path / "test.cnj"
-    cnj.write_text(json.dumps(job))
-    r = client.post("/api/load-job", json={"path": str(cnj)})
-    assert r.status_code == 200
-    data = r.get_json()
-    assert len(data["warnings"]) == 1
-    assert "ghost.nc" in data["warnings"][0]
-    assert data["placements"] == []

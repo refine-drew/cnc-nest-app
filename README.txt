@@ -18,11 +18,9 @@ WINDOWS SETUP
 
 4. Double-click launch.bat
 
-5. Browser opens automatically at http://localhost:5000
+5. Browser opens automatically at http://localhost:5001
 
 To update: just double-click launch.bat again (pulls latest automatically)
-
-Note: Windows Firewall may ask to allow Python network access — click Allow.
 
 
 MAC SETUP
@@ -40,7 +38,7 @@ MAC SETUP
 4. Double-click launch.command
    (If macOS blocks it: right-click → Open → Open)
 
-5. Browser opens automatically at http://localhost:5000
+5. Browser opens automatically at http://localhost:5001
 
 To update: just double-click launch.command again (pulls latest automatically)
 
