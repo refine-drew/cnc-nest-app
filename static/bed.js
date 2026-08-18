@@ -57,7 +57,7 @@ var BedCanvas = (() => {
   // ── part colors ───────────────────────────────────────────────────────────
   const PALETTE = [
     "#4dabf7","#69db7c","#ffd43b","#f783ac","#a9e34b",
-    "#74c0fc","#63e6be","#ffa94d","#da77f2","#4dabf7",
+    "#74c0fc","#63e6be","#ffa94d","#da77f2","#66d9e8",
   ];
   const partColors = new Map(); // filename → color
   let colorIdx = 0;
@@ -723,7 +723,7 @@ var BedCanvas = (() => {
   }
 
   // ── public API ────────────────────────────────────────────────────────────
-  return { init, render, beginDrag, endDrag, getColor, fitToWindow };
+  return { init, render, beginDrag, endDrag, getColor, fitToWindow, PALETTE };
 })();
 
 document.addEventListener("DOMContentLoaded", () => BedCanvas.init());

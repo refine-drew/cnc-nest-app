@@ -91,20 +91,108 @@ body.resizing{user-select:none;cursor:col-resize}
 .placement-row .pname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#ccc}
 .placement-row .remove-btn{background:none;border:none;color:#666;font-size:13px;padding:0;cursor:pointer}
 .placement-row .remove-btn:hover{color:#ff453a}
-#compat-section{padding:6px 8px;border-bottom:1px solid #333}
-.compat-row{display:flex;flex-direction:column;padding:3px 0;border-bottom:1px solid #2a2a2a}
-.compat-main{display:flex;align-items:center;gap:6px;font-size:12px}
-.compat-desc{color:#888;font-size:11px}
-.compat-files{font-size:10px;color:#555;padding-left:20px;margin-top:1px}
-.compat-ok{color:#30d158}
-.compat-conflict{color:#ff453a}
+.placement-row .frees{font-size:10px;color:#8a8a70;white-space:nowrap}
 #job-stats{padding:8px 10px;font-size:12px;color:#888;line-height:1.8}
 #job-stats .val{color:#ccc}
 #safe-z-info{padding:6px 10px;font-size:12px;border-top:1px solid #333}
 
+/* ── tool changer dock (issue #11, spec §3.4.1) ────────────────────────────
+   Full window width, above the status bar, and it CANNOT be collapsed while the
+   map is invalid — a disabled Generate always has a visible reason on screen. */
+:root{--bad:#ff453a;--warn:#ffd60a;--good:#30d158;--accent:#0a84ff}
+#dock{flex:none;background:#242426;border-top:1px solid #333}
+#dock-head{display:flex;align-items:center;gap:10px;padding:0 10px;height:28px;cursor:pointer;user-select:none}
+#dock-head .lbl{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#888}
+#dock-head.locked{cursor:default}
+#dock-head.locked #dock-chev{opacity:.3}
+#dock-verdict{font-size:11.5px;display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#dock-verdict .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+#dock-chev{color:#888;font-size:10px;padding:0 2px}
+.v-error{color:var(--bad)}.v-warning{color:var(--warn)}.v-ok{color:var(--good)}
+#dock-body{padding:0 8px 8px;display:flex;flex-direction:column;gap:6px}
+#dock.collapsed #dock-body{display:none}
+#dock-pockets{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:5px}
+.pocket{background:#202022;border:1px solid #333;border-radius:5px;min-height:92px;display:flex;flex-direction:column;transition:border-color .12s,background .12s;min-width:0}
+.pocket-no{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:#5f5f63;padding:3px 6px 2px;letter-spacing:.06em;display:flex;justify-content:space-between;align-items:center}
+.pocket-no .free{text-transform:uppercase;letter-spacing:.1em;font-size:9px}
+.pocket-cards{flex:1;display:flex;flex-direction:column;gap:3px;padding:0 4px 4px}
+.pocket.over{border-color:var(--accent);background:#16232f}
+.pocket.dbl{border-color:var(--bad);background:#251618;box-shadow:inset 0 0 0 1px #4a1e1e}
+.pocket.dbl .pocket-no{color:var(--bad)}
+.pocket .empty{flex:1;display:flex;align-items:center;justify-content:center;color:#4a4a4e;font-size:11px;border:1px dashed #303034;border-radius:4px;margin:0 0 1px}
+.pocket.over .empty{color:var(--accent);border-color:var(--accent)}
+.tool-card{background:#2c2c2e;border:1px solid #3c3c40;border-left:3px solid #4dabf7;border-radius:4px;padding:4px 6px;cursor:grab;min-width:0}
+.tool-card:hover{background:#343438}
+.tool-card.dragging{opacity:.35}
+.tool-card .nm{font-size:11.5px;color:#e6e6e6;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-card .geo{font-size:10px;color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tool-card .row{display:flex;gap:4px;align-items:center;margin-top:3px;flex-wrap:wrap}
+.chip{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9.5px;padding:0 3px;border-radius:2px;background:#38383c;color:#b9b9bd;white-space:nowrap}
+.chip.remap{background:#1f3348;color:#8fc4ff}
+.chip.parts{background:#333;color:#a8a8ac}
+.chip.home{background:#3a3413;color:var(--warn)}
+.tool-card.orphan{border-left-color:var(--warn);background:#2e2a1c;cursor:pointer}
+.tool-card.orphan .nm{color:var(--warn)}
+.staging{display:flex;align-items:flex-start;gap:8px;background:#232320;border:1px solid #3a3a2e;border-left:3px solid var(--warn);border-radius:5px;padding:5px 7px;transition:border-color .12s}
+.staging.over{border-color:var(--accent);background:#16232f}
+.staging .st-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--warn);padding-top:4px;white-space:nowrap;flex:none}
+.staging .st-cards{display:flex;gap:5px;flex-wrap:wrap;flex:1}
+.staging .st-cards .tool-card{width:190px}
+.staging .st-hint{font-size:11px;color:#888;flex:none;padding-top:4px;max-width:320px;text-align:right}
+.dock-advice{background:#251618;border:1px solid #4a1e1e;border-left:3px solid var(--bad);border-radius:5px;padding:5px 8px;font-size:11.5px;color:#dcc}
+.dock-advice .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--bad);margin-right:5px}
+#dock-pop{position:fixed;z-index:60;width:300px;background:#2a2a2c;border:1px solid #4a4a4e;border-radius:6px;padding:9px 10px;font-size:11.5px;box-shadow:0 14px 34px -12px #000;pointer-events:none;display:none}
+#dock-pop.show{display:block}
+#dock-pop .p-nm{font-size:12.5px;font-weight:600;color:#fff;display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+#dock-pop .p-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--accent);flex:none}
+#dock-pop .p-geo{color:#aaa;margin-top:2px}
+#dock-pop .p-slot{margin-top:5px;color:#888}
+#dock-pop .p-slot .off{color:var(--warn)}
+#dock-pop .p-h{margin-top:7px;font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:#5f5f63}
+#dock-pop table{width:100%;border-collapse:collapse;margin-top:2px}
+#dock-pop td{padding:1px 0;color:#cfcfd3;font-size:11px}
+#dock-pop td.t{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#8fc4ff;text-align:right;width:52px}
+#dock-pop .p-sole{margin-top:7px;padding-top:6px;border-top:1px solid #3c3c40;color:var(--warn);font-size:11px}
+
+/* ── tool library manager (issue #24) ── */
+#toollib-panel{display:none;position:fixed;inset:0;z-index:96;background:rgba(0,0,0,.55);align-items:center;justify-content:center}
+#toollib-panel.open{display:flex}
+.toollib-box{background:#2c2c2e;border:1px solid #444;border-radius:8px;padding:16px;width:92vw;max-width:980px;height:82vh;display:flex;flex-direction:column}
+.toollib-head{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.toollib-head h3{font-size:14px}
+.toollib-body{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:14px;min-height:0}
+#toollib-list{overflow-y:auto;border:1px solid #333;border-radius:5px}
+.tl-row{display:grid;grid-template-columns:88px minmax(0,1fr) minmax(0,1.1fr) auto;gap:8px;align-items:center;padding:6px 9px;border-bottom:1px solid #2a2a2a;cursor:pointer;font-size:12px}
+.tl-row:hover{background:#333}
+.tl-row.on{background:#1f3348}
+.tl-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--accent)}
+.tl-name{color:#ddd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tl-geo{color:#888;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tl-flags{display:flex;gap:3px}
+.tl-empty{padding:20px;text-align:center;color:#666}
+#toollib-form{overflow-y:auto;border:1px solid #333;border-radius:5px;padding:12px;display:flex;flex-direction:column;gap:9px}
+.tl-form-head{font-size:13px;font-weight:600;color:#ddd;margin-bottom:2px}
+.tl-field{display:flex;flex-direction:column;gap:3px;min-width:0}
+.tl-field label{font-size:11px;color:#aaa}
+.tl-field label small{display:block;color:#777;font-size:10px;font-weight:400;line-height:1.35;margin-top:1px}
+.tl-field input,.tl-field select{background:#242426;border:1px solid #444;color:#e0e0e0;border-radius:4px;padding:4px 7px;font:inherit;font-size:12px;width:100%}
+.tl-row2{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.tl-descs{display:flex;flex-direction:column;gap:2px}
+.tl-descs code{font-size:11px;color:#cfd6dd;background:#242426;border-radius:3px;padding:1px 4px}
+.tl-inuse{font-size:11px;color:#888;border-top:1px solid #333;padding-top:7px}
+.tl-actions{display:flex;gap:8px;margin-top:6px}
+.tl-error{color:var(--bad);font-size:11.5px;min-height:14px}
+
 /* ── modals ── */
-#modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
-#modal-overlay.open{display:flex}
+#modal-overlay,#resolve-overlay,#seal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
+#modal-overlay.open,#resolve-overlay.open,#seal-overlay.open{display:flex}
+.modal .readout{background:#242426;border:1px solid #3a3a3c;border-radius:4px;padding:6px 8px;font-size:11.5px;color:#cfd6dd;word-break:break-word}
+.modal .readout code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.modal select{background:#242426;border:1px solid #444;color:#e0e0e0;border-radius:4px;padding:5px 8px;font:inherit;font-size:12px;width:100%}
+.modal .err{color:var(--bad);font-size:11.5px;min-height:14px;margin-top:6px}
+.modal .note{color:#777;font-size:11px;line-height:1.5}
+.seal-cmp{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:baseline;margin:10px 0}
+.seal-cmp .k{font-size:11px;color:#888;white-space:nowrap}
 .modal{background:#2c2c2e;border:1px solid #444;border-radius:8px;padding:20px;min-width:320px;max-width:480px}
 .modal h3{font-size:14px;margin-bottom:12px;color:#e0e0e0}
 .modal p{color:#aaa;font-size:12px;margin-bottom:10px;line-height:1.5}
@@ -160,6 +248,7 @@ table.audit td.feed-varies{color:#ffd60a}
   <input type="text" id="job-name-input" placeholder="auto" style="width:160px"/>
   <button id="btn-generate" class="primary" disabled>Generate G-code</button>
   <div class="sep"></div>
+  <button id="btn-tools" title="Tool library — identity, diameters and usual pockets">Tools</button>
   <button id="btn-audit" title="Audit all library files for best-practice issues">Audit Library</button>
   <button id="btn-settings" title="Settings">⚙</button>
 </div>
@@ -197,8 +286,9 @@ table.audit td.feed-varies{color:#ffd60a}
   <div id="sidebar-right" class="sidebar">
     <h2>Placements</h2>
     <div id="placements-list"></div>
-    <h2>Tool Compatibility</h2>
-    <div id="compat-section"></div>
+    <!-- "Tool Compatibility" lived here. The changer dock replaces it — that panel
+         existed to show the symptom this feature removes, and it is where the dock's
+         screen budget came from (spec §3.4.1). -->
     <h2>Job Info</h2>
     <div id="safe-z-info" style="font-size:12px;color:#888">Safe Z: —</div>
     <div id="job-stats">
@@ -212,6 +302,22 @@ table.audit td.feed-varies{color:#ffd60a}
 
 </div>
 
+<!-- ── tool changer dock ── -->
+<div id="dock" style="display:none">
+  <div id="dock-head">
+    <span class="lbl">Tool changer</span>
+    <span id="dock-verdict"></span>
+    <div style="flex:1"></div>
+    <button id="dock-reset" title="Put every tool back in the pocket the library declares">Reset pockets</button>
+    <span id="dock-chev">▼</span>
+  </div>
+  <div id="dock-body">
+    <div id="dock-pockets"></div>
+    <div id="dock-staging"></div>
+  </div>
+</div>
+<div id="dock-pop"></div>
+
 <!-- ── status bar ── -->
 <div id="statusbar">
   <div class="sb-item"><span id="sb-placed">0</span> placed</div>
@@ -221,22 +327,74 @@ table.audit td.feed-varies{color:#ffd60a}
   <div class="sb-item" id="sb-message" style="flex:1"></div>
 </div>
 
-<!-- ── unknown tool modal ── -->
-<div id="modal-overlay">
-  <div class="modal" id="modal-unknown-tool">
-    <h3>Unknown Tool Diameter</h3>
-    <p id="modal-tool-desc">Tool <strong id="modal-tool-num"></strong> has no diameter. Enter it to continue placement.</p>
+<!-- ── identify a tool the library does not know (spec §3.5.3) ──
+     Every file in the library predates the shop code, so this is the expected
+     first encounter with each of them — not a failure. Two clicks for a one-off. -->
+<div id="resolve-overlay">
+  <div class="modal" style="min-width:440px">
+    <h3>Which tool is this?</h3>
+    <p><strong id="resolve-tool"></strong> in <strong id="resolve-file"></strong>
+       — <span id="resolve-why"></span></p>
     <div class="field">
-      <label>Diameter (inches)</label>
-      <input type="text" id="modal-tool-dia" placeholder="e.g. 0.5"/>
+      <label>What the file says</label>
+      <div class="readout"><code id="resolve-posted"></code></div>
     </div>
-    <div class="field" style="display:flex;align-items:center;gap:8px">
-      <input type="checkbox" id="modal-tool-save" checked/>
-      <label for="modal-tool-save" style="font-size:12px;color:#aaa">Save to tool library</label>
+    <p class="note" id="resolve-dia"></p>
+    <div class="field" style="margin-top:10px">
+      <label>Bind it to a tool in your library, just for this job</label>
+      <select id="resolve-pick"></select>
     </div>
+    <p class="note">Nothing is remembered — the next job asks again unless the code
+       is typed into Fusion's Product id or the VCarve tool name.</p>
+    <div class="err" id="resolve-error"></div>
     <div class="actions">
-      <button id="modal-tool-cancel">Cancel</button>
-      <button id="modal-tool-confirm" class="primary">Confirm</button>
+      <span style="flex:1;color:#777;font-size:11px" id="resolve-count"></span>
+      <button id="resolve-cancel">Cancel</button>
+      <button id="resolve-create">Add it to the library…</button>
+      <button id="resolve-bind" class="primary">Use this tool</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── the description seal (spec §3.5.3) ──
+     Blocks rather than warns: it is the only cross-file detector of one code on two
+     physical cutters, and a warning on a crash-class check gets clicked through.
+     Both strings must be on screen — reading them is the whole check. -->
+<div id="seal-overlay">
+  <div class="modal" style="min-width:460px">
+    <h3>Is this the same cutter?</h3>
+    <p><strong id="seal-code"></strong><span id="seal-name"></span> posts a description
+       it has never posted before, in <strong id="seal-file"></strong>.</p>
+    <div class="seal-cmp">
+      <span class="k">Previously posted as</span>
+      <div class="readout" id="seal-known"></div>
+      <span class="k">This file posts</span>
+      <div class="readout" id="seal-posted"></div>
+    </div>
+    <p class="note">If you renamed it in CAM, say so and both names are accepted from
+       now on. If they are two different cutters, one of them needs its own code —
+       otherwise this job would cut one of them with the wrong tool.</p>
+    <div class="err" id="seal-error"></div>
+    <div class="actions">
+      <button id="seal-later">Not now</button>
+      <button id="seal-different">They are different cutters</button>
+      <button id="seal-rename" class="primary">Same cutter, I renamed it</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── tool library manager ── -->
+<div id="toollib-panel">
+  <div class="toollib-box">
+    <div class="toollib-head">
+      <h3 style="margin:0">Tool Library</h3>
+      <div style="flex:1"></div>
+      <button id="toollib-new">Add tool</button>
+      <button id="toollib-close">Close</button>
+    </div>
+    <div class="toollib-body">
+      <div id="toollib-list"></div>
+      <div id="toollib-form"></div>
     </div>
   </div>
 </div>
@@ -287,7 +445,7 @@ var App = {
   tray: [],             // array of part objects loaded into the tray
   config: {},           // from /api/config
   slots: [],            // from /api/slots
-  compatibility: {},    // from latest /api/place or /api/placements
+  changer: {},          // tool-changer map + validity gate, from /api/changer
   jobSafeZ: {},         // {value, driven_by}
   toolSequence: [],     // ordered tool list for the full job
   toolChanges: 0,
@@ -298,6 +456,7 @@ var App = {
   onPlacementsChanged() {
     if (window.BedCanvas) BedCanvas.render();
     if (window.JobPanel)  JobPanel.refresh();
+    if (window.Changer)   Changer.render();
     _updateStatusBar();
     _updateTopButtons();
   },
@@ -314,7 +473,11 @@ function _updateStatusBar() {
   const slots = App.slots.length;
   const usedSlots = new Set(App.placements.map(p => p.slot)).size;
   const emptySlots = Math.max(0, slots * 2 - usedSlots);
-  const seq = (App.toolSequence || []).join(" → ") || "—";
+  // The pockets the job will actually call, in emitted order — what the operator reads
+  // off the setup sheet. Falls back to the file's own numbers before anything resolves.
+  const pocketSeq = ((App.changer && App.changer.tools) || [])
+    .filter(t => t.pocket).sort((a, b) => a.pocket - b.pocket).map(t => "T" + t.pocket);
+  const seq = (pocketSeq.length ? pocketSeq : (App.toolSequence || [])).join(" → ") || "—";
   const util = App.utilization ?? 0;
 
   _set("sb-placed", n);
@@ -336,10 +499,23 @@ function formatDuration(seconds) {
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
+/**
+ * The Generate gate. This is the *same* gate that has been here since the original
+ * build — what changed is the signal behind it (spec §1.1, §3.4).
+ *
+ * It used to read `compatibility.has_conflict`, which fired only when one `T#` carried
+ * differing description strings. That is sound in the safe direction and blind in the
+ * dangerous one: two genuinely different cutters sharing a stale identical string sailed
+ * straight through into a merged block. It now reads the changer map's three rules —
+ * every file tool resolved, every resolved tool in exactly one pocket, no pocket holding
+ * two — and the dock beside it says which one is failing.
+ */
 function _updateTopButtons() {
   const hasPlaced = App.placements.length > 0;
-  const noConflict = !App.compatibility.has_conflict;
-  document.getElementById("btn-generate").disabled = !(hasPlaced && noConflict);
+  const mapValid  = !!(App.changer && App.changer.valid);
+  const btn = document.getElementById("btn-generate");
+  btn.disabled = !(hasPlaced && mapValid);
+  btn.title = hasPlaced && !mapValid ? "The tool changer map is not valid yet — see the dock below" : "";
 }
 
 function _set(id, val) {
@@ -441,6 +617,8 @@ function _set(id, val) {
 })();
 </script>
 
+<script src="/static/toollib.js"></script>
+<script src="/static/changer.js"></script>
 <script src="/static/bed.js"></script>
 <script src="/static/sidebar.js"></script>
 <script src="/static/placement.js"></script>

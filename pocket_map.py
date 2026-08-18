@@ -108,6 +108,9 @@ def build_changer_state(
             unresolved.append({
                 "instance_id": placed["instance_id"],
                 "filename": placed["filename"],
+                # Carried so the dock can bind this orphan: a bind is scoped to
+                # (path, T#), and the filename alone cannot locate the file.
+                "path": placed.get("path", placed["filename"]),
                 "slot": placed["slot"],
                 "tool_number": tn,
                 "status": binding.status,
@@ -248,9 +251,12 @@ def _removal_advice(frees_by_instance: Dict[str, int], placements: List[dict]) -
     if not candidates:
         return ("Every part shares its tools with another, so taking any single one off "
                 "the bed will not free a pocket.")
-    parts = [f"removing {names.get(iid, iid)} frees {n} pocket{'s' if n > 1 else ''}"
+    # Never `.capitalize()` this — it lowercases everything after the first character,
+    # and these strings contain filenames. `18G300.NC` came back as `18g300.nc`, which
+    # is a file the operator cannot find.
+    parts = [f"{names.get(iid, iid)} frees {n} pocket{'s' if n > 1 else ''}"
              for iid, n in candidates[:2]]
-    return ("; ".join(parts) + ".").capitalize()
+    return "Removing " + "; ".join(parts) + "."
 
 
 def _messages(staged, doubled, unresolved, duplicate_codes, seal_prompts,

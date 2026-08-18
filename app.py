@@ -325,6 +325,10 @@ def _changer_state() -> dict:
         entries.append({
             "instance_id": instance_id,
             "filename": placed.part.filename,
+            # The library-relative path, because a manual bind is scoped to
+            # (path, T#) — the dock has to be able to bind an orphan it surfaces,
+            # and the filename alone is not enough to find the file again.
+            "path": rel,
             "slot": slot_label(placed.rail, placed.slot_inches),
             "resolution": _resolve(rel, placed.part),
         })

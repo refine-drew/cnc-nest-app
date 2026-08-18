@@ -162,8 +162,14 @@ var TrayPanel = (() => {
     for (const [path, e] of trayParts) {
       const color = window.BedCanvas ? BedCanvas.getColor(e.filename || e.name) : "#4dabf7";
       const tools = (e.tools || []);
-      const compat = (App.compatibility.matrix || []);
-      const conflictTools = new Set(compat.filter(t => t.conflict).map(t => t.tool_number));
+      // A tray tag goes amber when that `T#` is one the changer could not identify —
+      // the tool has no library entry, so it has no declared diameter and no pocket.
+      // The old test was "two files describe this T# differently", which is the wrong
+      // question now that identity does not come from the description at all.
+      const unresolved = new Set(
+        ((App.changer && App.changer.unresolved) || [])
+          .filter(u => u.filename === (e.filename || e.name))
+          .map(u => u.tool_number));
 
       const div = document.createElement("div");
       div.className = "tray-item";
@@ -171,7 +177,7 @@ var TrayPanel = (() => {
       div.dataset.path = path;
 
       const tagHtml = tools.map(t =>
-        `<span class="tag${conflictTools.has(t) ? " conflict" : ""}">${t}</span>`
+        `<span class="tag${unresolved.has(t) ? " conflict" : ""}">${t}</span>`
       ).join("");
       const mmToIn = mm => Math.round(mm / 25.4 * 10) / 10;
       const dims = e.vcarve_x_span

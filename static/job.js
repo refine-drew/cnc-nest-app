@@ -32,8 +32,8 @@ document.addEventListener("DOMContentLoaded", () => {
       App.setMessage("Generation failed: " + e.message, true);
     } finally {
       btn.textContent = "Generate G-code";
-      // re-enable based on current state
-      btn.disabled = !App.placements.length || (App.compatibility && App.compatibility.has_conflict);
+      // Re-enable off the §3.4 validity gate, the same signal `_updateTopButtons` uses.
+      btn.disabled = !App.placements.length || !(App.changer && App.changer.valid);
     }
   });
 });

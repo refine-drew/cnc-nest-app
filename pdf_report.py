@@ -34,7 +34,7 @@ _LOGO_W = 80    # pt (~2.5:1 aspect ratio)
 # Same palette as static/bed.js so PDF colors match the screen.
 PALETTE = [
     "#4dabf7", "#69db7c", "#ffd43b", "#f783ac", "#a9e34b",
-    "#74c0fc", "#63e6be", "#ffa94d", "#da77f2", "#4dabf7",
+    "#74c0fc", "#63e6be", "#ffa94d", "#da77f2", "#66d9e8",
 ]
 
 # ATC graphic: 8-position tool holder carousel
