@@ -82,3 +82,31 @@ def test_generate_layout_pdf_handles_many_parts(tmp_path):
 def test_palette_color_cycles():
     assert palette_color(0) == palette_color(10)
     assert palette_color(0) != palette_color(1)
+
+
+# ── stock thickness on the setup sheet (issue #28) ───────────────────────────
+
+def test_stock_label_snaps_nominally_identical_stock_together():
+    """19.05, 19.0 and a planed 18.9 are one board, not three materials.
+
+    Binning on the raw millimetre figure gives two colours for one stock, which reads
+    as a mixed rail that is actually fine — the gut check failing in the worst
+    direction.
+    """
+    from pdf_report import stock_label
+    assert stock_label(19.05) == '0.75"'
+    assert stock_label(19.0) == '0.75"'
+    assert stock_label(18.9) == '0.75"'
+    assert stock_label(50.8) == '2.00"'
+
+
+def test_stock_label_says_nothing_rather_than_guessing():
+    from pdf_report import stock_label
+    assert stock_label(None) == "—"
+
+
+def test_distinct_stock_stays_distinct():
+    from pdf_report import stock_label
+    assert stock_label(19.05) != stock_label(50.8)
+    # 1/64" apart is a real difference and must not be collapsed.
+    assert stock_label(19.05) != stock_label(19.05 + 25.4 / 64)

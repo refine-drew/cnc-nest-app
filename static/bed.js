@@ -59,8 +59,66 @@ var BedCanvas = (() => {
     "#4dabf7","#69db7c","#ffd43b","#f783ac","#a9e34b",
     "#74c0fc","#63e6be","#ffa94d","#da77f2","#66d9e8",
   ];
+  // Thickness bands (issue #28). Stock thickness is **discrete** — the shop runs 3/4"
+  // and 2" end grain, not a continuum — so this is a categorical palette, not a ramp.
+  // A light-to-dark ramp answers "which is thicker"; the question actually being asked
+  // at staging is "are these the same stock", which is a categorical comparison.
+  //
+  // None of these may collide with the two meanings already in the colour channel: the
+  // red collision fill (rgba(255,60,60,.25)) and the rail tints (A #4dabf7, B #30d158).
+  const THICKNESS_BANDS = [
+    "#ffa94d", "#b197fc", "#66d9e8", "#ffd43b",
+    "#f783ac", "#e599f7", "#ffc078", "#d0bfff",
+  ];
+  const UNKNOWN_STOCK = "#8d8d93";
+
+  // "identity" — a colour per file, which is what the tray and the PDF also show.
+  // "thickness" — the glance test on staging: one look answers "is every part on this
+  // rail the same stock?" before anything is clamped down.
+  let colorMode = "identity";
+
   const partColors = new Map(); // filename → color
   let colorIdx = 0;
+  /**
+   * Group nominally-identical stock together, in 64ths of an inch.
+   *
+   * `material_thickness` is parsed in mm from the file's own `( X=…, Y=…, Z=… )` line,
+   * and the same stock will not arrive byte-identical — 19.05 against 19.0, or planed
+   * to 18.9. Binning on the raw number gives two colours for one stock, which reads as
+   * a mixed rail that is actually fine: the gut check failing in the worst direction.
+   */
+  function stockKey(mm) {
+    if (mm == null) return null;
+    return Math.round((mm / 25.4) * 64);
+  }
+
+  function stockLabel(key) {
+    return key == null ? "unknown" : (key / 64).toFixed(2) + '"';
+  }
+
+  /** Distinct stock present in this job, thinnest first — the legend's order. */
+  function stockBands() {
+    const counts = new Map();
+    let unknown = 0;
+    for (const p of App?.placements ?? []) {
+      const key = stockKey(p.material_thickness);
+      if (key == null) { unknown += 1; continue; }
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    const bands = [...counts.keys()].sort((a, b) => a - b).map((key, i) => ({
+      key, count: counts.get(key), label: stockLabel(key),
+      color: THICKNESS_BANDS[i % THICKNESS_BANDS.length],
+    }));
+    return { bands, unknown };
+  }
+
+  function bandColor(p) {
+    const key = stockKey(p.material_thickness);
+    if (key == null) return UNKNOWN_STOCK;
+    const found = stockBands().bands.find(b => b.key === key);
+    return found ? found.color : UNKNOWN_STOCK;
+  }
+
   function colorForPart(filename) {
     if (!partColors.has(filename)) {
       partColors.set(filename, PALETTE[colorIdx % PALETTE.length]);
@@ -133,6 +191,33 @@ var BedCanvas = (() => {
     _drawDragFeedback();
     _drawOriginLabel(w, h);
     _updateZoomIndicator();
+    _updateStockLegend();
+  }
+
+  /**
+   * The legend, labelled in **inches** — the operator thinks in 0.75" and 2.00" while
+   * the parse is in millimetres. Each entry carries a part count so a single stray
+   * board on a rail is countable rather than merely visible.
+   */
+  function _updateStockLegend() {
+    const el = document.getElementById("stock-legend");
+    if (!el) return;
+    if (colorMode !== "thickness" || !(App?.placements ?? []).length) {
+      el.style.display = "none";
+      return;
+    }
+    const { bands, unknown } = stockBands();
+    el.style.display = "";
+    el.innerHTML =
+      bands.map(b =>
+        `<div class="lg-row"><span class="lg-sw" style="background:${b.color}"></span>` +
+        `${b.label} stock <span class="lg-n">×${b.count}</span></div>`).join("") +
+      (unknown
+        ? `<div class="lg-row"><span class="lg-sw lg-unknown"></span>` +
+          `no stock size in file <span class="lg-n">×${unknown}</span></div>`
+        : "") +
+      (bands.length + (unknown ? 1 : 0) > 1
+        ? '<div class="lg-note">More than one stock on the bed.</div>' : "");
   }
 
   // ── bed background ────────────────────────────────────────────────────────
@@ -327,7 +412,9 @@ var BedCanvas = (() => {
       machine_x: p.machine_x, machine_y: p.machine_y,
       vcarve_x_span: p.vcarve_x_span, vcarve_y_span: p.vcarve_y_span,
     });
-    const color = colorForPart(p.filename);
+    const identity = colorForPart(p.filename);
+    const unknownStock = p.material_thickness == null;
+    const color = colorMode === "thickness" ? bandColor(p) : identity;
     const s = baseScale * zoom;
 
     // Blank extent comes straight from the backend (collision.blank_rect) so the
@@ -339,14 +426,39 @@ var BedCanvas = (() => {
     const rw = br.x - tl.x;
     const rh = br.y - tl.y;
 
-    // Solid blank boundary
+    // Solid blank boundary. In thickness mode the fill carries the band, so it is
+    // stronger than the identity view's hint of a tint — the whole point is that a
+    // glance across the bed answers the question.
     ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.fillStyle = hexToRgba(color, 0.08);
+    ctx.lineWidth = colorMode === "thickness" && !unknownStock ? 2 : 1.5;
+    ctx.fillStyle = hexToRgba(color, colorMode === "thickness" ? 0.22 : 0.08);
     ctx.beginPath();
     ctx.rect(tl.x, tl.y, rw, rh);
     ctx.fill();
     ctx.stroke();
+
+    // A part whose stock size is missing from the file must be visibly *unknown*, not
+    // merely a different colour and never a thin part — an unknown mistaken for 3/4"
+    // is exactly the error this feature exists to catch. Hatch plus words.
+    if (colorMode === "thickness" && unknownStock) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(tl.x, tl.y, rw, rh);
+      ctx.clip();
+      ctx.strokeStyle = hexToRgba(UNKNOWN_STOCK, 0.55);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let d = -rh; d < rw; d += 8) {
+        ctx.moveTo(tl.x + d, tl.y);
+        ctx.lineTo(tl.x + d + rh, tl.y + rh);
+      }
+      ctx.stroke();
+      ctx.restore();
+      ctx.setLineDash([5, 3]);
+      ctx.strokeStyle = UNKNOWN_STOCK;
+      ctx.strokeRect(tl.x, tl.y, rw, rh);
+      ctx.setLineDash([]);
+    }
 
     // Toolpath extents (dashed, lighter)
     if (p.tp_min_x !== undefined && p.tp_max_x !== undefined) {
@@ -378,11 +490,20 @@ var BedCanvas = (() => {
       ctx.textAlign = "left";
       const label = p.filename.replace(/\.[^.]+$/, "") + " · " + p.slot;
       ctx.fillText(label, tl.x + 3, tl.y + fontSize + 2);
+
+      // Stock size lettered on the blank. The mode is for the glance test; this is
+      // what makes it verifiable, and it works for a colour-blind operator too.
+      const stock = unknownStock
+        ? "no stock size in file"
+        : stockLabel(stockKey(p.material_thickness)) + " stock";
+      ctx.font = `${Math.max(8, fontSize - 1)}px system-ui`;
+      ctx.fillStyle = unknownStock ? UNKNOWN_STOCK : color;
+      ctx.fillText(stock, tl.x + 3, tl.y + fontSize * 2 + 4);
     }
 
     // Cut-move toolpaths (segments pre-transformed to machine coords by backend)
     if (viewMode !== "bounds" && p.segments) {
-      _drawSegments(p, color);
+      _drawSegments(p, identity);
     }
   }
 
@@ -700,6 +821,19 @@ var BedCanvas = (() => {
       });
     });
 
+    // Colour mode. A mode rather than a palette swap, because colour is already
+    // spoken for: identity colouring answers "which part is which" in the tray and
+    // the PDF, and thickness answers "are these the same stock". One click apart
+    // costs nothing; overwriting one with the other loses an answer (issue #28).
+    document.querySelectorAll("#color-toggle button").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#color-toggle button").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        colorMode = btn.dataset.color;
+        render();
+      });
+    });
+
     // Load config and slot data, then size canvas
     Promise.all([
       fetch("/api/config").then(r => r.json()),
@@ -723,7 +857,8 @@ var BedCanvas = (() => {
   }
 
   // ── public API ────────────────────────────────────────────────────────────
-  return { init, render, beginDrag, endDrag, getColor, fitToWindow, PALETTE };
+  return { init, render, beginDrag, endDrag, getColor, fitToWindow,
+           PALETTE, THICKNESS_BANDS, stockKey, stockLabel, stockBands };
 })();
 
 document.addEventListener("DOMContentLoaded", () => BedCanvas.init());

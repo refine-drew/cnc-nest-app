@@ -435,11 +435,25 @@ def _draw_atc(c, setup: list, pw: float, y_top: float) -> None:
 _COLS = [
     ("#",          24),
     ("Slot",       46),
-    ("Part",      210),
-    ("Blank (in)", 90),
-    ("Pos",        64),
+    ("Part",      186),
+    ("Blank (in)", 86),
+    ("Stock",      54),
+    ("Pos",        58),
     ("Tools",     186),
 ]
+
+
+def stock_label(thickness_mm) -> str:
+    """Stock thickness in inches, snapped to 1/64.
+
+    Nominally-identical stock does not arrive byte-identical — 19.05 against 19.0, or
+    planed to 18.9 — so both the PDF and the canvas quantize before comparing. Without
+    that, one board reads as two different materials, which is the gut check failing in
+    the worst direction (issue #28).
+    """
+    if thickness_mm is None:
+        return "—"
+    return f"{round(thickness_mm / 25.4 * 64) / 64:.2f}\""
 
 
 def _table_header(c, x, y, pw) -> float:
@@ -485,6 +499,7 @@ def _draw_table(c, meta, parts, pw, ph, top_y) -> None:
             part["label"],
             _strip_ext(part["name"]),
             f'{sx/25.4:.2f}×{sy/25.4:.2f}"',
+            stock_label(part.get("material_thickness")),
             f'{part["slot_inches"]:.1f}"',
             tlist,
         ]

@@ -186,6 +186,10 @@ def _placement_dict(instance_id: str, placed: PlacedPart) -> dict:
         "blank": [br.min_x, br.max_x, br.min_y, br.max_y],
         "vcarve_x_span": placed.part.vcarve_x_span,
         "vcarve_y_span": placed.part.vcarve_y_span,
+        # Optional by nature — some library files declare no material size — and the
+        # canvas must render that as visibly *unknown* rather than as a thin part
+        # (issue #28). None is the honest answer, so it is passed through as None.
+        "material_thickness": placed.part.material_thickness,
         "tools": tools_list,
         "tool_sequence": [gp.tool_number for gp in placed.part.passes],
         "segments": segments,
@@ -544,6 +548,7 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "",
             "rail": placed.rail,
             "slot_inches": placed.slot_inches,
             "size_mm": (placed.part.vcarve_x_span, placed.part.vcarve_y_span),
+            "material_thickness": placed.part.material_thickness,
             "blank": (br.min_x, br.max_x, br.min_y, br.max_y),
             "segments": _transform_segments(
                 placed.part.segments, placed.rail, placed.slot_inches, rails,

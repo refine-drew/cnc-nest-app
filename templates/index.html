@@ -82,6 +82,13 @@ body.resizing{user-select:none;cursor:col-resize}
 #view-toggle{position:absolute;bottom:8px;left:10px;display:flex;gap:4px}
 #view-toggle button{font-size:11px;padding:2px 8px;opacity:.7}
 #view-toggle button.active{opacity:1;background:#3a3a3c}
+#view-toggle .tg-sep{width:1px;background:#444;margin:2px 3px}
+#stock-legend{position:absolute;top:8px;left:10px;background:rgba(20,20,22,.86);border:1px solid #3a3a3c;border-radius:4px;padding:6px 8px;font-size:11px;color:#bbb;pointer-events:none;line-height:1.7}
+#stock-legend .lg-row{display:flex;align-items:center;gap:6px;white-space:nowrap}
+#stock-legend .lg-sw{width:10px;height:10px;border-radius:2px;flex:none}
+#stock-legend .lg-sw.lg-unknown{background:repeating-linear-gradient(45deg,#8d8d93 0 2px,transparent 2px 4px);border:1px dashed #8d8d93}
+#stock-legend .lg-n{color:#777}
+#stock-legend .lg-note{color:#ffd60a;margin-top:3px;font-size:10.5px}
 
 /* ── right sidebar ── */
 #sidebar-right{display:flex;flex-direction:column;overflow:hidden}
@@ -276,7 +283,11 @@ table.audit td.feed-varies{color:#ffd60a}
       <button data-view="bounds">Bounds</button>
       <button data-view="cuts">Cut moves</button>
       <button class="active" data-view="all">All moves</button>
+      <span class="tg-sep"></span>
+      <button class="active" data-color="identity" title="A colour per part, matching the tray and the PDF">Part</button>
+      <button data-color="thickness" title="A colour per stock thickness — check a rail is all the same material">Stock</button>
     </div>
+    <div id="stock-legend" style="display:none"></div>
   </div>
 
   <!-- right resize handle -->
