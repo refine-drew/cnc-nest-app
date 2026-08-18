@@ -6,6 +6,7 @@ import json
 import os
 import re
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -680,3 +681,47 @@ def test_generation_is_not_gated_on_confirming_the_changer_is_loaded(
     monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
     client.post("/api/place", json={"path": "a.nc", "rail": "A", "slot_inches": 39})
     assert client.post("/api/generate", json={"job_name": "nogate"}).status_code == 200
+
+
+# ── stale-page protection ────────────────────────────────────────────────────
+
+def test_static_assets_are_cache_busted_on_edit(client, tmp_path, monkeypatch):
+    """A tab left open across a server restart is the normal case, not an edge one.
+
+    `git pull` + restart changes the API underneath a page still holding the old JS,
+    and that mismatch is silent: an old client that did not recognise a new error slug
+    printed the slug itself into the status bar, with no dialog and no clue the page
+    was stale. Stamping each asset URL with its mtime means a reload can never serve
+    yesterday's module against today's routes.
+    """
+    page = client.get("/").get_data(as_text=True)
+    stamped = re.findall(r'src="/static/([a-z]+\.js)\?v=(\d+)"', page)
+    names = {name for name, _ in stamped}
+    assert {"placement.js", "changer.js", "toollib.js", "layout.js"} <= names
+    assert all(int(v) > 0 for _, v in stamped)
+
+    # The stamp moves when the file does, so a cached copy cannot survive an edit.
+    js = Path(app_module.app.static_folder) / "placement.js"
+    before = app_module._asset("placement.js")
+    os.utime(js, (js.stat().st_atime, js.stat().st_mtime + 60))
+    try:
+        assert app_module._asset("placement.js") != before
+    finally:
+        os.utime(js, (js.stat().st_atime, js.stat().st_mtime - 60))
+
+
+def test_every_placement_refusal_carries_a_sentence_not_just_a_slug(
+        client, tmp_path, monkeypatch):
+    """Operators are not developers, so `error` is for the log and `message` is for
+    them. A refusal that ships only a slug is one the operator cannot act on."""
+    uncoded = (
+        "( Material Size)\n( X=100, Y=100, Z=19)\n"
+        "(T4 = Table Stiff)\nT4 M06\nG01 X10 Y10 Z-0.254\nM30\n"
+    )
+    _seed_library(tmp_path, monkeypatch, {"a.nc": uncoded})
+    r = client.post("/api/place", json={"path": "a.nc", "rail": "A", "slot_inches": 39})
+    assert r.status_code == 422
+    body = r.get_json()
+    assert body["error"] == "unresolved_tools"
+    assert len(body.get("message", "")) > 40
+    assert "_" not in body["message"]        # no slug leaked into the prose

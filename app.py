@@ -604,6 +604,29 @@ def _job_name(data: dict) -> str:
 
 # ── routes ────────────────────────────────────────────────────────────────────
 
+def _asset(rel: str) -> str:
+    """`/static/foo.js?v=<mtime>` — cache-bust every asset on edit.
+
+    A tab left open across a server restart is the normal case here, not an edge one:
+    this is a dev server the operator reloads a lot, and `git pull` + restart changes
+    the API underneath a page that is still holding the old JS. That mismatch is
+    silent and reads as a nonsense error — an old client that did not recognise a new
+    error slug printed the slug itself into the status bar, with no dialog and no clue
+    that the page was stale.
+
+    Stamping the URL means a reload can never serve yesterday's module against today's
+    routes. It does not help a page that is never reloaded at all, which nothing can.
+    """
+    try:
+        stamp = int((Path(app.static_folder) / rel).stat().st_mtime)
+    except OSError:
+        stamp = 0
+    return f"/static/{rel}?v={stamp}"
+
+
+app.jinja_env.globals["asset"] = _asset
+
+
 @app.route("/")
 def index():
     return render_template("index.html", config=config)

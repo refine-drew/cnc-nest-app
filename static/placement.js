@@ -51,11 +51,30 @@ var Placement = (() => {
     }
 
     if (!data.ok) {
-      App.setMessage(data.message || data.error || "Placement failed", true);
+      App.setMessage(_readable(data), true);
       return;
     }
 
     await refresh();
+  }
+
+  /**
+   * Never put a raw error slug in front of an operator.
+   *
+   * `error` is a machine token like `unresolved_tools`; `message` is the sentence
+   * written for a person. Preferring the slug is how a stale page reports a new server
+   * as the nonsense string "unresolved_tools" with no other clue — which is exactly
+   * what happened, and what sent this bug hunt off in the wrong direction.
+   */
+  function _readable(data) {
+    if (data && data.message) return data.message;
+    if (data && data.error) {
+      console.error("[place] unhandled server error:", data.error, data);
+      return "The nest tool could not place that part, and did not say why. " +
+             "Reload the page — if this page has been open since before the app was " +
+             "updated, it is talking to a newer version of the app than it expects.";
+    }
+    return "Placement failed";
   }
 
   async function remove(instance_id) {
@@ -189,21 +208,23 @@ var Placement = (() => {
       });
       const data = await r.json();
 
-      if (r.status === 409) {
-        App.setMessage("Collision: " + data.message, true);
-        // Snap back to original position
-        await fetch("/api/place", {
+      // One restore path for every failure, not one per error shape. The old code
+      // enumerated 409 and "anything else", so a *new* refusal — an unresolved tool
+      // after a library edit, say — printed a raw slug and, if the restore was also
+      // refused, left the part off the bed entirely with no explanation.
+      if (!data.ok) {
+        App.setMessage(
+          (r.status === 409 ? "Collision: " : "") + _readable(data), true);
+        const back = await fetch("/api/place", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path, rail: origRail, slot_inches: origSlot }),
         });
-      } else if (!data.ok) {
-        App.setMessage(data.error || "Placement failed", true);
-        await fetch("/api/place", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path, rail: origRail, slot_inches: origSlot }),
-        });
+        if (!back.ok) {
+          App.setMessage(
+            `${path} could not be moved there and could not be put back, so it is no ` +
+            "longer on the bed. Drag it on again from the tray.", true);
+        }
       }
 
       await refresh();
