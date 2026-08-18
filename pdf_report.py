@@ -61,11 +61,19 @@ def _strip_ext(name: str) -> str:
 
 
 def _tools_str(tools: list) -> str:
+    """`T2→T8 0.5"` — the number the file posts and the pocket it will run from.
+
+    Both are shown because the operator reads this beside a CAM file that still says
+    `T2`, and the machine will call `T8`. Hiding either half is how the two meanings
+    of `T#` get confused again, which is what §1 exists to stop.
+    """
     parts = []
     for t in tools or []:
         dia = t.get("diameter_inches")
         num = t.get("tool_number", "")
-        parts.append(f'{num} ({dia:g}")' if dia else num)
+        pocket = t.get("pocket")
+        word = f'{num}→T{pocket}' if pocket and f"T{pocket}" != num else num
+        parts.append(f'{word} ({dia:g}")' if dia else word)
     return ", ".join(p for p in parts if p) or "—"
 
 
@@ -77,7 +85,10 @@ def generate_layout_pdf(out_path, meta: dict, parts: list, geom: dict) -> None:
     """Render the layout PDF to out_path.
 
     meta:  job_name, date, bed_x_mm, bed_y_mm, safe_z {value, driven_by},
-           rail_note, tool_sequence (list), tool_changes, parts_count, runtime (str|None)
+           rail_note, tool_sequence (list), tool_changes, parts_count, runtime (str|None),
+           setup (list) — the operator setup sheet, one entry per loaded pocket:
+           {pocket, code, name, diameter_inches, geometry_class, flute_display,
+            default_slot, off_home, parts:[filename]}
     parts: per-part dicts in machine coords —
            {index, label, name, rail, slot_inches, size_mm:(x,y),
             blank:(min_x,max_x,min_y,max_y), segments:[{x1,y1,x2,y2,cutting}],
@@ -98,7 +109,7 @@ def generate_layout_pdf(out_path, meta: dict, parts: list, geom: dict) -> None:
         pw - 2 * MARGIN, header_bottom - diagram_bottom - 8,
         parts, geom,
     )
-    _draw_atc(c, parts, pw, MARGIN + atc_h)   # y_top = top edge of ATC section
+    _draw_atc(c, meta.get("setup") or [], pw, MARGIN + atc_h)
 
     # ── Page 2: full placement table ────────────────────────────────────────
     c.showPage()
@@ -264,19 +275,40 @@ def _draw_part(c, P, part) -> None:
 
 # ── ATC tool holder graphic ───────────────────────────────────────────────────
 
-def _draw_atc(c, parts, pw: float, y_top: float) -> None:
-    """8-position ATC carousel graphic. y_top is the top edge of the section."""
-    tools: dict = {}
-    for part in parts:
-        for t in part.get("tools") or []:
-            num = t.get("tool_number")
-            if num and num not in tools:
-                tools[num] = t
+def _draw_atc(c, setup: list, pw: float, y_top: float) -> None:
+    """The operator setup sheet (issue #13). y_top is the top edge of the section.
+
+    Because pocket assignment is job-scoped and the app deliberately holds **no model
+    of the physical changer contents** (spec §3.2), the operator has to load the machine
+    to match a map the app invented. If that map is not communicated clearly, the
+    feature manufactures exactly the failure it exists to prevent — so this graphic is
+    the feature's other half, not decoration.
+
+    It is keyed on **pocket**, not on any file's `T#`. Under identity merging those are
+    different things: one cutter can be `T2` in one file and `T4` in another, and both
+    run from whichever pocket the map assigned.
+
+    A tool away from its declared home is called out as a **temporary** instruction —
+    "return to 4 after this job" — because the declared slot is what the operator is
+    being trained toward (§3.2.1). Note what "what changed" can and cannot mean here:
+    nothing persists a previous job's map (save/load is sunset), so the only comparison
+    available is against the *declared* home, which is also the more useful one.
+    """
+    by_pocket = {int(t["pocket"]): t for t in setup if t.get("pocket")}
 
     # Section title
     c.setFillColor(black)
     c.setFont("Helvetica-Bold", 10)
     c.drawString(MARGIN, y_top - 12, "Tool Setup — Load into ATC before running")
+
+    moved = [t for t in setup if t.get("off_home")]
+    if moved:
+        c.setFont("Helvetica-Oblique", 8)
+        c.setFillColor(HexColor("#8a5a00"))
+        note = "; ".join(
+            f'{t["name"]} → pocket {t["pocket"]} for this job only (returns to {t["default_slot"]})'
+            for t in moved[:3])
+        c.drawString(MARGIN + 250, y_top - 12, note[:150])
 
     total_w = _ATC_SLOTS * _ATC_SLOT_W + (_ATC_SLOTS - 1) * _ATC_SLOT_GAP
     gx = MARGIN + (pw - 2 * MARGIN - total_w) / 2   # centre the graphic
@@ -300,13 +332,9 @@ def _draw_atc(c, parts, pw: float, y_top: float) -> None:
            total_w + 2 * overhang, 3, fill=1, stroke=0)
     c.restoreState()
 
-    def _sort_key(n):
-        digits = "".join(ch for ch in n if ch.isdigit())
-        return int(digits) if digits else 9999
-
     for i in range(_ATC_SLOTS):
         slot_key = f"T{i + 1}"
-        t = tools.get(slot_key)
+        t = by_pocket.get(i + 1)
         sx = gx + i * (_ATC_SLOT_W + _ATC_SLOT_GAP)
         cx = sx + _ATC_SLOT_W / 2
         loaded = t is not None
@@ -322,10 +350,13 @@ def _draw_atc(c, parts, pw: float, y_top: float) -> None:
         c.rect(sx, collar_bottom + _ATC_COLLAR_H - 2, _ATC_SLOT_W, 2, fill=1, stroke=0)
         c.restoreState()
 
-        # Position label centred in collar
+        # Position label centred in collar. The pocket number IS the tool word the
+        # program calls, because H follows the pocket (§4.1) — so this reads the same
+        # as the `T# M06` lines in the file.
         c.setFillColor(HexColor("#d8e8ff") if loaded else HexColor("#aaaaaa"))
         c.setFont("Helvetica-Bold", 9)
-        c.drawCentredString(cx, collar_bottom + 4, slot_key)
+        label = slot_key + (" *" if loaded and t.get("off_home") else "")
+        c.drawCentredString(cx, collar_bottom + 4, label)
 
         # ── Body (holder tube) ───────────────────────────────────────────
         bx = sx + 5
@@ -354,7 +385,9 @@ def _draw_atc(c, parts, pw: float, y_top: float) -> None:
         if loaded:
             dia = t.get("diameter_inches")
             dia_str = f'{dia:g}"' if dia else "—"
-            desc = t.get("description") or "—"
+            # The library name, which is the operator's own word for the cutter — not a
+            # post-processor's free text. That is the whole point of the library.
+            desc = t.get("name") or "—"
             max_chars = int(bw / 3.6)
 
             # Word-wrap description into up to 2 lines
@@ -380,10 +413,17 @@ def _draw_atc(c, parts, pw: float, y_top: float) -> None:
             if line2:
                 c.drawCentredString(cx, desc_y - 9, line2)
 
-            # Diameter at bottom of body
+            # Diameter at bottom of body, with the parts that need it beneath — the
+            # operator can see at a glance what a missing tool would cost.
             c.setFillColor(HexColor("#ffffff"))
             c.setFont("Helvetica-Bold", 9)
-            c.drawCentredString(cx, body_bottom + 8, dia_str)
+            c.drawCentredString(cx, body_bottom + 15, dia_str)
+            c.setFillColor(HexColor("#b8d0f8"))
+            c.setFont("Helvetica", 6.5)
+            names = ", ".join(sorted({_strip_ext(u) for u in (t.get("parts") or [])}))
+            limit = int(bw / 3.2)
+            c.drawCentredString(cx, body_bottom + 5,
+                                names if len(names) <= limit else names[:limit - 1] + "…")
         else:
             c.setFillColor(HexColor("#999999"))
             c.setFont("Helvetica", 8)

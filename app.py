@@ -439,7 +439,76 @@ def _resolution_block(rel: str, res) -> Optional[tuple]:
     return None
 
 
-def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
+def _setup_rows(state: dict) -> list:
+    """The operator setup sheet, one row per loaded pocket (issue #13).
+
+    Keyed on **pocket**, not on any file's `T#` — under identity merging those are
+    different things, and the pocket is what the operator physically loads and what the
+    emitted `T# M06` calls.
+    """
+    return sorted(
+        [{
+            "pocket": t["pocket"],
+            "code": t["code"],
+            "name": t["name"],
+            "diameter_inches": t["diameter_inches"],
+            "geometry_class": t["geometry_class"],
+            "flute_display": t["flute_display"],
+            "cutting_length_in": t["cutting_length_in"],
+            "default_slot": t["default_slot"],
+            "off_home": t["off_home"],
+            "tool_numbers": t["tool_numbers"],
+            "parts": sorted({u["filename"] for u in t["usages"]}),
+        } for t in state.get("tools", []) if t.get("pocket")],
+        key=lambda r: r["pocket"],
+    )
+
+
+def _setup_sheet_text(job_name: str, state: dict, safe_z: dict) -> str:
+    """The same sheet as plain text, written beside the `.nc`.
+
+    Generation is deliberately **not** gated on confirming the changer is loaded
+    (operator's call, 2026-08-17) — the sheet informs, it does not interrogate.
+    """
+    rows = _setup_rows(state)
+    out = [
+        f"TOOL SETUP — {job_name}",
+        f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "",
+        "Load the changer to match this before running. The pocket number is the",
+        "tool number the program calls, and the height offset follows the pocket.",
+        "",
+    ]
+    width = max([len(r["name"]) for r in rows] + [4])
+    for r in rows:
+        called = ", ".join(r["tool_numbers"])
+        out.append(
+            f"  Pocket {r['pocket']}  {r['name']:<{width}}  {r['diameter_inches']:g}\" "
+            f"{r['geometry_class']}, {r['flute_display']}"
+            + (f", {r['cutting_length_in']}\" cutting length" if r["cutting_length_in"] else "")
+        )
+        out.append(f"{'':>12}{'':<{width}}  code {r['code']}   files call it {called}")
+        out.append(f"{'':>12}{'':<{width}}  needed by {', '.join(r['parts'])}")
+        if r["off_home"]:
+            # A deviation is a TEMPORARY instruction, because the declared slot is the
+            # standard the operator is being trained toward (§3.2.1).
+            out.append(f"{'':>12}{'':<{width}}  *** moved for this job only — "
+                       f"normally lives in pocket {r['default_slot']}, put it back after ***")
+        out.append("")
+
+    empty = [p for p in range(1, state.get("capacity", 8) + 1)
+             if p not in {r["pocket"] for r in rows}]
+    if empty:
+        out.append(f"  Pockets not used by this job: {', '.join(str(p) for p in empty)}")
+        out.append("")
+    if safe_z.get("value"):
+        out.append(f"  Safe Z for the whole job: {safe_z['value'] / 25.4:.3f}\" "
+                   f"(driven by {safe_z.get('driven_by')})")
+    return "\n".join(out) + "\n"
+
+
+def _build_pdf_model(job_name: str, settings: dict, gcode: str = "",
+                     state: Optional[dict] = None) -> tuple:
     """Assemble (meta, parts, geom) for pdf_report.generate_layout_pdf.
 
     Parts are emitted in placement order with blanks and toolpaths already in
@@ -447,6 +516,14 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
     per-filename color matching the on-screen canvas palette.
     """
     bed_x, bed_y, rails = _bed_x(), _bed_y(), _rails()
+    state = state if state is not None else _changer_state()
+    # instance_id → {T#: pocket}, so the placement table can show the file's own number
+    # beside the pocket it will actually run from.
+    pockets_by_instance: Dict[str, Dict[str, int]] = {}
+    for t in state.get("tools", []):
+        for u in t["usages"]:
+            if t.get("pocket"):
+                pockets_by_instance.setdefault(u["instance_id"], {})[u["tool_number"]] = t["pocket"]
 
     # Stable color per unique filename, assigned in first-seen order (bed.js).
     color_idx: Dict[str, int] = {}
@@ -474,7 +551,8 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
             "tools": [
                 {"tool_number": num,
                  "description": info.get("description", ""),
-                 "diameter_inches": info.get("diameter_inches")}
+                 "diameter_inches": info.get("diameter_inches"),
+                 "pocket": pockets_by_instance.get(placed.instance_id, {}).get(num)}
                 for num, info in placed.part.tools.items()
             ],
             "color": pdf_palette_color(color_idx[fn]),
@@ -494,6 +572,7 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "") -> tuple:
         "tool_changes": runtime["tool_change_count"] if runtime else 0,
         "parts_count": len(parts),
         "runtime": format_duration(runtime["seconds"]) if runtime else None,
+        "setup": _setup_rows(state),
     }
     geom = {
         "bed_x_mm": bed_x,
@@ -1100,14 +1179,18 @@ def api_generate():
     if findings:
         (out / f"{job_name}_validation.txt").write_text(
             format_findings(findings), encoding="utf-8")
+    setup_path = out / f"{job_name}_setup.txt"
+    setup_path.write_text(_setup_sheet_text(job_name, state, safe_z), encoding="utf-8")
+
     try:
-        meta, parts, geom = _build_pdf_model(job_name, settings, gcode)
+        meta, parts, geom = _build_pdf_model(job_name, settings, gcode, state)
         generate_layout_pdf(pdf_path, meta, parts, geom)
     except Exception as e:
         return jsonify({"error": f"PDF generation failed: {e}"}), 500
 
     return jsonify({"ok": True, "job_name": job_name,
                     "nc_path": str(nc_path), "pdf_path": str(pdf_path),
+                    "setup_path": str(setup_path),
                     "warnings": [str(f) for f in warnings]})
 
 

@@ -575,3 +575,108 @@ def test_job_runtime_charges_every_tool_change(client, tmp_path, monkeypatch):
     assert info["runtime_seconds"] == pytest.approx(
         cutting + 4 * DEFAULT_TOOL_CHANGE_SECONDS, abs=0.01,
     )
+
+
+# ── the operator setup sheet (issue #13) ─────────────────────────────────────
+#
+# Pocket assignment is job-scoped and the app deliberately holds no model of the
+# physical changer, so the operator has to load the machine to match a map the app
+# invented. If that map is not communicated clearly, the feature manufactures exactly
+# the failure it exists to prevent — which makes this sheet the feature's other half.
+
+_SETUP_A = (
+    "( Material Size)\n( X=100, Y=100, Z=19)\n"
+    "(T2 = EM-0500 End Mill {0.5 inches})\nT2 M06\nG01 X10 Y10 Z-0.254\nM30\n"
+)
+_SETUP_B = (
+    "( Material Size)\n( X=100, Y=100, Z=19)\n"
+    "(T4 = SB-0500 Spiral Bit {0.5 inches})\nT4 M06\nG01 X10 Y10 Z-0.254\nM30\n"
+)
+
+
+def _generate_with_setup(client, tmp_path, monkeypatch, files=None, drags=None):
+    _seed_library(tmp_path, monkeypatch, files or {"a.nc": _SETUP_A, "b.nc": _SETUP_B})
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    for name, slot in zip(sorted(files or {"a.nc": 1, "b.nc": 1}), (39, 26, 13, 0)):
+        client.post("/api/place", json={"path": name, "rail": "A", "slot_inches": slot})
+    for code, pocket in (drags or {}).items():
+        client.post("/api/changer/assign", json={"code": code, "pocket": pocket})
+    r = client.post("/api/generate", json={"job_name": "sheet"})
+    assert r.status_code == 200, r.get_json()
+    return (tmp_path / "sheet_setup.txt").read_text()
+
+
+def test_setup_sheet_is_keyed_on_pocket_not_on_the_files_tool_number(
+        client, tmp_path, monkeypatch):
+    """One cutter can be T2 in one file and T4 in another; the pocket is what the
+    operator loads and what the emitted `T# M06` calls."""
+    sheet = _generate_with_setup(client, tmp_path, monkeypatch)
+    assert "Pocket 2" in sheet and "Pocket 3" in sheet
+    assert "EM-0500" in sheet and "SB-0500" in sheet
+    # The file's own number is still named, because the operator reads this beside a
+    # CAM file that says T4.
+    assert "files call it T2" in sheet and "files call it T4" in sheet
+
+
+def test_setup_sheet_names_the_parts_each_tool_is_needed_by(client, tmp_path, monkeypatch):
+    sheet = _generate_with_setup(client, tmp_path, monkeypatch)
+    assert "needed by a.nc" in sheet and "needed by b.nc" in sheet
+
+
+def test_setup_sheet_marks_a_moved_tool_as_temporary(client, tmp_path, monkeypatch):
+    """A deviation is a *temporary* instruction, because the declared slot is the
+    standard the operator is being trained toward (spec §3.2.1)."""
+    sheet = _generate_with_setup(client, tmp_path, monkeypatch, drags={"SB-0500": 7})
+    assert "Pocket 7" in sheet
+    assert "moved for this job only" in sheet
+    assert "normally lives in pocket 3" in sheet
+    assert "put it back after" in sheet
+
+
+def test_setup_sheet_says_nothing_temporary_when_nothing_moved(client, tmp_path, monkeypatch):
+    sheet = _generate_with_setup(client, tmp_path, monkeypatch)
+    assert "moved for this job only" not in sheet
+
+
+def test_setup_sheet_lists_the_pockets_the_job_leaves_alone(client, tmp_path, monkeypatch):
+    sheet = _generate_with_setup(client, tmp_path, monkeypatch)
+    assert "Pockets not used by this job: 1, 4, 5, 6, 7, 8" in sheet
+
+
+def test_setup_sheet_is_written_beside_the_output(client, tmp_path, monkeypatch):
+    _seed_library(tmp_path, monkeypatch, {"a.nc": _SETUP_A})
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    client.post("/api/place", json={"path": "a.nc", "rail": "A", "slot_inches": 39})
+    r = client.post("/api/generate", json={"job_name": "beside"})
+    data = r.get_json()
+    assert os.path.isfile(data["setup_path"])
+    assert data["setup_path"].endswith("beside_setup.txt")
+
+
+def test_the_pdf_carries_the_same_setup_rows(client, tmp_path, monkeypatch):
+    """The sheet and the PDF are built from one changer state, so they cannot disagree
+    about which pocket holds what."""
+    _seed_library(tmp_path, monkeypatch, {"a.nc": _SETUP_A, "b.nc": _SETUP_B})
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    client.post("/api/place", json={"path": "a.nc", "rail": "A", "slot_inches": 39})
+    client.post("/api/place", json={"path": "b.nc", "rail": "A", "slot_inches": 26})
+    client.post("/api/changer/assign", json={"code": "SB-0500", "pocket": 7})
+
+    state = app_module._changer_state()
+    meta, parts, _geom = app_module._build_pdf_model("x", app_module.config, "", state)
+    rows = {r["pocket"]: r for r in meta["setup"]}
+    assert set(rows) == {2, 7}
+    assert rows[7]["code"] == "SB-0500" and rows[7]["off_home"] is True
+    assert rows[2]["off_home"] is False
+    # And the placement table shows the file's number beside the pocket it runs from.
+    tools = {t["tool_number"]: t["pocket"] for p in parts for t in p["tools"]}
+    assert tools == {"T2": 2, "T4": 7}
+
+
+def test_generation_is_not_gated_on_confirming_the_changer_is_loaded(
+        client, tmp_path, monkeypatch):
+    """The sheet informs, it does not interrogate (operator's call, 2026-08-17)."""
+    _seed_library(tmp_path, monkeypatch, {"a.nc": _SETUP_A})
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    client.post("/api/place", json={"path": "a.nc", "rail": "A", "slot_inches": 39})
+    assert client.post("/api/generate", json={"job_name": "nogate"}).status_code == 200
