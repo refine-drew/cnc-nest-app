@@ -51,11 +51,23 @@ comment specified in `docs/tool-changer-pocket-management-spec.md` §6.2.1:
 (TOOLDESC T2 12 DOWNCUT SPIRAL)
 ```
 
-`VENDOR`+`PRODUCT` is the identity (`toolId` is document-scoped and must never be
-used); the `T#` only ties the line to the header above it. **A blank field is emitted
-as `VENDOR=`, never omitted** — empty means the Fusion library entry needs filling in,
-missing means the file predates the comment, and only the first is actionable.
-`_toolid_fields` preserves that as `""` vs absent; don't collapse them.
+**`PRODUCT` alone is the identity, and it carries a shop-assigned code** — not a
+manufacturer part number (spec §3.1, #9, 2026-08-17). The operator types the same code
+into Fusion's Product id and into the VCarve tool **name**, which is the only field
+VCarve's post lets reach a file. Matching is exact or it does not happen: an uncoded
+tool orphans to a job-scoped manual bind, and no string is ever compared. `VENDOR` and
+`FLUTES` are emitted but unread. `toolId` is document-scoped and must never be used.
+The `T#` only ties the line to the header above it.
+
+**A blank field is emitted as `VENDOR=`, never omitted** — empty means the Fusion
+library entry needs filling in, missing means the file predates the comment, and only
+the first is actionable. `_toolid_fields` preserves that as `""` vs absent; don't
+collapse them.
+
+`TOOLDESC` is **not decoration**: the library stores the set of descriptions each code
+is known to post, and a new string blocks with a two-way prompt (rename → accept, or
+the code is duplicated in CAM → fix it there). That seal is the only detector of one
+code on two physical cutters — see spec §3.5.3, including the two risks it accepts.
 
 **Three constraints from `settings.comments` shape this format, and they are easy to
 trip over.** Comments are uppercased, filtered to `" a-z0-9.,=_-"` (so `/` and `"`
@@ -352,10 +364,15 @@ Two things about that parse are load-bearing, not incidental:
   (`FLAT END MILL D=12.7 CR=0.`) — type alone would collapse every ½" and ¼" flat
   mill onto one string, which is the dangerous direction.
 
-**Still true, and still the destination:** the identity library becomes the diameter
-authority (spec §3.5.2), because a file whose header is absent or wrong still needs a
-true radius, and because the parsed `CR=`/`TAPER=` are then *verifiable* against a
-declaration rather than trusted.
+**Still the destination, and now the *sole* authority:** the identity library supplies
+the diameter (spec §3.5.2), because a file whose header is absent or wrong still needs
+a true radius. Under #9 the parsed figure stops being authoritative entirely — every
+tool resolves through its code, so the notation mess (four diameter notations, one
+fractional, three files yielding nothing) simply stops being read. `_extract_diameter`'s
+bare-decimal fallback must go with it: a code like `RK-004` would parse as a 0.04"
+cutter, a 25× **under**-inflation. The earlier plan to *verify* `CR=`/`TAPER=` against
+the declaration was dropped along with those schema fields — the check is not built,
+and §3.5.3 records the risk that leaves as accepted.
 
 **Every parse assumes the file's origin is the blank's registration corner** —
 the VCarve convention, where all coordinates are positive. Nothing checks it.

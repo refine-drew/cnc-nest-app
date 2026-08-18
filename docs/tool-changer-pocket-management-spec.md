@@ -3,6 +3,15 @@
 **Status: incomplete by design.** Sections 1–5 are settled and safe to build
 against. Section 6 lists the decisions that are still open.
 
+> **2026-08-17 — #9 is resolved, and the gate is fully open.** Identity is a
+> **shop-assigned code** the operator types into Fusion's Product id and VCarve's tool
+> name; the post already emits it and the parser already reads it. Matching is exact,
+> the alias list is **deleted**, and an uncoded tool orphans to a job-scoped manual
+> bind. See **§3.1**, **§3.5.1** (schema), **§3.5.3** (match-on-load and the
+> description seal). Both original bars — #8 and #9 — are now closed. What remains
+> open is build work (#11, #13, #24) and **one operator prerequisite: assigning the
+> ten codes** (§3.5.5).
+
 > **2026-08-17 — the structural gate is now open.** The original bar for starting
 > implementation was that #8 (safety posture) and #9 (identity matching) both close.
 > #8 is closed (posture 2, §6.1) and #9's blocking sub-questions are closed — the two
@@ -127,10 +136,10 @@ all 0.25" and must never merge.
 carousel position — the same `T#` that already collides — and no row key reaches
 the posted file. Measured across the 26-file library: `T4` denotes four different
 cutters, `T2` and `T9` post byte-identical strings in one file, and 3 files yield
-no parseable diameter at all. The library must therefore be **operator-declared**,
-keyed independently of `T#`, and must carry a **geometry class** plus a
-many-to-one **alias list** of the raw strings seen in files — which is what lets
-one library serve VCarve and Fusion output without a second mechanism.
+no parseable diameter at all. The library must therefore be **operator-declared** and
+keyed independently of `T#`. (#4 concluded it must also carry a many-to-one **alias
+list** of the raw strings seen in files. **Superseded** — see the code decision below,
+which serves VCarve and Fusion from one key without any string matching at all.)
 
 **A Fusion tool library will not remove the need for this.** The app reads posted
 `.nc`, not CAM source, so CAM knowledge reaches the app only through what the
@@ -142,17 +151,50 @@ fundamentally, CAM records *what a tool is*; this app must record *where it
 lives*. Good CAM hygiene makes matching reliable — it does not make the app-side
 library unnecessary.
 
-**2026-08-17 — the alias list is the identity mechanism, not the match key (#10).**
-Because the library is hand-typed and the app imports nothing (§3.5), `vendor` +
-`productId` cannot be relied on to match byte-for-byte what a post wrote into a
-file. First encounter of a tool therefore usually **misses**; the operator binds it
-once by hand and the alias remembers it. **Auto-matching is the steady state,
-manual binding is the onboarding step** — which is why the alias list, introduced
-above as a supporting detail, is in fact load-bearing.
+**2026-08-17 — identity is a shop-assigned code, and the alias list is deleted (#9).**
+An earlier revision of this section argued that `vendor` + `productId` could not be
+relied on to match what a post wrote, so identity had to be *learned* one manual bind
+at a time, with an alias list as the mechanism. That reasoning assumed those fields
+carried whatever the cutter's manufacturer happened to publish. **They do not have
+to.** The operator assigns a **unique code by hand, one per physical cutter**, and
+types it into the CAM tool library:
 
-This also settles the scope question §6.2 raised: with aliases carrying identity,
-CAM-side tool hygiene improves the hit rate but is **not a precondition** of the
-feature, so §7's out-of-scope ruling stands.
+- **Fusion** — the code goes in **Product id**, which `writeToolIdentity`
+  (`post/syntec 4.cps:3088`) already emits as `PRODUCT=`. Neither the post nor the
+  parser changes; the field simply stops being empty.
+- **VCarve** — the code goes in the tool **name**, the only field that reaches a
+  posted file. The corpus confirms it arrives verbatim — `(T1 = Ball Nose .5 inches
+  Dia)` is a hand-typed name rendered unaltered — so `(T4 = RK-004 End Mill)` is
+  available for the asking.
+
+**The matching rule is one sentence.** Find a token matching the code pattern; if it
+is present and known to the library, that is an exact match. Otherwise the tool is
+**orphaned**, and the operator binds it for that run only (§3.5.3).
+
+**This does not reopen the argument above.** What this section forbids is treating
+description text *as identity* — inferring which cutter a file means from free-form
+words. A code is self-identifying: the app never guesses, because the token is either
+present or absent, and the absent case falls through to an explicit operator decision
+rather than a similarity score. `End Mill` is never compared against anything.
+
+**What the code deletes.** The `aliases[]` field, the alias-collision hole and its
+`(filename, T#)` scoping, string normalisation, and the whole class of "a stale alias
+outlives a corrected library" failures. A bind is job-scoped and never remembered,
+which is how pocket assignment already works (§3.2).
+
+**The key is `PRODUCT` alone, not `VENDOR`+`PRODUCT`.** A shop-assigned code is
+unique by construction, so requiring a second field to be populated would only add
+one more thing that can be blank. `vendor` stays as reorder information.
+
+**Two format constraints, both from the post's own comment handling** (CLAUDE.md):
+comment text is uppercased and filtered to `" a-z0-9.,=_-"`, so `RK-004` survives
+intact while `RK#4` silently becomes `RK4`. Keep the code visibly unlike a `T#`, so
+that nobody reads a pocket number into it.
+
+**Scope.** Assigning the codes is CAM-side work, which §7 rules out of scope — but it
+is now a bounded, one-time setup task (ten codes typed into two tool databases), not
+an open-ended hygiene effort. The app still functions without it: an uncoded tool
+orphans and is bound by hand, so the ruling stands and the degradation is graceful.
 
 **What no file can ever supply.** Measured across the whole library on 2026-08-17:
 **nothing from either CAM names the flute direction.** VCarve writes `End Mill`;
@@ -309,16 +351,33 @@ belong.**
 
 | field | req? | consumed by |
 |---|---|---|
-| `id` | ✔ | primary key — app-assigned, **never a `T#`**. What the pocket map references |
-| `name` | ✔ | changer dock, setup sheet (#13) — e.g. `1/2" downcut spiral` |
-| `diameter_inches` | ✔ | **maximum cutting diameter** (§3.5.2) — tool-radius collision, **X envelope inflation**; **replaces** the parsed-file diameter |
-| `geometry_class` | ✔ | identity discrimination + dock/setup-sheet display. `Flat End Mill` / `Ball Nose` / `Roundover` / `Custom Form` / `Bowl Bit` — **the operator's own names, and only tools that exist** (§3.5.5) |
-| `flute_direction` | ✔ | `up` / `down` / `compression` / `straight` — **the field no file can supply** (§3.1); what blocks the merge |
-| `cutting_length_in` | ✔ | identity discrimination — for two same-diameter cutters of differing length it is the **only** separating field (§3.5.5) |
+| `code` | ✔ | **primary key and match key** — operator-assigned, unique, typed into both CAM libraries (§3.1). What the pocket map references |
+| `name` | ✔ | changer dock, setup sheet (#13) — e.g. `1/2" downcut spiral`. **Display only**, and the app's own; renaming it is free |
+| `diameter_inches` | ✔ | **maximum cutting diameter** (§3.5.2) — tool-radius collision, **X envelope inflation**. The **sole** authority; no file supplies this |
+| `geometry_class` | ✔ | dock and setup-sheet display. `Flat End Mill` / `Ball Nose` / `Roundover` / `Custom Form` / `Bowl Bit` — **the operator's own names, and only tools that exist** (§3.5.5) |
+| `flute_direction` | ✔ | `up` / `down` / `compression` / `straight` — **the field no file can supply** (§3.1) |
+| `cutting_length_in` | ✔ | tells apart two cutters identical on every other field (§3.5.5) |
+| `cam_descriptions[]` | ✔ | **the tamper seal** (§3.5.3) — the set of description strings this code is known to post. Grows by one on each confirmed rename |
 | `default_slot` | — | pocket seeding; **null → staged**, and null is a legitimate answer |
-| `aliases[]` | — | the actual match mechanism (§3.1); grows one entry per manual bind |
-| `vendor` + `product_id` | — | exact match when populated (#21); usually blank with no import |
-| `corner_radius_in`, `taper_deg`, `flutes` | — | **verification only, never keys** — check the file's `CR=` / `TAPER=` against the declaration |
+| `vendor`, `product_link` | — | reordering information for the operator. **Never read by the app** |
+
+**`code` replaces the app-assigned `id`.** An earlier draft specified both, because
+identity was then carried by aliases and the match key was not stable enough to be a
+primary key. The code is stable by construction and is what the file matches on, so a
+second identifier has no distinct job. The usual objection — renaming a key breaks
+stored references — does not apply: nothing persists a tool reference, since pocket
+maps are in-memory job state and save/load is sunset (§3.2). Correcting a typo'd code
+means any file already posted under the old one orphans until re-posted, which is the
+cheapest it will ever be, as no production Fusion files exist yet.
+
+**`geometry_class` and `flute_direction` no longer discriminate identity** — the code
+does that alone. They remain required because the operator needs to see what a tool
+*is* in the dock and on the setup sheet, and because `flute_direction` is the one fact
+§3.1 proves exists nowhere else. Their job moved from matching to display.
+
+**Deleted: `corner_radius_in`, `taper_deg`, `flutes`.** Their only named consumer was
+verifying a file's `CR=` / `TAPER=` against the declaration, and that check is not
+built (§3.5.3). A field with no consumer does not belong, per the discipline above.
 
 `geometry_class` and `flute_direction` are **deliberately separate**: up/down/
 compression is orthogonal to flat/ball/chamfer, so two short lists beat a dozen
@@ -363,8 +422,18 @@ tool-radius collision check.** Once a tool resolves to a library entry, its decl
 diameter supplies a true radius, which routes around #20 for safety purposes even
 before the parser is fixed.
 
-Fusion's headers also make verification non-vacuous: `D=12.7 CR=6.35 TAPER=45DEG`
-can be checked *against* the declaration rather than trusted as identity.
+**2026-08-17 — the library is the *sole* authority, and diameter parsing is retired
+(#9).** With every tool resolving through a code (§3.1), the parsed figure has no
+consumer left. That deletes the whole notation problem measured across the corpus in
+one stroke: four diameter notations, one of them fractional, and three files yielding
+nothing parseable at all. It also removes `_extract_diameter`'s bare-decimal fallback,
+which would otherwise have read a code like `RK-004` as a 0.04" cutter — a 25×
+**under**-inflation, the crash direction.
+
+One narrow use survives, as **display and never as authority**: Fusion's structured
+`D=` header is shown beside candidate tools when binding an orphan (§3.5.3), so a
+gross mismatch is visible. VCarve's diameter, which exists only inside free-text names
+like `End Mill {0.5 inch}`, is not read at all.
 
 **`diameter_inches` is the tool's maximum cutting diameter — its widest point — and
 nothing else** (operator, 2026-08-17): *"the diameter of the tool used to calculate
@@ -380,72 +449,128 @@ have fit; under-declaring puts the cutting edge somewhere the check said was cle
 So where the name and the number disagree, **the larger reading is the safe one**, and
 the library UI must ask for the widest point rather than "diameter" unqualified.
 
-#### 3.5.3 Match-on-load, and the two guards
+#### 3.5.3 Match-on-load, the seal, and what guards it (#9)
 
-Loading a job resolves each file tool against the library:
+**Resolution happens at load, before placement, and it is strict.** An unresolved
+tool must never reach the bed: the collision and envelope checks need a radius, the
+library is now its sole source (§3.5.2), and the app must not invent one. Resolve or
+do not place.
 
-- **Match** → bind, take its default slot.
-- **No entry** → prompt the operator to **create a new tool** (this is where a default
-  slot gets declared).
-- **No automatic match** → the operator **binds it by hand**, and the alias remembers.
+Loading a job reads each file tool's code token and resolves it:
 
-Two guards, both biased against §3.1's dangerous direction:
+- **Code present and known** → match. Bind, and take that tool's default slot.
+- **Code present but unknown** → prompt the operator to **create a tool**. This is
+  where a default slot gets declared, and where the code is recorded.
+- **Code absent** → the tool is **orphaned**. The operator says which library tool it
+  is, and that bind lasts **for this run only**. Nothing is remembered.
 
-- **(a) Resolution is injective within a single file.** Two distinct `T#` in one `.nc`
-  must **never** resolve to the same library tool — CAM already asserted they differ
-  by giving them different pockets. A collision here is a **hard stop requiring manual
-  disambiguation, never a merge.** This is what catches the measured `T2`/`T9`
-  byte-identical case. Deliberately **per file only**: two *different* files' `T4`
-  resolving to one library tool is the feature working as intended.
-- **(b) A manual bind is refused on diameter disagreement.** Binding a 0.25" toolpath
-  to a 0.5" library tool is scrap or a crash with no legitimate use, so refuse rather
-  than warn. Where diameter agrees but flute direction cannot be read from the file —
-  always, per §3.1 — the app binds what the operator says and that ambiguity is theirs.
-  **Exact, with no tolerance** (decided 2026-08-17): the declared library figure must be
-  the cutter's real geometry rather than a measurement, and the refusal is what gets a
-  rough figure corrected. Three rows of the shipped library fail this on first load —
-  see §3.5.5, which is where the reasoning lives.
+**The orphan path is the floor, not a failure mode.** Every one of the 26 files in the
+library today predates the code, so all of them orphan until re-posted or renamed.
+That is the safe default working, and it is why the path must be pleasant rather than
+punitive — for a VCarve one-off with one or two tools it is a couple of clicks.
 
-**Resolved 2026-08-17 — the bind is scoped to `(filename, T#)`.** Guards (a) and the
-alias mechanism were in tension on one real file: `T2` and `T9` emit the same string
-in the same file, so (a) correctly refuses to merge them, but the manual bind then has
-nothing durable to key on except `T#` — the token this feature exists to distrust. The
-operator's call is to **accept `T#` as a discriminator, but only inside the file it was
-read from**:
+**Guard (a) survives, with a new job. Resolution is injective within a single file.**
+Two distinct `T#` in one `.nc` must **never** resolve to the same library tool — CAM
+already asserted they differ by giving them different pockets. A collision is a
+**hard stop requiring manual disambiguation, never a merge.** Under the alias scheme
+this caught two cutters posting one description; under codes it catches a **duplicated
+code within one file**. Deliberately **per file only**: two *different* files' `T4`
+resolving to one library tool is the feature working as intended.
+
+**Guard (b) is retired.** It refused a manual bind when the file's parsed diameter
+disagreed with the library's. Two decisions removed its footing: the library is now
+the sole diameter authority and files are no longer parsed for diameter as a source of
+truth (§3.5.2), and `diameter_inches` is defined as *maximum cutting diameter*, which
+for every profile bit differs from a posted `D=` **by design** — `.25 Bowl Bit` is
+declared 0.75 against a nominal 0.25. An exact comparison would refuse correctly
+declared tools; a tolerance was already rejected as the wrong shape for the risk. So
+instead of a rule, **a display**: when binding an orphan, show the file's posted `D=`
+beside each candidate library tool, so a gross mismatch is visible without the app
+making a false-positive-prone judgement. What remains unguarded is an operator binding
+an orphan to the wrong tool — which was always operator judgement, and is now confined
+to the exception path.
+
+##### The description seal
+
+The code is assigned by hand, so it can be duplicated by hand. The failure is
+specific: you duplicate a Fusion tool entry to make a similar cutter, edit its
+description, and **forget to change the Product id**. Two physically different cutters
+now post one code, the app merges their passes into a single block, and one of them is
+cut with the wrong tool — §1's defect, reintroduced by copy-paste.
+
+**Guard (a) cannot catch this**, and the reason is structural. It only fires when two
+`T#` *in one file* resolve to one tool. Here they are in different files — and across
+files, two `T#` resolving to one tool is the **intended** behaviour: it is precisely
+how one cutter shared by two parts merges into a single block. The app cannot
+distinguish "two parts share a cutter" from "two cutters share a code" by that route.
+
+**So the library stores the descriptions each code is known to post, and a
+disagreement prompts.** This works because of *why* a tool gets duplicated: you
+duplicate it in order to make a different cutter, so you edit the description. That
+edit is the whole purpose of the duplication, and it is what gives the duplicate away.
+The legitimate case — one cutter used by six parts — posts a byte-identical string
+every time, because it is the same CAM library row rendered through a deterministic
+post.
+
+**This is not the alias list returning.** An alias list is a lookup index: a string
+finds the tool, so two cutters can collide on one string and ambiguity is possible.
+Here the code remains the only lookup key and `cam_descriptions[]` is a set of values
+*accepted under* that key. Nothing is ever searched by description, so nothing can be
+ambiguous.
+
+**Store a set, never a single string.** A single expected value that is replaced on
+each confirmation **thrashes**: after a rename, new files carry the new string and old
+files still carry the old one, so the prompt alternates between them forever. That
+trains click-through, which destroys the check. A set costs one prompt per rename,
+answered once, after which old and new files both match cleanly.
+
+**The prompt is two-way and must show both strings**, because its whole value is the
+operator's ability to read it:
 
 ```
-aliases: [
-  { string: "End Mill {0.5 inch}", file: "1001.nc", tool: "T2" } -> 1/2" downcut
-  { string: "End Mill {0.5 inch}", file: "1001.nc", tool: "T9" } -> 1/2" compression
-]
+RK-001 previously posted as:  12 DOWNCUT SPIRAL
+This file posts:              12 AMANA 46170-K DOWNCUT     -> a rename
+```
+```
+RK-001 previously posted as:  12 DOWNCUT SPIRAL
+This file posts:              12 COMPRESSION               -> not a rename
 ```
 
-Two properties this has and the rejected candidates did not. **It keeps the file
-usable** — the alternative was hard-stopping any VCarve file with colliding tool
-strings, which takes files out of the library until they are re-posted. And **it
-expires by construction**: a re-post of that file invalidates the bind, which is
-correct rather than unfortunate, because a re-post may genuinely have changed which
-cutter sits in `T9`. A file-scoped bind cannot leak across files, so the cross-file
-`T#` trust §3.1 warns about is never created — which is exactly why the bare-`T#`
-variant was rejected.
+*"Same tool, I renamed it"* adds the string to the set. *"Different tool"* means the
+code is duplicated and must be fixed in CAM. **It blocks rather than warns** — it is
+now the only cross-file detector of a wrong-tool cut, and a warning on a crash-class
+check is one that gets clicked through. Surface the set in the library UI too: three
+accepted descriptions on one code is a smell the operator can see.
 
-The scoping is **narrower than an alias, and must be stored as such.** An unqualified
-alias (`string` → tool) still matches anywhere; a `(string, file, T#)` alias matches
-only that file. A plain string alias must therefore never be *derived* from a
-file-scoped bind by dropping its qualifiers — that would silently widen a bind the
-operator made under a collision. Where a file has no collision, the ordinary
-string alias still applies and nothing is scoped.
+The plumbing exists. `TOOLDESC` already lands in `cam_description`, deliberately kept
+out of `description` so free text cannot move the compatibility signal (CLAUDE.md).
+That is the field this check reads.
+
+**Two accepted risks, recorded as accepted rather than guarded.**
+
+1. **A duplicate whose description was never edited** posts an identical code *and*
+   description, and is undetectable. But then the two CAM entries are indistinguishable
+   to the operator as well as to the app, in a ten-tool library.
+2. **Every string in the set is trusted permanently**, so the check is exactly as good
+   as the reading of the prompt. A wrong "same tool" answer is silent and durable.
+
+Both are accepted on the operator's judgement (2026-08-17) that tools are always drawn
+from one central CAM library, which makes duplication rare and puts it in front of the
+one person maintaining it. **Neither is monitored, and neither may be cited as a check
+that exists.**
 
 #### 3.5.4 Lifecycle
 
 The pattern across all of these: **the library can always be corrected, but a
 correction never silently changes what the machine will cut.**
 
-- **Merge two entries** — the operator picks the survivor, the loser's aliases fold
-  into it, the loser is deleted. That is all a merge needs to be, because aliases
-  carry identity: merging is the operator saying *"these strings were always the same
-  cutter."* Required because a VCarve file and a Fusion file for one physical cutter
-  will otherwise produce two entries.
+- **Merge two entries** — the operator picks the survivor, the loser's
+  `cam_descriptions` fold into it, the loser is deleted. **Rarer than it was**: one
+  code is typed into both CAM libraries, so a VCarve file and a Fusion file for one
+  physical cutter now resolve to one entry without help. Merging is left for
+  duplicates created before the codes were assigned. The survivor keeps its own code;
+  the loser's code is **not** kept as a second key, since that would reintroduce
+  many-keys-to-one-tool — fold the descriptions, drop the code.
 - **Deleting a tool that is in use is refused**, listing the placed parts that resolve
   to it (§3.4.1's attribution doing a second job).
 - **Editing `diameter_inches` or geometry on a placed tool re-runs collision and the
@@ -461,7 +586,9 @@ correction never silently changes what the machine will cut.**
 re-binding a *toolpath to a library tool* (identity) versus moving a *library tool to
 a pocket* (position). Blurring them re-creates the exact double-duty confusion §1
 exists to remove. Identity re-binding is also the one path that can merge two
-genuinely different cutters **by operator action**, which is what guard (b) is for.
+genuinely different cutters **by operator action** — and with guard (b) retired
+(§3.5.3) nothing refuses it, so the UI must show enough for the operator to get it
+right rather than rely on a check to catch it.
 
 #### 3.5.5 The declared library (2026-08-17)
 
@@ -491,6 +618,21 @@ moves or changes:
 
 Slot 8 is unclaimed; slots 2 and 4 are contested (§3.5.6); `.25 Bowl Bit` stages.
 
+**The `Product ID` column is where the code goes, and it is empty on all ten rows**
+(#9, 2026-08-17). The CSV's shape does not change — the column already exists; what
+changes is what fills it. It carries a **shop-assigned code**, unique per physical
+cutter, rather than a manufacturer part number, and **the same code is typed into
+Fusion's Product id and into the VCarve tool name** (§3.1). Where the manufacturer's
+part number matters for reordering it belongs in `product_link` or the notes, not
+here.
+
+Assigning those ten codes is the one prerequisite to building against this spec, and
+it is the operator's to do. Until then every file orphans, which is the safe default
+rather than a broken state — but nothing auto-matches, so the feature cannot be
+exercised end to end. Two rows to watch while assigning: `0.5" x 1.25 End Mill` and
+`0.5" x 2.0 End Mill` are the pair most likely to have been created in CAM by
+duplication, which is precisely the case §3.5.3's seal exists to catch.
+
 **`flute_direction` exists, and that was the whole blocker.** Four Downcut, one Upcut,
 five Straight, no compression. §3.1's claim — that this fact lives in no file the shop
 owns and therefore only the library can hold it — is now backed by data rather than
@@ -508,32 +650,28 @@ path is exercised by real data on day one rather than being dead code.
   difference between a valid placement and running a hard stop. It is the sharpest
   available argument for §3.5.2: the stale number was in the file the app reads today.
 
-  **2.38" is a rough measurement, and that decides how guard (b) behaves** (operator,
-  2026-08-17). The parser reads `D=59.728` mm = **2.3515"** from `39x35.nc`, which
-  disagrees with the declared 2.38 by 0.0285". §3.5.3 guard (b) refuses a manual bind
-  on diameter disagreement, so as it stands this real pair would be **refused**. The
-  operator's ruling is to **fix the declared figures when the library is built, not to
-  loosen the guard** — so:
+  **2.38" is a rough measurement, and nothing in the app will now object to that**
+  (revised 2026-08-17 under #9). The parser reads `D=59.728` mm = **2.3515"** from
+  `39x35.nc`, disagreeing with the declared 2.38 by 0.0285". The earlier ruling made
+  guard (b) refuse such a bind, on the reasoning that an exact-or-refuse rule is what
+  gets a rough figure corrected. **Guard (b) is now retired** (§3.5.3): it compared
+  against `diameter_inches`, which is *maximum cutting diameter* and therefore differs
+  from a posted `D=` by design on every profile bit.
 
-  - **Guard (b) stays exact. Do not add a tolerance.** A tolerance is the wrong shape
-    for the risk it guards: the failure it exists to catch is binding a 0.25" toolpath
-    to a 0.5" tool, and any tolerance wide enough to absorb tape-measure error is
-    narrower than nothing useful and wider than zero — it buys nothing and licenses
-    drift. Exact-or-refuse also makes the refusal *informative*: it tells the operator
-    their declared number is wrong, which is the only way a rough figure ever gets
-    corrected.
-  - **Therefore declared diameters must be the cutter's real geometry, not a
-    measurement.** For any tool that appears in a posted file, the file's own `D=` is
-    the better source — and §3.5.2 already makes the library the authority the *app*
-    reads, so a rough number there propagates straight into the X envelope check. The
-    library UI should show the parsed `D=` alongside the declared value on a refused
-    bind, so correcting it is one glance rather than an investigation.
+  The conclusion that ruling reached still stands, and now stands **unenforced**:
+  **declared diameters must be the cutter's real geometry, not a tape-measure
+  figure.** §3.5.2 makes the library the sole authority the app reads, so a rough
+  number propagates straight into the X envelope check with nothing downstream to
+  catch it. Where the safe direction is unclear, over-declare — that costs a placement
+  that would have fit, while under-declaring puts the cutting edge somewhere the check
+  called clear.
 
   This is the general case, not a one-off: `1/8 Roundover` is declared 0.3" while the
   only radius mill in the corpus posts `D=3.175` mm = 0.125", and the 45° chamfer mill
-  in all four Rail files has **no library entry at all**. Both surface as refusals or
-  no-matches on first load, which is the system working — but they are the same
-  rough-declaration problem, so expect to correct several rows, not one.
+  in all four Rail files has **no library entry at all**. The chamfer mill still
+  surfaces on first load — it orphans, and creating it is the prompt's job. The rough
+  diameters do not surface at all, which is exactly why they are worth a deliberate
+  pass over the ten rows before the library is built.
 - **`config.json`'s `tools` map is junk in its entirety** (operator, 2026-08-17), not
   "mostly junk". Nothing in it survives — see §8.
 
@@ -713,26 +851,18 @@ Resolved:
 
 | # | Ticket | Answer |
 |---|---|---|
+| [#9](https://github.com/refine-drew/cnc-nest-app/issues/9) | Define tool identity matching, and no-match behaviour | **Resolved 2026-08-17** — see §3.1, §3.5.1, §3.5.3. Identity is a **shop-assigned code**, typed by hand into Fusion's Product id and VCarve's tool name, and matched exactly. Present and known → match; absent → orphan and bind for that run only. The alias list, its collision hole and guard (b) are all **deleted**; guard (a) survives with a new job. A **description seal** (`cam_descriptions[]`) is the only detector of a code duplicated in CAM, and it blocks |
 | [#8](https://github.com/refine-drew/cnc-nest-app/issues/8) | Which safety posture? | **Posture 2 — "auto tool" on, every job** (2026-08-17, operator's call). The machine check that would confirm the self-correcting claim was **declined**; see §6.1 for what that leaves unproven. The 57 s default already prices this posture, so no code changes |
 | [#6](https://github.com/refine-drew/cnc-nest-app/issues/6) | How long is one touch-off cycle? | **Swap 27 s, swap + touch-off 57 s → touch-off is 30 s** (2026-08-17, timed on the machine). Charged on every `T# M06`. See §6.1 |
 | [#10](https://github.com/refine-drew/cnc-nest-app/issues/10) | Pocket auto-assignment and conflict resolution | **Resolved 2026-08-17** — see §3.2.1, §3.4, §3.5. **The assigner makes no arbitrary choices**: no tie-break (collisions surface), no fill rule (blanks stage), no write-back (defaults are prescriptive), nothing refused at placement. Determinism follows. Taken **ahead of #9** on the grounds that assignment consumes *"a set of resolved tools each with an optional default slot"* and does not care how resolution happened |
 | [#7](https://github.com/refine-drew/cnc-nest-app/issues/7) | Tool-change undercount | **Fixed** — counted off the emitted blocks, not distinct tools |
-| [#4](https://github.com/refine-drew/cnc-nest-app/issues/4) | Can tool identity come from the VCarve tool database? | **No** — see §3.1. The library is hand-maintained, with aliases |
+| [#4](https://github.com/refine-drew/cnc-nest-app/issues/4) | Can tool identity come from the VCarve tool database? | **No** — see §3.1. The library is hand-maintained. Its "many-to-one alias list" conclusion was **superseded by #9**: identity is a hand-assigned code instead, which VCarve *can* carry, in the tool name |
 | [#5](https://github.com/refine-drew/cnc-nest-app/issues/5) | Does the SS2 control honour `G43 H#`? | **Assumed yes** (2026-08-17, operator's call) — see §4.1. Syntec documents `H` as a register index; the machine check was not run. The assumption is the strict branch, so `H`-follows-pocket is load-bearing and the geometry test must cover `H` |
-| [#21](https://github.com/refine-drew/cnc-nest-app/issues/21) | What stable per-tool identity can the Fusion REFINE post emit? | **`vendor` + `productId`**, or an explicit `comment`. No library-wide GUID exists; `toolId` is document-scoped and must not be used. Identity therefore rests on operator-maintained Fusion library fields — which looked like it put CAM tool hygiene on the critical path. **It does not, as of #10:** the app imports no CAM library and the alias list carries identity, so hygiene is a hit-rate improvement, not a precondition. See §6.2 |
+| [#21](https://github.com/refine-drew/cnc-nest-app/issues/21) | What stable per-tool identity can the Fusion REFINE post emit? | **`vendor` + `productId`**, or an explicit `comment`. No library-wide GUID exists; `toolId` is document-scoped and must not be used. Identity therefore rests on operator-maintained Fusion library fields — which looked like it put CAM tool hygiene on the critical path. **It does not, as of #10:** the app imports no CAM library and the alias list carries identity, so hygiene is a hit-rate improvement, not a precondition. **Revised by #9:** `productId` *is* the key after all, but because the operator writes a shop code into it — exactness comes from the shop's numbering, not from CAM hygiene. See §6.2 |
 
 Blocked:
 
-*(nothing — #9 was the last entry and #20, its blocker, closed 2026-08-17.)*
-
-| # | Ticket | Status |
-|---|---|---|
-| [#9](https://github.com/refine-drew/cnc-nest-app/issues/9) | Define tool identity matching, and no-match behaviour | **Unblocked** — #20 and #21 both closed. It now owns only the matching rule itself; every branch that surrounded it (no-match, manual bind, the two guards, the alias-collision hole) is settled in §3.5.3 |
-
-#10 answered several of #9's branches in passing — no-match prompts tool creation,
-manual binding is supported, and the two guards in §3.5.3 are settled. The
-alias-collision hole **closed 2026-08-17**: a bind under a string collision is scoped
-to `(filename, T#)` (§3.5.3). What #9 still owns is the **matching rule itself**.
+*(nothing.)*
 
 ### 6.1 The decision that matters most
 
@@ -847,6 +977,16 @@ the key. Identity is carried by the **alias list**, learned one manual bind at a
 **§7's out-of-scope ruling stands unchanged.** The scope problem dissolved rather
 than being decided.
 
+**Superseded the same day by #9, and the resolution is better than either branch.**
+The reasoning above treats `productId` as whatever the *manufacturer* published, which
+is why it looked unreliable enough to need aliases behind it. It does not have to be:
+**the operator writes a shop-assigned code into that field** (§3.1). So the key is
+exact after all — but the exactness comes from the shop's own numbering rather than
+from CAM hygiene, and it is `PRODUCT` **alone**, with `VENDOR` demoted to reordering
+information. §7's ruling still stands, for a narrower reason than the one above: what
+stays out of scope is the *content* of the CAM libraries, and filling in ten codes is
+a bounded setup task rather than an open-ended hygiene programme.
+
 #### 6.2.1 Decided: the REFINE post will emit an identity token (2026-08-17)
 
 *"Let's change the Fusion post to emit what we need to make the library safer to
@@ -857,6 +997,30 @@ existing `(T2 D=12.7 …)` line:
 ```
 (TOOLID T2 VENDOR=Amana PRODUCT=46170-K FLUTES=3 TYPE=TOOL_MILLING_END_FLAT D=12.7 CR=0. DESC=1/2 downcut spiral)
 ```
+
+> **The format below is the proposal, not what shipped.** The built version splits
+> across two lines and carries no geometry:
+>
+> ```
+> (TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)
+> (TOOLDESC T2 12 DOWNCUT SPIRAL)
+> ```
+>
+> Three constraints in `settings.comments` forced it, and they are easy to trip over
+> when editing the post: comments are uppercased, filtered to `" a-z0-9.,=_-"` (so
+> `/` and `"` vanish from free text), and **truncated at 80 characters**. Truncation
+> *omits* fields, which would defeat the empty-vs-missing rule below — so the identity
+> line carries no geometry (`D`/`CR`/`TYPE` are already on the tool-list line above
+> it), and the one unbounded field, the description, sits on its own line where a
+> truncation can only cost free text. **Adding a field to the `TOOLID` line means
+> re-checking that budget.** Both halves are built: `post/syntec 4.cps:3088`
+> `writeToolIdentity` emits them and `gcode_parser` reads them
+> (`TOOLID_PATTERN` / `TOOLDESC_PATTERN`).
+>
+> **Under #9 the load-bearing field is `PRODUCT`, and it now carries a shop-assigned
+> code** rather than a manufacturer part number (§3.1). `VENDOR` and `FLUTES` are
+> retained but unread by the app. `TOOLDESC` feeds the description seal (§3.5.3),
+> which is what makes it worth emitting rather than merely nice to have.
 
 Rules the format has to obey, each for a stated reason:
 
@@ -937,9 +1101,12 @@ still equals its preceding `T`.
 - **CAM-side tool hygiene in Fusion/VCarve.** A parallel effort already intended,
   independent of this map. *Amended 2026-08-17:* **the REFINE post itself is in
   scope** — §6.2.1 specifies an identity comment it must emit, because we own that
-  post. What stays out is the *content* of the Fusion tool library: populating
-  `vendor`/`productId` per cutter is the operator's parallel effort, and the app
-  degrades to alias matching without it.
+  post. What stays out is the *content* of the CAM libraries: assigning a code per
+  cutter (§3.1) is the operator's work, and without it a tool orphans to a manual bind
+  rather than failing. *Revised again under #9:* that content is no longer open-ended
+  hygiene but **one bounded task — ten codes, typed into two tool databases**. Out of
+  scope still, but it is now a prerequisite with a finish line rather than a standing
+  effort, and §3.5.5 names it as the one thing blocking an end-to-end trial.
 
 ## 8. Not yet specified
 
@@ -970,10 +1137,18 @@ Closed since this list was written:
 
 New, opened by #10:
 
-- ~~**The alias-collision hole**~~ **Answered** 2026-08-17 — §3.5.3. A bind made under a
-  string collision is scoped to `(filename, T#)`: `T#` is accepted as a discriminator
-  but only inside the file it was read from, so the file stays usable and the bind
-  expires on re-post rather than leaking across files.
+- ~~**The alias-collision hole**~~ **Void** — the mechanism it was a hole in no longer
+  exists (#9, 2026-08-17). It was first answered by scoping a bind to `(filename, T#)`,
+  then made moot hours later: with identity carried by a code, there are no aliases to
+  collide, no string is ever compared, and a bind is job-scoped so nothing durable is
+  keyed on `T#` at all. §3.5.3 replaces both answers.
+
+  **A different hole opened in its place, and it is not the same shape.** Aliases could
+  collide because a *string* was the key; a code can be duplicated because a *human*
+  assigns it. The first was a property of the data the app read, detectable by
+  inspecting one file. The second is a property of the CAM library the app cannot see,
+  detectable only through the description seal — which catches it whenever the operator
+  edited the description, and never when they did not.
 - **Fusion/VCarve library sync** — deliberately deferred (§3.5), explicitly not a
   dependency. Whoever takes it must pin a real `.tools` / `.vtdb` file as a fixture;
   neither format has been verified against an actual file yet. Note the Fusion library
@@ -992,12 +1167,15 @@ New, opened by #10:
 | `gcode_generator.py:56-71` | Capacity check counts `T#` strings, not physical tools |
 | `app.py:241` `_tool_compatibility` | Already detects the conflict; advisory only |
 | `app.py:232` | Under-reports tool changes (§5) |
-| `gcode_parser.py:137` `extract_tools` | Source of per-file `{T#: {description, diameter}}` |
-| `tool_library.py` | Today a `T#`→diameter registry; becomes the identity library (§3.5) |
+| `gcode_parser.py:137` `extract_tools` | Source of per-file tool data. What the feature reads from it narrows to the **code token** and `cam_description`; the parsed diameter stops being authoritative (§3.5.2) |
+| `gcode_parser.py` `_extract_diameter` | **Retire the bare-decimal fallback** — it would read a code like `RK-004` as a 0.04" cutter, a 25× under-inflation (§3.5.2) |
+| `gcode_parser.py` `TOOLID_PATTERN` / `_toolid_fields` | Already reads `PRODUCT=`; that value becomes the match key. The `""`-vs-absent distinction stays load-bearing — empty means the CAM entry needs a code |
+| `post/syntec 4.cps:3088` `writeToolIdentity` | Already emits `PRODUCT=` from `tool.productId`. **No post change is needed for #9** — the field just stops being empty |
+| `tool_library.py` | Today a `T#`→diameter registry; becomes the identity library keyed by **code** (§3.5) |
 | `tool_library.py:39` `find_unknown_tools` | Existing block-on-unresolvable pattern to mirror |
 | `config.json` `tools` | **Delete** — junk in its entirety, migrates nothing (§8). Its `T4` diameter is wrong by 1.6" |
-| `Source Data/Refine Tools - Sheet1.csv` | The operator's declared library — 10 tools; seeds `tool_library.json` (§3.5.5) |
-| `tool_library.json` | **New** — the identity library, `id`-keyed, operator data (§3.5) |
+| `Source Data/Refine Tools - Sheet1.csv` | The operator's declared library — 10 tools; seeds `tool_library.json` (§3.5.5). Its **`Product ID` column carries the shop code** and is empty on every row today |
+| `tool_library.json` | **New** — the identity library, **`code`-keyed**, operator data (§3.5) |
 | `static/bed.js`, `static/sidebar.js` | Where the changer UI has to live |
 | `templates/index.html:24` `#main` grid | The dock is a new full-width row above `#statusbar` (§3.4.1) |
 | `templates/index.html:201` `#compat-section` | **Retired** by the changer dock — this is the screen budget |
