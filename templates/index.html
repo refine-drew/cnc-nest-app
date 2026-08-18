@@ -42,12 +42,20 @@ body{display:flex;flex-direction:column}
 #main.left-hidden #rh-left{cursor:default;background:#242426}
 #main.right-hidden #rh-right{cursor:default;background:#242426}
 /* prevent text-select during drag */
-body.resizing{user-select:none;cursor:col-resize}
+body.resizing-x{user-select:none;cursor:col-resize}
+body.resizing-y{user-select:none;cursor:row-resize}
+/* In-panel divider. Deliberately a separate element sitting on the rule between two
+   sections rather than the h2 itself — clicking a header to collapse its section is a
+   likely next ask, and the two gestures must not fight over the same pixels (#29). */
+.split{flex:none;height:5px;background:#2a2a2a;cursor:row-resize;transition:background .1s}
+.split:hover,.split.dragging{background:#0a84ff}
+#dock-grip{height:5px;background:#2a2a2a;cursor:row-resize;transition:background .1s}
+#dock-grip:hover,#dock-grip.dragging{background:#0a84ff}
 
 /* ── library section ── */
 #lib-search{padding:6px 8px;border-bottom:1px solid #333}
 #lib-search input{width:100%}
-#lib-tree{flex:1;overflow-y:auto;padding:4px 0}
+#lib-tree{flex:none;height:var(--lib-h,240px);min-height:60px;overflow-y:auto;padding:4px 0}
 .lib-folder{cursor:pointer;padding:3px 8px 3px 6px;user-select:none;display:flex;align-items:center;gap:4px;color:#ccc}
 .lib-folder:hover{background:#2c2c2e}
 .lib-folder .arrow{font-size:10px;width:12px;text-align:center;color:#666}
@@ -61,7 +69,7 @@ body.resizing{user-select:none;cursor:col-resize}
 .lib-folder-children.collapsed{display:none}
 
 /* ── parts tray ── */
-#tray-list{overflow-y:auto;padding:4px 0;flex:1}
+#tray-list{overflow-y:auto;padding:4px 0;flex:1;min-height:60px}
 .tray-item{padding:5px 8px;display:flex;align-items:flex-start;gap:6px;cursor:grab;border-bottom:1px solid #2a2a2a;position:relative}
 .tray-item:hover{background:#2c2c2e}
 .tray-item .dot{width:10px;height:10px;border-radius:50%;flex:none;margin-top:2px}
@@ -92,13 +100,16 @@ body.resizing{user-select:none;cursor:col-resize}
 
 /* ── right sidebar ── */
 #sidebar-right{display:flex;flex-direction:column;overflow:hidden}
-#placements-list{overflow-y:auto;padding:4px 0;max-height:160px}
+#placements-list{overflow-y:auto;padding:4px 0;flex:none;height:var(--pl-h,160px);min-height:60px}
 .placement-row{padding:4px 10px;display:flex;align-items:center;gap:6px;font-size:12px;border-bottom:1px solid #2a2a2a}
 .placement-row .slot-label{font-weight:600;color:#0a84ff;min-width:36px}
 .placement-row .pname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#ccc}
 .placement-row .remove-btn{background:none;border:none;color:#666;font-size:13px;padding:0;cursor:pointer}
 .placement-row .remove-btn:hover{color:#ff453a}
 .placement-row .frees{font-size:10px;color:#8a8a70;white-space:nowrap}
+/* Every section now has either a scroller or a floor, so nothing can clip
+   unreachably the way Job Info used to when the dock squeezed the column. */
+#job-section{flex:1;min-height:0;overflow-y:auto}
 #job-stats{padding:8px 10px;font-size:12px;color:#888;line-height:1.8}
 #job-stats .val{color:#ccc}
 #safe-z-info{padding:6px 10px;font-size:12px;border-top:1px solid #333}
@@ -119,7 +130,7 @@ body.resizing{user-select:none;cursor:col-resize}
 #dock-body{padding:0 8px 8px;display:flex;flex-direction:column;gap:6px}
 #dock.collapsed #dock-body{display:none}
 #dock-pockets{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:5px}
-.pocket{background:#202022;border:1px solid #333;border-radius:5px;min-height:92px;display:flex;flex-direction:column;transition:border-color .12s,background .12s;min-width:0}
+.pocket{background:#202022;border:1px solid #333;border-radius:5px;min-height:var(--pocket-h,92px);display:flex;flex-direction:column;transition:border-color .12s,background .12s;min-width:0}
 .pocket-no{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:#5f5f63;padding:3px 6px 2px;letter-spacing:.06em;display:flex;justify-content:space-between;align-items:center}
 .pocket-no .free{text-transform:uppercase;letter-spacing:.1em;font-size:9px}
 .pocket-cards{flex:1;display:flex;flex-direction:column;gap:3px;padding:0 4px 4px}
@@ -268,6 +279,7 @@ table.audit td.feed-varies{color:#ffd60a}
     <h2>Library <button id="btn-refresh-library" title="Refresh library" style="background:none;border:none;cursor:pointer;font-size:14px;padding:0 4px;color:#aaa;float:right;line-height:1" tabindex="-1">↻</button></h2>
     <div id="lib-search"><input type="text" id="lib-search-input" placeholder="Search files…"/></div>
     <div id="lib-tree"></div>
+    <div class="split" id="split-left" title="Drag to rebalance"></div>
     <h2>Parts Tray</h2>
     <div id="tray-list"><div id="tray-empty">Drag files from library</div></div>
   </div>
@@ -297,10 +309,12 @@ table.audit td.feed-varies{color:#ffd60a}
   <div id="sidebar-right" class="sidebar">
     <h2>Placements</h2>
     <div id="placements-list"></div>
+    <div class="split" id="split-right" title="Drag to rebalance"></div>
     <!-- "Tool Compatibility" lived here. The changer dock replaces it — that panel
          existed to show the symptom this feature removes, and it is where the dock's
          screen budget came from (spec §3.4.1). -->
     <h2>Job Info</h2>
+    <div id="job-section">
     <div id="safe-z-info" style="font-size:12px;color:#888">Safe Z: —</div>
     <div id="job-stats">
       Parts placed: <span class="val" id="stat-placed">0</span><br>
@@ -309,12 +323,14 @@ table.audit td.feed-varies{color:#ffd60a}
       Est. runtime: <span class="val" id="stat-runtime">—</span><br>
       Utilization: <span class="val" id="stat-util">0%</span>
     </div>
+    </div>
   </div>
 
 </div>
 
 <!-- ── tool changer dock ── -->
 <div id="dock" style="display:none">
+  <div id="dock-grip" title="Drag to make the pockets taller"></div>
   <div id="dock-head">
     <span class="lbl">Tool changer</span>
     <span id="dock-verdict"></span>
@@ -534,100 +550,8 @@ function _set(id, val) {
   if (el) el.textContent = val;
 }
 </script>
-<script>
-// ── sidebar resize & collapse ─────────────────────────────────────────────
-(function() {
-  const MIN = 140, MAX = 520;
-  let dragging = null; // {side:'left'|'right', startX, startW}
 
-  const main     = document.getElementById("main");
-  const rhLeft   = document.getElementById("rh-left");
-  const rhRight  = document.getElementById("rh-right");
-  const tabLeft  = document.getElementById("tab-left");
-  const tabRight = document.getElementById("tab-right");
-
-  function lw() { return parseFloat(getComputedStyle(main).getPropertyValue("--lw")) || 240; }
-  function rw() { return parseFloat(getComputedStyle(main).getPropertyValue("--rw")) || 260; }
-  function setLW(w) { main.style.setProperty("--lw", Math.max(MIN, Math.min(MAX, w)) + "px"); }
-  function setRW(w) { main.style.setProperty("--rw", Math.max(MIN, Math.min(MAX, w)) + "px"); }
-
-  // Collapse / expand
-  let leftHidden = false, rightHidden = false;
-  // Save last known widths so they restore on re-open
-  let savedLW = 240, savedRW = 260;
-
-  function toggleLeft() {
-    leftHidden = !leftHidden;
-    if (leftHidden) {
-      savedLW = lw();
-      main.classList.add("left-hidden");
-      document.getElementById("sidebar-left").classList.add("hidden");
-      tabLeft.textContent = "▶";
-      tabLeft.title = "Show library";
-    } else {
-      main.classList.remove("left-hidden");
-      document.getElementById("sidebar-left").classList.remove("hidden");
-      setLW(savedLW);
-      tabLeft.textContent = "◀";
-      tabLeft.title = "Hide library";
-    }
-    if (window.BedCanvas) BedCanvas.render();
-  }
-
-  function toggleRight() {
-    rightHidden = !rightHidden;
-    if (rightHidden) {
-      savedRW = rw();
-      main.classList.add("right-hidden");
-      document.getElementById("sidebar-right").classList.add("hidden");
-      tabRight.textContent = "◀";
-      tabRight.title = "Show job panel";
-    } else {
-      main.classList.remove("right-hidden");
-      document.getElementById("sidebar-right").classList.remove("hidden");
-      setRW(savedRW);
-      tabRight.textContent = "▶";
-      tabRight.title = "Hide job panel";
-    }
-    if (window.BedCanvas) BedCanvas.render();
-  }
-
-  tabLeft.addEventListener("click",  e => { e.stopPropagation(); toggleLeft();  });
-  tabRight.addEventListener("click", e => { e.stopPropagation(); toggleRight(); });
-
-  // Drag to resize
-  function startDrag(e, side) {
-    if (e.target === tabLeft || e.target === tabRight) return;
-    if (side === "left"  && leftHidden)  return;
-    if (side === "right" && rightHidden) return;
-    dragging = { side, startX: e.clientX, startW: side === "left" ? lw() : rw() };
-    document.body.classList.add("resizing");
-    rhLeft.classList.toggle("dragging",  side === "left");
-    rhRight.classList.toggle("dragging", side === "right");
-    e.preventDefault();
-  }
-
-  rhLeft.addEventListener("mousedown",  e => startDrag(e, "left"));
-  rhRight.addEventListener("mousedown", e => startDrag(e, "right"));
-
-  document.addEventListener("mousemove", e => {
-    if (!dragging) return;
-    const dx = e.clientX - dragging.startX;
-    if (dragging.side === "left")  setLW(dragging.startW + dx);
-    else                           setRW(dragging.startW - dx);
-    if (window.BedCanvas) BedCanvas.render();
-  });
-
-  document.addEventListener("mouseup", () => {
-    if (!dragging) return;
-    dragging = null;
-    document.body.classList.remove("resizing");
-    rhLeft.classList.remove("dragging");
-    rhRight.classList.remove("dragging");
-  });
-})();
-</script>
-
+<script src="/static/layout.js"></script>
 <script src="/static/toollib.js"></script>
 <script src="/static/changer.js"></script>
 <script src="/static/bed.js"></script>

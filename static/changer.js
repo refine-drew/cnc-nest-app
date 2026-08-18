@@ -18,6 +18,8 @@
  */
 
 var Changer = (() => {
+  // Survives a reload via Layout's localStorage blob (#29) — a dev server gets
+  // reloaded a lot, and a panel state that resets is one the operator stops setting.
   let collapsed = false;
   let dragCode = null;
 
@@ -352,10 +354,12 @@ var Changer = (() => {
   }
 
   function init() {
+    collapsed = !!(window.Layout && Layout.get("dockCollapsed"));
     document.getElementById("dock-head").addEventListener("click", e => {
       if (e.target.closest("button")) return;
       if (!state().valid) return;      // locked open while Generate is blocked
       collapsed = !collapsed;
+      if (window.Layout) Layout.setFlag("dockCollapsed", collapsed);
       render();
     });
     document.getElementById("dock-reset").addEventListener("click", e => {
