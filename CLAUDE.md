@@ -511,6 +511,35 @@ cutter, a 25× **under**-inflation. The earlier plan to *verify* `CR=`/`TAPER=` 
 the declaration was dropped along with those schema fields — the check is not built,
 and §3.5.3 records the risk that leaves as accepted.
 
+**Motion is modal, and every walker must carry it** (2026-08-19). VCarve repeats the
+motion word on every block, so `\bG0?[0-3]\b` on the line was an adequate stand-in for
+"is this a move, and which kind" — until Fusion, which names `G01` once and then posts
+bare coordinate lines (`X308.142 Y12.318`) for most of a file. Each walker that asked
+the old question skipped those lines **and left its position stale**, then measured the
+next explicit block from wherever the last one ended: a chord across the part instead of
+the path around it. `18G5.nc` previewed as a skewed outline with a diagonal through it
+and estimated at 75 s; across the library the Fusion files gained 1.5–3.6× the segments
+and up to **23×** the runtime (`Vacuum Puck.nc`, 19.9 s → 465.8 s), while every VCarve
+file moved by one segment and under a second. `gcode_parser.motion_mode` /
+`is_modal_move` are the single rule; `extract_file_segments`, `scan_z_values`,
+`runtime_estimator` and `audit_metrics` all read it. Three parts of it are load-bearing:
+
+- **A coordinate is not a move on its own.** `G28 G91 X0. Y0.` — which Fusion writes to
+  end a program — would inherit G01 and draw a cut back to the origin across everything
+  the part just cut. `NON_MODAL_COORD_PATTERN` (G10/G28/G30/G53/G92) rules those out.
+- **`scan_z_values` reads the modal mode too**, and that one is a safety check: Fusion
+  ramps down on bare coordinate lines, so the old walk could miss the deepest Z in the
+  file, which is exactly what `validate_z` compares against the spoilboard. No library
+  file's `min_z` actually changed, but the hole was real.
+- **A pass draws nothing before its first position is known.** Position starts unknown
+  rather than at (0,0) — the tool is at the changer when a pass begins, so a segment
+  from the blank's corner to the first rapid is a line the machine never travels. It was
+  the diagonal slash in every preview. Carrying the previous pass's end across the tool
+  change would just draw a different fictional line, so the reset is per pass.
+
+`gcode_generator` was never affected — it rewrites coordinates wherever they appear and
+reorders whole pass bodies, each of which opens with an explicit `G00`.
+
 **Every parse assumes the file's origin is the blank's registration corner** —
 the VCarve convention, where all coordinates are positive. Nothing checks it.
 Turning the envelope on immediately caught two library files that violate it:

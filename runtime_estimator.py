@@ -11,6 +11,8 @@ Per project convention:
   - Z-only G1 plunges are ignored (treated as zero time).
   - F-words and coordinates are interpreted under the currently-modal units;
     G20/G70 lines switch to inches, G21/G71 lines switch to mm.
+  - Motion is modal too: a line with coordinates and no G-word moves under the
+    mode still in force. Fusion posts most of a file that way.
   - VCarve output here is metric (G71), and the rest of the app treats
     coordinates as mm, so the estimator defaults to mm if no units
     directive is seen.
@@ -21,14 +23,12 @@ from typing import Iterable, List
 # Pre-compiled patterns. Re-use the parser's for X/Y/Z extraction so we stay
 # in sync with what the rest of the app treats as a coordinate.
 import re
-from gcode_parser import COORD_PATTERN, TOOL_CHANGE_PATTERN
+from gcode_parser import (
+    COORD_PATTERN, TOOL_CHANGE_PATTERN, is_modal_move, motion_mode,
+)
 
 _F_PATTERN = re.compile(r"\bF\s*([0-9.]+)")
 _IJ_PATTERN = re.compile(r"([IJ])\s*([+-]?\d*\.?\d+)")
-_G0_PATTERN = re.compile(r"\bG0?0\b")
-_G1_PATTERN = re.compile(r"\bG0?1\b")
-_G2_PATTERN = re.compile(r"\bG0?2\b")
-_G3_PATTERN = re.compile(r"\bG0?3\b")
 _G20_PATTERN = re.compile(r"\bG20\b")
 _G21_PATTERN = re.compile(r"\bG21\b")
 _G70_PATTERN = re.compile(r"\bG70\b")
@@ -84,6 +84,11 @@ def estimate_lines_runtime(
     unit_scale = 1.0
     cur_x = cur_y = cur_z = 0.0
     cur_f = 0.0  # mm/min when used; converted on the fly via unit_scale
+    # Motion is modal (see gcode_parser.motion_mode). Fusion writes G01 once and
+    # then bare coordinate lines; reading the mode off each line skipped those and
+    # left the position stale, so the next explicit block was timed as a chord
+    # across the part. 18G5.nc estimated at 75 s against a real cycle of minutes.
+    mode = None
 
     for raw in lines:
         if not raw:
@@ -107,13 +112,11 @@ def estimate_lines_runtime(
         if f_match:
             cur_f = float(f_match.group(1))
 
-        is_g0 = bool(_G0_PATTERN.search(s))
-        is_g1 = bool(_G1_PATTERN.search(s))
-        is_g2 = bool(_G2_PATTERN.search(s))
-        is_g3 = bool(_G3_PATTERN.search(s))
-
-        if not (is_g0 or is_g1 or is_g2 or is_g3):
+        mode = motion_mode(s, mode)
+        if not is_modal_move(s, mode):
             continue
+
+        is_g0, is_g1, is_g2, is_g3 = (mode == 0), (mode == 1), (mode == 2), (mode == 3)
 
         new_x, new_y, new_z = cur_x, cur_y, cur_z
         for axis, val in COORD_PATTERN.findall(s):

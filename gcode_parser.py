@@ -54,6 +54,27 @@ TOOL_CHANGE_PATTERN = re.compile(r"\bT(\d+)\s+M06\b", re.IGNORECASE)
 G43_Z_PATTERN = re.compile(r"\bG43\b.*\bZ([+-]?\d*\.?\d+)", re.IGNORECASE)
 CUTTING_MOVE_PATTERN = re.compile(r"\bG0?[123]\b", re.IGNORECASE)
 MACHINE_COORD_PATTERN = re.compile(r"\bG53\b", re.IGNORECASE)
+
+# **Motion is modal, and reading it off the line is wrong.** VCarve repeats the
+# motion word on every block, so for years "does this line say G0/G1/G2/G3?" was an
+# adequate stand-in for "is this a move, and which kind?". Fusion's post does not:
+# it writes `G01` once and then bare coordinate lines (`X308.142 Y12.318`) until the
+# mode changes, which is 90% of the moves in a Fusion file. Every walker that asked
+# the old question skipped those lines *and* left its position stale, so it then
+# measured the next explicit block from wherever the last one ended — a chord across
+# the part instead of the path around it. That is why 18G5.nc previewed as a skewed
+# outline with a diagonal through it, and why its runtime came out at 75 s.
+#
+# Carry the mode instead, with `motion_mode`. Three rules keep it honest:
+#   - a plane/offset/feed word is not motion: `\bG0?[0-3]\b` must not match G17,
+#     G28, G43, G53, G90 or G94, which is what the `\b` at both ends buys;
+#   - a line with no XYZ word does not move, whatever mode is current;
+#   - the codes below carry coordinates that are *not* a modal move — G53 is
+#     machine-frame, G28/G30 route via an intermediate point, G92/G10 set offsets
+#     rather than move at all. Treating `G28 G91 X0. Y0.` as a modal G01 would draw
+#     a cut back to the origin that the machine never makes.
+MOTION_WORD_PATTERN = re.compile(r"\bG0?([0-3])\b", re.IGNORECASE)
+NON_MODAL_COORD_PATTERN = re.compile(r"\bG(?:10|28|30|53|92)\b", re.IGNORECASE)
 BARE_COMMENT_PATTERN = re.compile(r"^\(([^)]*)\)$")
 
 # Comments that are file metadata rather than a toolpath name. A toolpath name
@@ -317,6 +338,25 @@ def extract_tools(lines: List[str]) -> Dict[str, Dict[str, Optional[float]]]:
     return tools
 
 
+def motion_mode(line: str, current: Optional[int]) -> Optional[int]:
+    """The modal motion mode in effect for `line`: 0, 1, 2, 3, or None if unset.
+
+    A line that names a motion word sets the mode; any other line inherits it. The
+    caller still has to decide whether the line *moves* — see `is_modal_move`.
+    """
+    match = MOTION_WORD_PATTERN.search(line)
+    return int(match.group(1)) if match else current
+
+
+def is_modal_move(line: str, mode: Optional[int]) -> bool:
+    """True if `line` is a work-coordinate move under the current modal mode."""
+    if mode is None:
+        return False
+    if NON_MODAL_COORD_PATTERN.search(line):
+        return False
+    return bool(COORD_PATTERN.search(line))
+
+
 def extract_tool_number_from_line(line: str) -> Optional[str]:
     match = re.search(r"\b(T\d+)\b", line, re.IGNORECASE)
     return match.group(1).upper() if match else None
@@ -373,10 +413,15 @@ def scan_z_values(lines: List[str]) -> Tuple[Optional[float], Optional[float], O
     max_z = float("-inf")
     found_z = False
     safe_z: Optional[float] = None
+    mode: Optional[int] = None
 
     for line in lines:
         if line.startswith("("):
             continue
+
+        # Modal mode is tracked before the G43 skip: `G00 G43 H2 Z44` still asserts
+        # G00, and the plunge that follows it is often a bare `Z` line.
+        mode = motion_mode(line, mode)
 
         g43_match = G43_Z_PATTERN.search(line)
         if g43_match:
@@ -384,10 +429,11 @@ def scan_z_values(lines: List[str]) -> Tuple[Optional[float], Optional[float], O
             safe_z = retract if safe_z is None else max(safe_z, retract)
             continue
 
-        if MACHINE_COORD_PATTERN.search(line):
-            continue
-
-        if not CUTTING_MOVE_PATTERN.search(line):
+        # A cutting move under the *modal* mode, not one that repeats its G-word:
+        # Fusion ramps down on bare coordinate lines, and missing those is missing
+        # the deepest Z in the file — which is what validate_z checks the spoilboard
+        # against.
+        if not is_modal_move(line, mode) or mode == 0:
             continue
 
         z_match = re.search(r"Z([+-]?\d*\.?\d+)", line)
@@ -540,17 +586,24 @@ def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[
     Each dict: {x1, y1, x2, y2, cutting}.
     cutting=True on G01/G02/G03 moves where Z is below the material surface.
     Z-only moves and G53 machine-coord lines are skipped.
+
+    Motion is read modally (`motion_mode`), which is the only way a Fusion file
+    walks correctly — it names the mode once and then posts bare coordinate lines.
     """
     segments: List[dict] = []
-    rapid_pat = re.compile(r"\bG0?0\b", re.IGNORECASE)
-    move_pat  = re.compile(r"\bG0?[0-3]\b", re.IGNORECASE)
-    g2_pat = re.compile(r"\bG0?2\b", re.IGNORECASE)
-    g3_pat = re.compile(r"\bG0?3\b", re.IGNORECASE)
     plane_pat = re.compile(r"\bG1([789])\b", re.IGNORECASE)
 
     for pass_ in passes:
-        cur_x, cur_y, cur_z = 0.0, 0.0, 0.0
+        # Position starts *unknown*, not at (0,0). The tool is at the changer when a
+        # pass begins, so the first move of a pass comes from nowhere on this part:
+        # drawing it from the blank's corner put a diagonal slash across the preview,
+        # and carrying the previous pass's end across the tool change would draw a
+        # different line the machine equally never travels.
+        cur_x: Optional[float] = None
+        cur_y: Optional[float] = None
+        cur_z = 0.0
         plane = "G17"
+        mode: Optional[int] = None
         for line in pass_.lines:
             if line.startswith("("):
                 continue
@@ -559,11 +612,12 @@ def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[
             pm = plane_pat.search(line)
             if pm:
                 plane = "G1" + pm.group(1)
+            mode = motion_mode(line, mode)
             if MACHINE_COORD_PATTERN.search(line):
                 continue
-            if not move_pat.search(line):
+            if not is_modal_move(line, mode):
                 continue
-            is_rapid = bool(rapid_pat.search(line))
+            is_rapid = mode == 0
             new_x, new_y, new_z = cur_x, cur_y, cur_z
             for axis, val in COORD_PATTERN.findall(line):
                 a = axis.upper()
@@ -573,10 +627,11 @@ def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[
                     new_y = float(val)
                 elif a == "Z":
                     new_z = float(val)
-            if new_x != cur_x or new_y != cur_y:
+            if cur_x is not None and cur_y is not None and new_x is not None \
+                    and new_y is not None and (new_x != cur_x or new_y != cur_y):
                 cutting = (not is_rapid) and (new_z < (material_thickness if material_thickness else 0))
-                is_g2 = bool(g2_pat.search(line))
-                is_g3 = bool(g3_pat.search(line))
+                is_g2 = mode == 2
+                is_g3 = mode == 3
                 arc_params: Dict[str, float] = {}
                 if is_g2 or is_g3:
                     for p, val in ARC_PARAM_PATTERN.findall(line):

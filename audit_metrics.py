@@ -25,15 +25,13 @@ Conventions match the rest of the app:
 import re
 from typing import Dict, Optional
 
-from gcode_parser import COORD_PATTERN, TOOL_CHANGE_PATTERN
+from gcode_parser import (
+    COORD_PATTERN, TOOL_CHANGE_PATTERN, is_modal_move, motion_mode,
+)
 from runtime_estimator import MM_PER_INCH
 
 _F_PATTERN = re.compile(r"\bF\s*([0-9.]+)")
 _S_PATTERN = re.compile(r"\bS\s*([0-9.]+)")
-_G0_PATTERN = re.compile(r"\bG0?0\b")
-_G1_PATTERN = re.compile(r"\bG0?1\b")
-_G2_PATTERN = re.compile(r"\bG0?2\b")
-_G3_PATTERN = re.compile(r"\bG0?3\b")
 _G20_PATTERN = re.compile(r"\bG20\b")
 _G21_PATTERN = re.compile(r"\bG21\b")
 _G70_PATTERN = re.compile(r"\bG70\b")
@@ -91,6 +89,9 @@ def _walk_pass(gp, base_unit_scale: float) -> dict:
     unit_scale = base_unit_scale
     cur_x = cur_y = cur_z = 0.0
     cur_f: Optional[float] = None
+    # Motion is modal — see gcode_parser.motion_mode. Reading it off each line
+    # skipped every bare coordinate line Fusion posts, which is most of a Fusion file.
+    mode: Optional[int] = None
 
     for raw in gp.lines:
         s = raw.strip()
@@ -117,12 +118,10 @@ def _walk_pass(gp, base_unit_scale: float) -> dict:
         if f_match:
             cur_f = float(f_match.group(1))
 
-        is_g0 = bool(_G0_PATTERN.search(s))
-        is_g1 = bool(_G1_PATTERN.search(s))
-        is_g2 = bool(_G2_PATTERN.search(s))
-        is_g3 = bool(_G3_PATTERN.search(s))
-        if not (is_g0 or is_g1 or is_g2 or is_g3):
+        mode = motion_mode(s, mode)
+        if not is_modal_move(s, mode):
             continue
+        is_g0, is_g1, is_g2, is_g3 = (mode == 0), (mode == 1), (mode == 2), (mode == 3)
 
         new_x, new_y, new_z = cur_x, cur_y, cur_z
         for axis, val in COORD_PATTERN.findall(s):

@@ -289,6 +289,29 @@ def test_z_validation_known_real_files(material_z, min_z, safe_z, expected_statu
     assert result.status == expected_status
 
 
+def test_deepest_z_on_a_modal_line_is_still_seen():
+    """The spoilboard check reads min_z, and Fusion ramps down without a G-word.
+
+    A walker that required `G01` on the line missed the bottom of every Fusion
+    ramp, so a file that dives past the spoilboard could read as `ok`.
+    """
+    src = (
+        "( Material Size)\n"
+        "( X= 304.800, Y= 457.200, Z= 19.050)\n"
+        "T2 M06\nM03 S18000\n"
+        "G00 X10 Y10\n"
+        "G43 Z44.475 H2\n"
+        "G01 Z1.0 F1000\n"
+        "X11 Y11 Z-19.0\n"   # modal G01 — the deepest point in the file
+        "G00 Z44.475\n"
+        "M30\n"
+    )
+    part = parse_vcarve_text(src, filename="modal.nc")
+
+    assert part.min_z == pytest.approx(-19.0)
+    assert part.z_validation.status == "blocked"
+
+
 # --- pass extraction tests ---
 
 def test_extract_passes_single_tool():
@@ -475,12 +498,71 @@ def test_extract_file_segments_arc_inherits_missing_axis():
 
     segments = extract_file_segments(passes, material_thickness=10.0)
 
-    # segments[0] is the rapid lead-in (0,0)->(0,5); the arc starts after it.
-    assert len(segments) > 2
-    assert segments[1]["x1"] == pytest.approx(0.0)
-    assert segments[1]["y1"] == pytest.approx(5.0)
+    # The lead-in rapid draws nothing: where the tool sat before the file's first
+    # move is unknown, and (0,0) is not it — see below.
+    assert len(segments) > 1
+    assert segments[0]["x1"] == pytest.approx(0.0)
+    assert segments[0]["y1"] == pytest.approx(5.0)
     assert segments[-1]["x2"] == pytest.approx(10.0)
     assert segments[-1]["y2"] == pytest.approx(5.0)
+
+
+def test_extract_file_segments_draws_nothing_before_the_first_position():
+    """The file's first move starts from an unknown position, not from (0,0).
+
+    The tool is at the changer when a program begins. Drawing the opening rapid
+    from the blank's corner put a diagonal across every preview that no cutter
+    ever travels.
+    """
+    passes = [GcodePass(pass_index=0, tool_number="T2", lines=[
+        "G00 X100 Y200",
+        "G01 X110 Y200 Z-1",
+    ])]
+
+    segments = extract_file_segments(passes, material_thickness=10.0)
+
+    assert len(segments) == 1
+    assert (segments[0]["x1"], segments[0]["y1"]) == pytest.approx((100.0, 200.0))
+
+
+def test_extract_file_segments_tracks_modal_motion():
+    """Fusion writes G01 once and then bare coordinate lines.
+
+    Skipping those left the walker's position stale, so the next explicit block
+    was drawn as a chord across the part instead of the path around it.
+    """
+    passes = [GcodePass(pass_index=0, tool_number="T2", lines=[
+        "G00 X0 Y0",
+        "G01 X10 Y0 Z-1",
+        "X10 Y10",          # modal G01 — same square corner, no G-word
+        "X0 Y10",
+        "G01 X0 Y0",
+    ])]
+
+    segments = extract_file_segments(passes, material_thickness=10.0)
+
+    assert len(segments) == 4
+    assert all(s["cutting"] for s in segments)
+    corners = [(s["x2"], s["y2"]) for s in segments]
+    assert corners == pytest.approx([(10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)])
+
+
+def test_extract_file_segments_ignores_a_g28_return():
+    """`G28 G91 X0. Y0.` carries coordinates but is not a modal move.
+
+    Fusion ends a program with one. Read as an inherited G01 it draws a cut back
+    to the origin across everything the part just cut.
+    """
+    passes = [GcodePass(pass_index=0, tool_number="T2", lines=[
+        "G00 X100 Y200",
+        "G01 X110 Y200 Z-1",
+        "G28 G91 X0. Y0.",
+    ])]
+
+    segments = extract_file_segments(passes, material_thickness=10.0)
+
+    assert len(segments) == 1
+    assert (segments[0]["x2"], segments[0]["y2"]) == pytest.approx((110.0, 200.0))
 
 
 def test_extract_file_segments_full_circle_spans_diameter():

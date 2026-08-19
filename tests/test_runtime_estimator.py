@@ -78,6 +78,28 @@ def test_feedrate_is_sticky_across_lines():
     assert result["cutting"] == pytest.approx(20, rel=1e-6)
 
 
+def test_motion_mode_is_modal_across_lines():
+    """Fusion writes `G01` once and then bare coordinate lines.
+
+    Requiring the G-word skipped those *and* left the position stale, so the next
+    explicit block was timed as a chord across the part. 18G5.nc, a Fusion file
+    whose moves are almost all modal, estimated at 75 s.
+    """
+    # A 10" + 10" L under one G01, written the way Fusion posts it.
+    result = estimate_lines_runtime(["G01 X10 Y0 F60", "X10 Y10"])
+    assert result["cutting"] == pytest.approx(20, rel=1e-6)
+
+
+def test_g28_return_is_not_a_modal_move():
+    """`G28 G91 X0. Y0.` carries coordinates but routes via reference, not a cut.
+
+    Under an inherited G01 it would be timed as a feed move all the way back to
+    the origin.
+    """
+    result = estimate_lines_runtime(["G01 X10 Y0 F60", "G28 G91 X0. Y0."])
+    assert result["cutting"] == pytest.approx(10, rel=1e-6)
+
+
 def test_z_only_g1_plunge_is_skipped():
     # A pure plunge contributes zero cutting time per project convention
     lines = ["G01 X0 Y0 F100", "G01 Z-1"]
