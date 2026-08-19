@@ -22,7 +22,10 @@ minimumRevision = 45917;
 longDescription = "Generic SYNTEC Milling post. NOTE: HSHP parameters must be defined in the control before using the High Precision mode. The 'Machining Condition' property can be used to choose from the P1,P2,P3 High Precision modes.";
 
 extension = "nc";
-programNameIsInteger = true;
+// Fusion's program name doubles as the output file name, so the shop names programs
+// for what they are ("18G Rail") rather than for the control's O-word. See
+// writeProgramIdentification() for what reaches the file.
+programNameIsInteger = false;
 setCodePage("ascii");
 
 capabilities = CAPABILITY_MILLING | CAPABILITY_MACHINE_SIMULATION;
@@ -355,6 +358,41 @@ function writeStockInfo() {
 }
 
 
+/**
+  Write the program identification line that follows the leading '%'.
+
+  A name that is a bare number still posts as `O####` — the Fanuc-lineage form the
+  control and every older file in the library use, so nothing about a numeric name
+  changes. Any other name has no faithful O-word, so it is written as a comment and
+  the O-line is dropped: the Syntec loads programs by file name and runs files that
+  carry no O-word at all (the app's own merged master files carry none), whereas an
+  invented number would put every alphanumeric program in control memory under the
+  same O — the one failure a made-up number actually causes.
+
+  Deliberately kept outside the getProgramNumber_fanuc.cpi include block so a future
+  kernel update does not clobber it.
+*/
+function writeProgramIdentification() {
+  if (!programName) {
+    error(localize("Program name has not been specified."));
+    return;
+  }
+  var comment = programComment ? formatComment(programComment) : "";
+  if (/^\s*\d+\s*$/.test(programName)) {
+    writeln("O" + oFormat.format(getProgramNumber()) + conditional(comment, " " + comment));
+    return;
+  }
+  // formatComment() returns "" when the name is nothing but characters the comment
+  // filter strips. Say so rather than writing a blank line: the name is cosmetic
+  // here, so this is not worth failing a post over, but it must not vanish silently.
+  var name = formatComment(programName);
+  if (name == "") {
+    warning(subst(localize("Program name '%1' contains no characters the control accepts in a comment and was not written to the file."), programName));
+    return;
+  }
+  writeln(name + conditional(comment, " " + comment));
+}
+
 function onOpen() {
   // define and enable machine configuration
   receivedMachineConfiguration = machineConfiguration.isReceived();
@@ -381,7 +419,7 @@ function onOpen() {
   }
 
   writeln("%");
-  writeln("O" + oFormat.format(getProgramNumber()) + conditional(programComment, " " + formatComment(programComment)));
+  writeProgramIdentification();
   if (typeof inspectionWriteVariables == "function") {
     inspectionWriteVariables();
   }

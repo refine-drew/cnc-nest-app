@@ -114,6 +114,20 @@ never choose between two. `test_toolid_product_field_is_not_read_as_a_code` guar
 Renaming cost nothing — no posted file in the library carried a `TOOLID` comment yet, so
 there was no migration.
 
+**Program names are alphanumeric, and an alphanumeric one gets no O-word** (2026-08-19).
+`programNameIsInteger` is `false`, because Fusion's program name doubles as the output
+file name and the shop wants that name meaningful; typing a bogus number and renaming
+the file afterwards was the whole annoyance. `writeProgramIdentification` keeps a bare
+numeric name posting as `O1001` exactly as before, and writes anything else as a comment
+with **no O-line at all** — the Syntec loads programs by file name and runs files that
+carry no O-word (`gcode_generator`'s merged masters carry none), whereas a made-up
+number would file every alphanumeric program in control memory under one O. Don't
+"finish" this by inventing a number or by writing the name after `O`. The name reaches
+the file through `formatComment`, so it is uppercased and filtered — that mangling is
+cosmetic here, unlike `CODE=`, because nothing reads the line back. The function sits
+outside the `getProgramNumber_fanuc.cpi` include block on purpose; `getProgramNumber`
+itself is untouched.
+
 **A blank field is emitted as `CODE=`/`VENDOR=`, never omitted** — empty means the Fusion
 library entry needs filling in, missing means the file predates the comment, and only
 the first is actionable. `_toolid_fields` preserves that as `""` vs absent; don't
