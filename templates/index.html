@@ -107,6 +107,7 @@ body.resizing-y{user-select:none;cursor:row-resize}
 .placement-row .remove-btn{background:none;border:none;color:#666;font-size:13px;padding:0;cursor:pointer}
 .placement-row .remove-btn:hover{color:#ff453a}
 .placement-row .frees{font-size:10px;color:#8a8a70;white-space:nowrap}
+#btn-clear-placements{float:right;font-size:10px;padding:1px 6px;text-transform:none;letter-spacing:0;margin-top:-2px}
 /* Every section now has either a scroller or a floor, so nothing can clip
    unreachably the way Job Info used to when the dock squeezed the column. */
 #job-section{flex:1;min-height:0;overflow-y:auto}
@@ -307,7 +308,7 @@ table.audit td.feed-varies{color:#ffd60a}
 
   <!-- right sidebar -->
   <div id="sidebar-right" class="sidebar">
-    <h2>Placements</h2>
+    <h2>Placements <button id="btn-clear-placements" title="Take every part off the bed" disabled>Clear all</button></h2>
     <div id="placements-list"></div>
     <div class="split" id="split-right" title="Drag to rebalance"></div>
     <!-- "Tool Compatibility" lived here. The changer dock replaces it — that panel
@@ -543,6 +544,11 @@ function _updateTopButtons() {
   const btn = document.getElementById("btn-generate");
   btn.disabled = !(hasPlaced && mapValid);
   btn.title = hasPlaced && !mapValid ? "The tool changer map is not valid yet — see the dock below" : "";
+
+  // Clear-all gates on placements alone: an invalid changer map is exactly when an
+  // operator may want to empty the bed and start over.
+  const clear = document.getElementById("btn-clear-placements");
+  if (clear) clear.disabled = !hasPlaced;
 }
 
 function _set(id, val) {

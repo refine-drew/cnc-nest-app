@@ -870,6 +870,31 @@ def api_remove_placement(instance_id: str):
     })
 
 
+@app.route("/api/placements", methods=["DELETE"])
+def api_clear_placements():
+    """Empty the bed. One call, not N deletes from the browser.
+
+    The tray, the tool binds and the pocket map are **left alone**. A bind and a drag
+    are operator decisions about a *file* and a *tool*, which survive the nest they
+    were made in; the dock's "Reset pockets" is the button for undoing those, and the
+    tray is where the operator re-places from. Clearing them here would make one
+    button quietly do three jobs.
+
+    `_instance_counts` does reset, so the rebuilt nest numbers from `_1` again rather
+    than carrying on from wherever the cleared one stopped.
+    """
+    count = len(_placements)
+    _placements.clear()
+    _placement_paths.clear()
+    _instance_counts.clear()
+    return jsonify({
+        "ok": True,
+        "removed": count,
+        "changer": _changer_state(),
+        "job_safe_z": _compute_job_safe_z(),
+    })
+
+
 # ── the tool changer (issue #11) ──────────────────────────────────────────────
 
 @app.route("/api/changer")

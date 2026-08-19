@@ -352,6 +352,48 @@ def test_delete_placement(client, tmp_path, monkeypatch):
     assert r.get_json()["placements"] == []
 
 
+def test_clear_all_placements_empties_the_bed(client, tmp_path, monkeypatch):
+    _seed_library(tmp_path, monkeypatch)
+    client.post("/api/place", json={"path": "part.nc", "rail": "A", "slot_inches": 39})
+    client.post("/api/place", json={"path": "part.nc", "rail": "B", "slot_inches": 39})
+    r = client.delete("/api/placements")
+    assert r.status_code == 200
+    assert r.get_json()["removed"] == 2
+    assert client.get("/api/placements").get_json()["placements"] == []
+    assert app_module._placement_paths == {}
+
+
+def test_clear_all_keeps_binds_and_pocket_overrides(client, tmp_path, monkeypatch):
+    """One button, one job: emptying the bed is not a job reset.
+
+    A bind names what a *file's* tool is and a drag names where a *tool* lives; both
+    outlive the nest they were made in, and the dock has its own reset for the second.
+    """
+    _seed_library(tmp_path, monkeypatch)
+    client.post("/api/place", json={"path": "part.nc", "rail": "A", "slot_inches": 39})
+    app_module._tool_binds["part.nc"] = {"T2": "TT-0001"}
+    app_module._pocket_overrides["TT-0001"] = 5
+
+    client.delete("/api/placements")
+
+    assert app_module._tool_binds == {"part.nc": {"T2": "TT-0001"}}
+    assert app_module._pocket_overrides == {"TT-0001": 5}
+
+
+def test_clear_all_restarts_instance_numbering(client, tmp_path, monkeypatch):
+    _seed_library(tmp_path, monkeypatch)
+    first = client.post("/api/place", json={"path": "part.nc", "rail": "A", "slot_inches": 39})
+    client.delete("/api/placements")
+    again = client.post("/api/place", json={"path": "part.nc", "rail": "A", "slot_inches": 39})
+    assert again.get_json()["instance_id"] == first.get_json()["instance_id"]
+
+
+def test_clear_all_on_an_empty_bed_is_not_an_error(client):
+    r = client.delete("/api/placements")
+    assert r.status_code == 200
+    assert r.get_json()["removed"] == 0
+
+
 def test_delete_nonexistent_returns_404(client):
     r = client.delete("/api/place/ghost_1")
     assert r.status_code == 404

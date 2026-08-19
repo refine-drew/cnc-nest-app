@@ -82,6 +82,23 @@ var Placement = (() => {
     await refresh();
   }
 
+  /**
+   * Take every part off the bed.
+   *
+   * Confirmed first, because there is no undo and no saved job to fall back on — a
+   * nest is rebuilt by hand or not at all. The tray keeps its files, so rebuilding is
+   * dragging from the tray rather than hunting the library again.
+   */
+  async function clearAll() {
+    const n = App.placements.length;
+    if (!n) return;
+    if (!confirm(`Take all ${n} part${n === 1 ? "" : "s"} off the bed?\n\n` +
+                 "The parts tray, the tool changer pockets and any tools you " +
+                 "identified by hand are kept.")) return;
+    await fetch("/api/placements", { method: "DELETE" });
+    await refresh();
+  }
+
   async function refresh() {
     const r = await fetch("/api/placements").then(res => res.json());
     App.placements        = r.placements || [];
@@ -267,13 +284,15 @@ var Placement = (() => {
       if (btn) remove(btn.dataset.id);
     });
 
+    document.getElementById("btn-clear-placements").addEventListener("click", clearAll);
+
     await ToolLib.load();
     ToolLib.init();
     Changer.init();
     await refresh();
   }
 
-  return { init, place, remove, refresh, placeFromDrop, openResolver,
+  return { init, place, remove, clearAll, refresh, placeFromDrop, openResolver,
            beginCanvasDrag, endCanvasDrag };
 })();
 
