@@ -811,10 +811,17 @@ var BedCanvas = (() => {
     canvas.addEventListener("drop",      _onDrop);
     canvas.addEventListener("dragleave", _onDragLeave);
 
+    // Two independent toggles share the one bar, so both selectors must key on the
+    // data attribute rather than on the container: `#view-toggle button` also matches
+    // the colour buttons, and clicking Stock would then blank viewMode and clear the
+    // view group's highlight along with it.
+    const VIEW_BTNS  = "#view-toggle button[data-view]";
+    const COLOR_BTNS = "#view-toggle button[data-color]";
+
     // View toggle buttons
-    document.querySelectorAll("#view-toggle button").forEach(btn => {
+    document.querySelectorAll(VIEW_BTNS).forEach(btn => {
       btn.addEventListener("click", () => {
-        document.querySelectorAll("#view-toggle button").forEach(b => b.classList.remove("active"));
+        document.querySelectorAll(VIEW_BTNS).forEach(b => b.classList.remove("active"));
         btn.classList.add("active");
         viewMode = btn.dataset.view;
         render();
@@ -825,9 +832,9 @@ var BedCanvas = (() => {
     // spoken for: identity colouring answers "which part is which" in the tray and
     // the PDF, and thickness answers "are these the same stock". One click apart
     // costs nothing; overwriting one with the other loses an answer (issue #28).
-    document.querySelectorAll("#color-toggle button").forEach(btn => {
+    document.querySelectorAll(COLOR_BTNS).forEach(btn => {
       btn.addEventListener("click", () => {
-        document.querySelectorAll("#color-toggle button").forEach(b => b.classList.remove("active"));
+        document.querySelectorAll(COLOR_BTNS).forEach(b => b.classList.remove("active"));
         btn.classList.add("active");
         colorMode = btn.dataset.color;
         render();
