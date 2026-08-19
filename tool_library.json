@@ -20,7 +20,9 @@
       "geometry_class": "Ball Nose",
       "flute_direction": "up",
       "cutting_length_in": null,
-      "cam_descriptions": [],
+      "cam_descriptions": [
+        "12 BALL NOSE - UPCUT"
+      ],
       "default_slot": 1,
       "vendor": "",
       "product_link": ""
@@ -56,7 +58,9 @@
       "geometry_class": "Flat End Mill",
       "flute_direction": "down",
       "cutting_length_in": 1.25,
-      "cam_descriptions": [],
+      "cam_descriptions": [
+        "12 FLAT ENDMILL"
+      ],
       "default_slot": 2,
       "vendor": "",
       "product_link": ""
