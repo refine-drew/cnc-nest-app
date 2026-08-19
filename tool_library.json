@@ -9,7 +9,7 @@
       "flute_direction": "straight",
       "cutting_length_in": null,
       "cam_descriptions": [],
-      "default_slot": null,
+      "default_slot": 4,
       "vendor": "Whiteside",
       "product_link": ""
     },
@@ -85,7 +85,7 @@
       "flute_direction": "down",
       "cutting_length_in": null,
       "cam_descriptions": [],
-      "default_slot": 4,
+      "default_slot": 3,
       "vendor": "",
       "product_link": ""
     },
