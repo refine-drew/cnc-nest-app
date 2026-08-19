@@ -3,8 +3,10 @@ authority (spec §3.1, §3.5).
 
 The `T#` in a posted file means two things at once: *which cutter* and *which pocket*.
 This module owns the first. A file matches into the library on a **shop-assigned code**
-the operator types into Fusion's Product id and into the VCarve tool name; the pocket is
-job state and lives elsewhere (`pocket_map.py`).
+the operator types into Fusion's **Product Link** field and into the VCarve tool name --
+Product Link, not Product id, so that Product id stays free for the manufacturer's real
+part number (see CLAUDE.md). The pocket is job state and lives elsewhere
+(`pocket_map.py`).
 
 Three rules run through everything below and are easy to undo by accident:
 
@@ -269,17 +271,19 @@ def code_in_file_tool(info: dict) -> Optional[str]:
 
     Two sources, because two CAM apps:
 
-    - **Fusion** — `PRODUCT=` from the `TOOLID` comment, which is the field the code is
-      typed into. An **empty** `PRODUCT=` is not the same as an absent one: empty says
-      the Fusion library entry needs a code, absent says the file predates the comment.
-      Neither yields a code, but only the first is actionable, and `_toolid_fields`
-      preserves the difference.
+    - **Fusion** — `CODE=` from the `TOOLID` comment. That value comes from the tool's
+      **Product Link** field, not Product ID: the code needed a per-tool field the shop
+      would never otherwise use, and Product ID is the natural home for the
+      manufacturer's real part number. An **empty** `CODE=` is not the same as an absent
+      one: empty says the Fusion library entry needs a code, absent says the file
+      predates the comment. Neither yields a code, but only the first is actionable, and
+      `_toolid_fields` preserves the difference.
     - **VCarve** — the tool *name* is the only field its post lets reach a file, so the
       code is typed there and arrives inside the description.
     """
-    product = (info.get("product_id") or "").strip()
-    if product:
-        return normalize_code(product)
+    code = (info.get("code") or "").strip()
+    if code:
+        return normalize_code(code)
     for source in (info.get("cam_description"), info.get("description")):
         if not source:
             continue

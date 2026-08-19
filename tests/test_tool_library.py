@@ -37,8 +37,8 @@ def _lib(*tools):
 
 # ── where a code comes from ───────────────────────────────────────────────────
 
-def test_fusion_product_id_is_the_code():
-    assert code_in_file_tool({"product_id": "EM-0512"}) == "EM-0512"
+def test_fusion_code_field_is_the_code():
+    assert code_in_file_tool({"code": "EM-0512"}) == "EM-0512"
 
 
 def test_vcarve_tool_name_carries_the_code():
@@ -51,10 +51,10 @@ def test_code_is_uppercased_because_the_post_uppercases_comments():
 
 
 def test_blank_product_field_yields_no_code_but_is_not_the_same_as_absent():
-    # `VENDOR=`/`PRODUCT=` empty says the CAM entry needs filling in; a *missing* key
+    # `VENDOR=`/`CODE=` empty says the CAM entry needs filling in; a *missing* key
     # says the file predates the comment. Neither matches, but only one is actionable,
     # and `_toolid_fields` keeps them distinguishable.
-    assert code_in_file_tool({"product_id": ""}) is None
+    assert code_in_file_tool({"code": ""}) is None
     assert code_in_file_tool({}) is None
 
 
@@ -66,8 +66,8 @@ def test_ordinary_descriptions_yield_no_code():
         assert code_in_file_tool({"description": text}) is None
 
 
-def test_product_id_wins_over_a_token_in_the_description():
-    info = {"product_id": "EM-0520", "description": "EM-0512 End Mill"}
+def test_toolid_code_wins_over_a_token_in_the_description():
+    info = {"code": "EM-0520", "description": "EM-0512 End Mill"}
     assert code_in_file_tool(info) == "EM-0520"
 
 
@@ -83,7 +83,7 @@ def test_cam_description_prefers_tooldesc_over_description():
 
 def test_known_code_matches_and_takes_the_library_diameter():
     lib = _lib(make_tool("EM-0512", diameter=0.5, default_slot=2))
-    part = _make_part({"T4": {"product_id": "EM-0512"}}, ["T4"])
+    part = _make_part({"T4": {"code": "EM-0512"}}, ["T4"])
     res = resolve_part(lib, part)
     assert res.bindings["T4"].status == "matched"
     assert res.bindings["T4"].library_code == "EM-0512"
@@ -93,7 +93,7 @@ def test_known_code_matches_and_takes_the_library_diameter():
 
 def test_unknown_code_is_offered_as_a_new_tool_not_guessed_at():
     lib = _lib(make_tool("EM-0512"))
-    part = _make_part({"T4": {"product_id": "ZZ-9999"}}, ["T4"])
+    part = _make_part({"T4": {"code": "ZZ-9999"}}, ["T4"])
     res = resolve_part(lib, part)
     assert res.bindings["T4"].status == "unknown_code"
     assert res.bindings["T4"].code == "ZZ-9999"
@@ -121,15 +121,15 @@ def test_an_orphan_binds_to_a_library_tool_for_this_run():
 def test_two_files_sharing_one_cutter_under_different_tool_numbers_both_resolve():
     """This is the feature working, not a collision — guard (a) is per file only."""
     lib = _lib(make_tool("EM-0512"))
-    a = resolve_part(lib, _make_part({"T2": {"product_id": "EM-0512"}}, ["T2"]), None)
-    b = resolve_part(lib, _make_part({"T4": {"product_id": "EM-0512"}}, ["T4"]), None)
+    a = resolve_part(lib, _make_part({"T2": {"code": "EM-0512"}}, ["T2"]), None)
+    b = resolve_part(lib, _make_part({"T4": {"code": "EM-0512"}}, ["T4"]), None)
     assert a.bindings["T2"].library_code == b.bindings["T4"].library_code == "EM-0512"
     assert not a.blocked and not b.blocked
 
 
 def test_a_bind_never_overrides_a_code_the_file_already_carries():
     lib = _lib(make_tool("EM-0512"), make_tool("EM-0520"))
-    part = _make_part({"T4": {"product_id": "EM-0512"}}, ["T4"])
+    part = _make_part({"T4": {"code": "EM-0512"}}, ["T4"])
     res = resolve_part(lib, part, {"T4": "EM-0520"})
     assert res.bindings["T4"].library_code == "EM-0512"
 
@@ -141,7 +141,7 @@ def test_one_code_on_two_tool_numbers_in_one_file_is_a_hard_stop():
     disambiguation work, never a merge (§3.5.3)."""
     lib = _lib(make_tool("EM-0512"))
     part = _make_part(
-        {"T2": {"product_id": "EM-0512"}, "T4": {"product_id": "EM-0512"}},
+        {"T2": {"code": "EM-0512"}, "T4": {"code": "EM-0512"}},
         ["T2", "T4"],
     )
     res = resolve_part(lib, part)
@@ -151,7 +151,7 @@ def test_one_code_on_two_tool_numbers_in_one_file_is_a_hard_stop():
 
 def test_one_tool_used_across_several_passes_is_not_a_duplicate():
     lib = _lib(make_tool("EM-0512"))
-    part = _make_part({"T2": {"product_id": "EM-0512"}}, ["T2", "T2", "T2"])
+    part = _make_part({"T2": {"code": "EM-0512"}}, ["T2", "T2", "T2"])
     res = resolve_part(lib, part)
     assert res.duplicate_codes == []
     assert not res.blocked
@@ -162,7 +162,7 @@ def test_one_tool_used_across_several_passes_is_not_a_duplicate():
 def test_first_description_a_code_posts_is_learned_not_prompted():
     """An empty set has nothing to disagree with — the seal is a change detector."""
     lib = _lib(make_tool("EM-0512"))
-    part = _make_part({"T2": {"product_id": "EM-0512",
+    part = _make_part({"T2": {"code": "EM-0512",
                               "cam_description": "12 DOWNCUT SPIRAL"}}, ["T2"])
     res = resolve_part(lib, part)
     assert res.learned == [("EM-0512", "12 DOWNCUT SPIRAL")]
@@ -172,7 +172,7 @@ def test_first_description_a_code_posts_is_learned_not_prompted():
 
 def test_a_known_description_passes_silently():
     lib = _lib(make_tool("EM-0512", cam_descriptions=["12 DOWNCUT SPIRAL"]))
-    part = _make_part({"T2": {"product_id": "EM-0512",
+    part = _make_part({"T2": {"code": "EM-0512",
                               "cam_description": "12 DOWNCUT SPIRAL"}}, ["T2"])
     res = resolve_part(lib, part)
     assert res.seal_prompts == []
@@ -182,7 +182,7 @@ def test_a_known_description_passes_silently():
 def test_a_new_description_on_a_known_code_blocks():
     """The only cross-file detector of one code on two physical cutters."""
     lib = _lib(make_tool("EM-0512", cam_descriptions=["12 DOWNCUT SPIRAL"]))
-    part = _make_part({"T2": {"product_id": "EM-0512",
+    part = _make_part({"T2": {"code": "EM-0512",
                               "cam_description": "12 COMPRESSION"}}, ["T2"])
     res = resolve_part(lib, part)
     assert len(res.seal_prompts) == 1
@@ -201,9 +201,9 @@ def test_the_seal_holds_a_set_so_a_rename_costs_one_prompt_not_a_loop():
     lib.learn_description("EM-0512", "12 AMANA 46170-K DOWNCUT")
 
     old = resolve_part(lib, _make_part(
-        {"T2": {"product_id": "EM-0512", "cam_description": "12 DOWNCUT SPIRAL"}}, ["T2"]))
+        {"T2": {"code": "EM-0512", "cam_description": "12 DOWNCUT SPIRAL"}}, ["T2"]))
     new = resolve_part(lib, _make_part(
-        {"T2": {"product_id": "EM-0512", "cam_description": "12 AMANA 46170-K DOWNCUT"}}, ["T2"]))
+        {"T2": {"code": "EM-0512", "cam_description": "12 AMANA 46170-K DOWNCUT"}}, ["T2"]))
     assert old.seal_prompts == [] and new.seal_prompts == []
 
 
@@ -283,7 +283,7 @@ def test_declared_diameter_beats_the_posted_header():
     """`.25 Bowl Bit` is declared 0.75 and posts a nominal 0.25. The declaration governs
     — under-declaring puts the cutting edge somewhere the check called clear."""
     lib = _lib(make_tool("BB-0250", diameter=0.75))
-    part = _make_part({"T7": {"product_id": "BB-0250", "diameter_inches": 0.25}}, ["T7"])
+    part = _make_part({"T7": {"code": "BB-0250", "diameter_inches": 0.25}}, ["T7"])
     res = resolve_part(lib, part)
     assert res.diameters_by_tool_number(lib) == {"T7": 0.75}
     assert res.bindings["T7"].posted_diameter_inches == pytest.approx(0.25)

@@ -195,9 +195,10 @@ carried whatever the cutter's manufacturer happened to publish. **They do not ha
 to.** The operator assigns a **unique code by hand, one per physical cutter**, and
 types it into the CAM tool library:
 
-- **Fusion** — the code goes in **Product id**, which `writeToolIdentity`
-  (`post/syntec 4.cps:3088`) already emits as `PRODUCT=`. Neither the post nor the
-  parser changes; the field simply stops being empty.
+- **Fusion** — the code goes in **Product Link**, which `writeToolIdentity`
+  (`post/syntec_Refine.cps`) emits as `CODE=`. See the 2026-08-19 note below: this was
+  **Product id** as first built, and moved so that Product id could hold the
+  manufacturer's real part number.
 - **VCarve** — the code goes in the tool **name**, the only field that reaches a
   posted file. The corpus confirms it arrives verbatim — `(T1 = Ball Nose .5 inches
   Dia)` is a hand-typed name rendered unaltered — so `(T4 = RK-004 End Mill)` is
@@ -206,6 +207,35 @@ types it into the CAM tool library:
 **The matching rule is one sentence.** Find a token matching the code pattern; if it
 is present and known to the library, that is an exact match. Otherwise the tool is
 **orphaned**, and the operator binds it for that run only (§3.5.3).
+
+**2026-08-19 — the Fusion field moves from Product id to Product Link.** The code needs
+a per-tool Fusion field that is (a) reachable from a post and (b) not wanted for anything
+else. Product id passes the first test and fails the second: it is the natural home for
+the manufacturer's real part number (`46170-K`), and a shop that wants both a code and a
+part number has only one field for them. Product Link is the field this shop will never
+otherwise use, and the URL it was meant for already has a better home — `tool_library.json`
+carries `vendor` and `product_link` per tool for reorder info (§3.5.1). Three consequences:
+
+- **`PRODUCT=` is gone from the comment, not kept as an alias.** With Product id now
+  holding part numbers, reading one as a code is the dangerous direction — two shop tools
+  ground from one catalogue item share a part number and would merge into a single block,
+  which is exactly what §3.1 forbids. Renaming cost nothing: no file in the library
+  carried a `TOOLID` comment yet, so there was no migration.
+- **Product Link is not on the post kernel's `Tool` class.** `tool.productId` and
+  `tool.vendor` exist; `tool.productLink` does not. It is readable only as the section
+  parameter `operation:tool_productLink`, through a `getSectionParameterForTool` helper
+  lifted from Autodesk's own `setup-sheet.cps`. A Fusion that does not publish the
+  parameter yields `undefined` → empty `CODE=` → orphan, which is the safe direction.
+- **The post now validates the code and aborts rather than emit a mangled one**, because
+  the new field's *intended* content is an unbounded URL and §6.2.1's character filter
+  strips `:` and `/` in silence. A pasted product URL posts as
+  `HTTPSWWW.AMANATOOL.COM46170-K-CNC-SOLID-…`, still code-shaped to every reader, and
+  truncation at 78 characters then collapses two cutters whose URLs share a long prefix
+  onto **one** code — the failure this section exists to prevent, arriving by the one
+  route the description seal (§3.5.3) cannot see. `getToolCode` therefore requires
+  byte-for-byte survival of the comment filter, a length of at most 24, and **no interior
+  whitespace**: the parser's `KEY=(\S*)` grammar reads `EM 0512` back as `EM`, silently.
+  An *empty* field is not an error — it is the designed path to a manual bind.
 
 **This does not reopen the argument above.** What this section forbids is treating
 description text *as identity* — inferring which cutter a file means from free-form
@@ -1038,7 +1068,7 @@ existing `(T2 D=12.7 …)` line:
 > across two lines and carries no geometry:
 >
 > ```
-> (TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)
+> (TOOLID T2 CODE=EM-0512 VENDOR=AMANA FLUTES=3)
 > (TOOLDESC T2 12 DOWNCUT SPIRAL)
 > ```
 >
@@ -1049,7 +1079,7 @@ existing `(T2 D=12.7 …)` line:
 > line carries no geometry (`D`/`CR`/`TYPE` are already on the tool-list line above
 > it), and the one unbounded field, the description, sits on its own line where a
 > truncation can only cost free text. **Adding a field to the `TOOLID` line means
-> re-checking that budget.** Both halves are built: `post/syntec 4.cps:3088`
+> re-checking that budget.** Both halves are built: `post/syntec_Refine.cps`
 > `writeToolIdentity` emits them and `gcode_parser` reads them
 > (`TOOLID_PATTERN` / `TOOLDESC_PATTERN`).
 >
@@ -1205,8 +1235,8 @@ New, opened by #10:
 | `app.py:232` | Under-reports tool changes (§5) |
 | `gcode_parser.py:137` `extract_tools` | Source of per-file tool data. What the feature reads from it narrows to the **code token** and `cam_description`; the parsed diameter stops being authoritative (§3.5.2) |
 | `gcode_parser.py` `_extract_diameter` | **Retire the bare-decimal fallback** — it would read a code like `RK-004` as a 0.04" cutter, a 25× under-inflation (§3.5.2) |
-| `gcode_parser.py` `TOOLID_PATTERN` / `_toolid_fields` | Already reads `PRODUCT=`; that value becomes the match key. The `""`-vs-absent distinction stays load-bearing — empty means the CAM entry needs a code |
-| `post/syntec 4.cps:3088` `writeToolIdentity` | Already emits `PRODUCT=` from `tool.productId`. **No post change is needed for #9** — the field just stops being empty |
+| `gcode_parser.py` `TOOLID_PATTERN` / `_toolid_fields` | Reads `CODE=`; that value is the match key. `PRODUCT=` is no longer read at all (2026-08-19). The `""`-vs-absent distinction stays load-bearing — empty means the CAM entry needs a code |
+| `post/syntec_Refine.cps` `writeToolIdentity` / `getToolCode` | Emits `CODE=` from the tool's **Product Link** field, read as the section parameter `operation:tool_productLink` (2026-08-19). Aborts the post on a code the comment filter would mangle, one over 24 characters, or one containing whitespace |
 | `tool_library.py` | Today a `T#`→diameter registry; becomes the identity library keyed by **code** (§3.5) |
 | `tool_library.py:39` `find_unknown_tools` | Existing block-on-unresolvable pattern to mirror |
 | `config.json` `tools` | **Delete** — junk in its entirety, migrates nothing (§8). Its `T4` diameter is wrong by 1.6" |

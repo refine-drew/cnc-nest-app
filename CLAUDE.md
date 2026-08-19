@@ -53,7 +53,7 @@ No build step, linter, or type checker is configured.
 
 **`gcode_parser.py`** — parses `.nc`/`.mmg` VCarve G-code files into `GcodePart` dataclasses. Extracts blank dimensions, material thickness, tool info, XYZ bounding boxes per pass, and validates Z depths.
 
-**`post/syntec 4.cps`** — the REFINE Fusion post-processor. **It is ours to
+**`post/syntec_Refine.cps`** — the REFINE Fusion post-processor. **It is ours to
 change**, and it is the only place CAM knowledge can reach the app, because the app
 reads posted `.nc` and never CAM source. It lives in `post/` rather than
 `Source Data/` for one reason: **`Source Data/` is gitignored**, and a post the app's
@@ -62,19 +62,53 @@ depends on belongs out of that folder too. `writeToolIdentity` emits the identit
 comment specified in `docs/tool-changer-pocket-management-spec.md` §6.2.1:
 
 ```
-(TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)
+(TOOLID T2 CODE=EM-0512 VENDOR=AMANA FLUTES=3)
 (TOOLDESC T2 12 DOWNCUT SPIRAL)
 ```
 
-**`PRODUCT` alone is the identity, and it carries a shop-assigned code** — not a
+**`CODE` alone is the identity, and it carries a shop-assigned code** — not a
 manufacturer part number (spec §3.1, #9, 2026-08-17). The operator types the same code
-into Fusion's Product id and into the VCarve tool **name**, which is the only field
-VCarve's post lets reach a file. Matching is exact or it does not happen: an uncoded
-tool orphans to a job-scoped manual bind, and no string is ever compared. `VENDOR` and
-`FLUTES` are emitted but unread. `toolId` is document-scoped and must never be used.
-The `T#` only ties the line to the header above it.
+into Fusion's **Product Link** field and into the VCarve tool **name**, which is the only
+field VCarve's post lets reach a file. Matching is exact or it does not happen: an
+uncoded tool orphans to a job-scoped manual bind, and no string is ever compared.
+`VENDOR` and `FLUTES` are emitted but unread. `toolId` is document-scoped and must never
+be used. The `T#` only ties the line to the header above it.
 
-**A blank field is emitted as `VENDOR=`, never omitted** — empty means the Fusion
+**Product Link, not Product ID, and the field choice is deliberate** (2026-08-19). The
+code needs a per-tool Fusion field that is reachable from a post and wanted for nothing
+else. Product ID met the first two tests and failed the third — it is the natural home
+for the manufacturer's real part number, and one field cannot hold both. Product Link is
+the field this shop will never otherwise use, and the URL has a better home already:
+`tool_library.json` carries `vendor` and `product_link` per tool for reorder info. Note
+the resulting naming trap — Fusion's *Product Link* holds the **code**, while
+`LibraryTool.product_link` holds the **URL**; they are never the same value.
+
+**Product Link is not on the post kernel's `Tool` class.** `tool.productId` and
+`tool.vendor` exist; `tool.productLink` does not. It is reachable only as a section
+parameter, `operation:tool_productLink`, via `getSectionParameterForTool` — Autodesk's
+own idiom, lifted from their `setup-sheet.cps`. A Fusion that does not publish the
+parameter yields `undefined` → empty `CODE=` → orphan, which is the safe direction.
+
+**`getToolCode` aborts the post rather than emit a code it cannot write faithfully**,
+and that guard is load-bearing because the new field's *intended* content is a URL.
+`settings.comments` strips `:` and `/` silently, so a pasted product URL posts as
+`HTTPSWWW.AMANATOOL.COM46170-K-CNC-SOLID-…` — still code-shaped to every reader — and
+truncation at 78 characters then collapses two cutters whose URLs share a long prefix
+onto **one** code, the exact failure the identity split exists to prevent and the one
+route the description seal cannot see. So the rule is byte-for-byte survival of the
+comment filter, plus a 24-character cap, plus **no interior whitespace** — the parser's
+`KEY=(\S*)` grammar reads `EM 0512` back as `EM`, silently, and
+`test_a_code_containing_a_space_cannot_round_trip` pins why that third check exists.
+An *empty* field is not an error; it is the designed path to a manual bind.
+
+**There is no `PRODUCT=` field any more, and it must not come back as an alias.** With
+Product ID now holding real part numbers, reading one as a code is the dangerous
+direction: two shop tools ground from the same catalogue item share a part number and
+would merge into one block. `test_toolid_product_field_is_not_read_as_a_code` guards it.
+Renaming the key cost nothing — no posted file in the library carried a `TOOLID` comment
+yet, so there was no migration.
+
+**A blank field is emitted as `CODE=`/`VENDOR=`, never omitted** — empty means the Fusion
 library entry needs filling in, missing means the file predates the comment, and only
 the first is actionable. `_toolid_fields` preserves that as `""` vs absent; don't
 collapse them.
@@ -87,11 +121,12 @@ code on two physical cutters — see spec §3.5.3, including the two risks it ac
 **Three constraints from `settings.comments` shape this format, and they are easy to
 trip over.** Comments are uppercased, filtered to `" a-z0-9.,=_-"` (so `/` and `"`
 vanish from free text), and **truncated at 80 characters**. Truncation *omits* fields,
-which would defeat the empty-vs-missing rule, so: the identity line carries no
-geometry (`D`/`CR`/`TYPE` are already on the tool-list line above it — repeating them
-is what would spend the budget), and the one unbounded field, the description, sits on
-its own `TOOLDESC` line where a truncation can only cost free text. Adding a field to
-the `TOOLID` line means re-checking that budget.
+which would defeat the empty-vs-missing rule, so: `CODE=` is length-capped and
+filter-checked at post time by `getToolCode` rather than given its own line, the
+identity line carries no geometry (`D`/`CR`/`TYPE` are already on the tool-list line
+above it — repeating them is what would spend the budget), and the one unbounded field,
+the description, sits on its own `TOOLDESC` line where a truncation can only cost free
+text. Adding a field to the `TOOLID` line means re-checking that budget.
 
 `TOOLDESC` lands in `cam_description`, deliberately **not** in `description`.
 `cam_description` is what the **description seal** reads (`tool_library.resolve_part`),
@@ -192,9 +227,10 @@ the sole diameter authority. Built 2026-08-17 (issues #9, #24); data lives in
 
 **Identity is matched exactly or not at all, and no string is ever compared.**
 `code_in_file_tool` looks in two places, because there are two CAM apps: Fusion's
-`PRODUCT=` from the `TOOLID` comment, and — for VCarve, whose post lets only the tool
-*name* reach a file — a code-shaped token inside the description. A file either carries
-a code the library knows, or the tool **orphans** to an explicit operator decision.
+`CODE=` from the `TOOLID` comment (sourced from the tool's Product Link field), and —
+for VCarve, whose post lets only the tool *name* reach a file — a code-shaped token
+inside the description. A file either carries a code the library knows, or the tool
+**orphans** to an explicit operator decision.
 `End Mill` never finds anything, which is what kills §3.1's dangerous direction: a
 stale copy-pasted description making two different cutters look like one.
 

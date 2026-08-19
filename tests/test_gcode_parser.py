@@ -6,6 +6,7 @@ from gcode_parser import (
     GcodePass, _arc_points, extract_file_segments, file_is_inch,
     operation_name_in_comment, parse_vcarve_text, validate_z,
 )
+from tool_library import code_in_file_tool
 
 # --- fixtures ---
 
@@ -626,7 +627,7 @@ def test_units_default_is_metric_when_no_units_word():
 
 # ── the TOOLID identity comment (spec §6.2.1) ────────────────────────────────
 #
-# What `writeToolIdentity` in `post/syntec 4.cps` emits. The strings below
+# What `writeToolIdentity` in `post/syntec_Refine.cps` emits. The strings below
 # are post-filter: settings.comments uppercases and strips anything outside
 # " a-z0-9.,=_-", so '/' and '"' are gone from free text by the time the app reads
 # it. That only touches TOOLDESC, which is why identity lives on the other line.
@@ -642,10 +643,10 @@ def _with_toolid(*extra):
 
 
 def test_toolid_identity_is_read_alongside_the_geometry_header():
-    part = parse_vcarve_text(_with_toolid("(TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)"))
+    part = parse_vcarve_text(_with_toolid("(TOOLID T2 VENDOR=AMANA CODE=EM-0512 FLUTES=3)"))
     info = part.tools["T2"]
     assert info["vendor"] == "AMANA"
-    assert info["product_id"] == "46170-K"
+    assert info["code"] == "EM-0512"
     assert info["flutes"] == 3
     # The geometry from the header line survives the merge.
     assert info["diameter_inches"] == pytest.approx(0.5)
@@ -656,7 +657,7 @@ def test_toolid_blank_field_is_distinct_from_a_missing_one():
     # The post emits "VENDOR=" rather than omitting it, because a blank Fusion
     # library entry is something the operator can go and fill in while an older
     # post is not. "" and None must not collapse.
-    blank = parse_vcarve_text(_with_toolid("(TOOLID T2 VENDOR= PRODUCT=46170-K FLUTES=)"))
+    blank = parse_vcarve_text(_with_toolid("(TOOLID T2 VENDOR= CODE=EM-0512 FLUTES=)"))
     assert blank.tools["T2"]["vendor"] == ""
     assert blank.tools["T2"]["flutes"] is None
 
@@ -664,20 +665,50 @@ def test_toolid_blank_field_is_distinct_from_a_missing_one():
     assert absent.tools["T2"].get("vendor") is None
 
 
+def test_toolid_blank_code_is_distinct_from_a_missing_one():
+    # Same rule, on the field that now carries the identity: "CODE=" says the Fusion
+    # Product Link field is empty and wants a code typed into it, while a missing CODE
+    # says only that the file predates the comment. Only the first is actionable.
+    blank = parse_vcarve_text(_with_toolid("(TOOLID T2 CODE= VENDOR=AMANA FLUTES=3)"))
+    assert blank.tools["T2"]["code"] == ""
+    assert parse_vcarve_text(_with_toolid()).tools["T2"].get("code") is None
+
+
+def test_toolid_product_field_is_not_read_as_a_code():
+    # Fusion's Product ID is free for the manufacturer's real part number now that the
+    # code lives in Product Link, so a stray PRODUCT= must not be mistaken for identity.
+    # Two shop tools ground from one catalogue item share a part number and would merge.
+    part = parse_vcarve_text(_with_toolid("(TOOLID T2 CODE=EM-0512 PRODUCT=46170-K FLUTES=3)"))
+    info = part.tools["T2"]
+    assert info["code"] == "EM-0512"
+    assert "product_id" not in info
+    assert code_in_file_tool(info) == "EM-0512"
+
+
+def test_a_code_containing_a_space_cannot_round_trip():
+    # Pins the grammar the post's own validation relies on. TOOLID_FIELD_PATTERN reads
+    # `KEY=(\S*)`, so a space ends the value: "EM 0512" comes back as "EM", silently,
+    # and every "EM ...." code would collapse onto that one key. `getToolCode` in
+    # post/syntec_Refine.cps therefore refuses to emit a code with interior whitespace —
+    # this test is why that check has to stay.
+    part = parse_vcarve_text(_with_toolid("(TOOLID T2 CODE=EM 0512 VENDOR=AMANA FLUTES=3)"))
+    assert part.tools["T2"]["code"] == "EM"
+
+
 def test_toolid_distinguishes_two_cutters_that_post_the_same_geometry():
     # The case the whole comment exists for: an upcut and a downcut of one diameter
     # are both "FLAT END MILL D=12.7 CR=0." byte-for-byte, so geometry cannot tell
     # them apart and merging them cuts with whatever is loaded.
-    up = parse_vcarve_text(_with_toolid("(TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)"))
-    down = parse_vcarve_text(_with_toolid("(TOOLID T2 VENDOR=AMANA PRODUCT=46172-K FLUTES=3)"))
+    up = parse_vcarve_text(_with_toolid("(TOOLID T2 VENDOR=AMANA CODE=EM-0512 FLUTES=3)"))
+    down = parse_vcarve_text(_with_toolid("(TOOLID T2 VENDOR=AMANA CODE=EM-0512D FLUTES=3)"))
     assert up.tools["T2"]["description"] == down.tools["T2"]["description"]
-    assert up.tools["T2"]["product_id"] != down.tools["T2"]["product_id"]
+    assert up.tools["T2"]["code"] != down.tools["T2"]["code"]
 
 
 def test_tooldesc_is_captured_separately_from_the_derived_description():
     part = parse_vcarve_text(
         _with_toolid(
-            "(TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)",
+            "(TOOLID T2 VENDOR=AMANA CODE=EM-0512 FLUTES=3)",
             "(TOOLDESC T2 12 DOWNCUT SPIRAL)",
         )
     )
@@ -689,7 +720,7 @@ def test_tooldesc_is_captured_separately_from_the_derived_description():
 
 
 def test_toolid_lines_are_not_read_as_operation_names():
-    assert operation_name_in_comment("(TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)") == ""
+    assert operation_name_in_comment("(TOOLID T2 VENDOR=AMANA CODE=EM-0512 FLUTES=3)") == ""
     assert operation_name_in_comment("(TOOLDESC T2 12 DOWNCUT SPIRAL)") == ""
 
 

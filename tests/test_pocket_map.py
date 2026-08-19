@@ -45,7 +45,7 @@ def _pocket(state, number):
 
 def test_a_tool_takes_its_declared_default_slot():
     lib = ToolLibrary([make_tool("EM-0512", default_slot=2)])
-    st = _state(lib, [_entry(lib, "p_1", "p.nc", "A0", {"T2": {"product_id": "EM-0512"}}, ["T2"])])
+    st = _state(lib, [_entry(lib, "p_1", "p.nc", "A0", {"T2": {"code": "EM-0512"}}, ["T2"])])
     assert st["assignment"] == {"EM-0512": 2}
     assert _pocket(st, 2) == ["EM-0512"]
     assert st["valid"] is True
@@ -54,7 +54,7 @@ def test_a_tool_takes_its_declared_default_slot():
 def test_a_tool_with_no_declared_slot_is_staged_not_dropped_into_the_lowest_free_one():
     """Auto-fill was recommended and rejected. The app never invents a pocket."""
     lib = ToolLibrary([make_tool("BB-0250", default_slot=None)])
-    st = _state(lib, [_entry(lib, "p_1", "p.nc", "A0", {"T7": {"product_id": "BB-0250"}}, ["T7"])])
+    st = _state(lib, [_entry(lib, "p_1", "p.nc", "A0", {"T7": {"code": "BB-0250"}}, ["T7"])])
     assert st["assignment"] == {"BB-0250": STAGED}
     assert st["staged"] == ["BB-0250"]
     assert st["free"] == [1, 2, 3, 4, 5, 6, 7, 8]   # nothing was filled
@@ -67,8 +67,8 @@ def test_two_tools_declaring_one_pocket_both_sit_in_it():
     lib = ToolLibrary([make_tool("EM-0512", default_slot=2),
                        make_tool("EM-0520", default_slot=2)])
     st = _state(lib, [
-        _entry(lib, "a_1", "a.nc", "A0", {"T2": {"product_id": "EM-0512"}}, ["T2"]),
-        _entry(lib, "b_1", "b.nc", "A13", {"T2": {"product_id": "EM-0520"}}, ["T2"]),
+        _entry(lib, "a_1", "a.nc", "A0", {"T2": {"code": "EM-0512"}}, ["T2"]),
+        _entry(lib, "b_1", "b.nc", "A13", {"T2": {"code": "EM-0520"}}, ["T2"]),
     ])
     assert _pocket(st, 2) == ["EM-0512", "EM-0520"]
     assert st["doubled"] == [2]
@@ -80,9 +80,9 @@ def test_the_map_is_the_same_every_time_for_the_same_inputs():
                        make_tool("EM-0520", default_slot=2),
                        make_tool("BB-0250", default_slot=None)])
     entries = [
-        _entry(lib, "a_1", "a.nc", "A0", {"T2": {"product_id": "EM-0512"}}, ["T2"]),
-        _entry(lib, "b_1", "b.nc", "A13", {"T4": {"product_id": "EM-0520"},
-                                           "T7": {"product_id": "BB-0250"}}, ["T4", "T7"]),
+        _entry(lib, "a_1", "a.nc", "A0", {"T2": {"code": "EM-0512"}}, ["T2"]),
+        _entry(lib, "b_1", "b.nc", "A13", {"T4": {"code": "EM-0520"},
+                                           "T7": {"code": "BB-0250"}}, ["T4", "T7"]),
     ]
     first = _state(lib, entries)["assignment"]
     for _ in range(5):
@@ -93,7 +93,7 @@ def test_the_map_is_the_same_every_time_for_the_same_inputs():
 
 def test_a_drag_overrides_the_declared_slot_for_this_job_only():
     lib = ToolLibrary([make_tool("EM-0512", default_slot=2)])
-    entries = [_entry(lib, "p_1", "p.nc", "A0", {"T2": {"product_id": "EM-0512"}}, ["T2"])]
+    entries = [_entry(lib, "p_1", "p.nc", "A0", {"T2": {"code": "EM-0512"}}, ["T2"])]
     st = _state(lib, entries, {"EM-0512": 8})
     assert st["assignment"] == {"EM-0512": 8}
     # The library is untouched, so the next job re-proposes pocket 2. That nag is the
@@ -105,7 +105,7 @@ def test_a_drag_overrides_the_declared_slot_for_this_job_only():
 def test_a_tool_away_from_its_home_is_marked_every_time():
     """Nag every time (operator's call). A badge that goes quiet stops being read."""
     lib = ToolLibrary([make_tool("EM-0512", default_slot=2)])
-    st = _state(lib, [_entry(lib, "p_1", "p.nc", "A0", {"T2": {"product_id": "EM-0512"}}, ["T2"])],
+    st = _state(lib, [_entry(lib, "p_1", "p.nc", "A0", {"T2": {"code": "EM-0512"}}, ["T2"])],
                 {"EM-0512": 8})
     assert st["tools"][0]["off_home"] is True
     assert st["tools"][0]["default_slot"] == 2
@@ -117,8 +117,8 @@ def test_dropping_onto_an_occupied_pocket_coexists_rather_than_swapping():
     lib = ToolLibrary([make_tool("EM-0512", default_slot=2),
                        make_tool("BN-0500", default_slot=4)])
     entries = [_entry(lib, "p_1", "p.nc", "A0",
-                      {"T2": {"product_id": "EM-0512"},
-                       "T1": {"product_id": "BN-0500"}}, ["T1", "T2"])]
+                      {"T2": {"code": "EM-0512"},
+                       "T1": {"code": "BN-0500"}}, ["T1", "T2"])]
     st = _state(lib, entries, {"BN-0500": 2})
     assert _pocket(st, 2) == ["BN-0500", "EM-0512"]
     assert _pocket(st, 4) == []
@@ -127,7 +127,7 @@ def test_dropping_onto_an_occupied_pocket_coexists_rather_than_swapping():
 
 def test_a_drag_beyond_the_changer_lands_back_in_staging():
     lib = ToolLibrary([make_tool("EM-0512", default_slot=2)])
-    st = _state(lib, [_entry(lib, "p_1", "p.nc", "A0", {"T2": {"product_id": "EM-0512"}}, ["T2"])],
+    st = _state(lib, [_entry(lib, "p_1", "p.nc", "A0", {"T2": {"code": "EM-0512"}}, ["T2"])],
                 {"EM-0512": 99})
     assert st["staged"] == ["EM-0512"]
 
@@ -142,7 +142,7 @@ def test_capacity_is_a_consequence_not_a_fourth_rule():
                        for n in range(1, 10)])
     entries = [
         _entry(lib, f"p{n}_1", f"p{n}.nc", f"A{n}",
-               {f"T{n}": {"product_id": f"TT-{n:04d}"}}, [f"T{n}"])
+               {f"T{n}": {"code": f"TT-{n:04d}"}}, [f"T{n}"])
         for n in range(1, 10)
     ]
     st = _state(lib, entries)
@@ -165,8 +165,8 @@ def test_a_valid_map_is_every_tool_in_its_own_pocket():
     lib = ToolLibrary([make_tool("EM-0512", default_slot=2),
                        make_tool("BN-0500", default_slot=4)])
     st = _state(lib, [_entry(lib, "p_1", "p.nc", "A0",
-                             {"T2": {"product_id": "EM-0512"},
-                              "T1": {"product_id": "BN-0500"}}, ["T1", "T2"])])
+                             {"T2": {"code": "EM-0512"},
+                              "T1": {"code": "BN-0500"}}, ["T1", "T2"])])
     assert st["valid"] is True
     assert st["messages"][0]["level"] == "ok"
 
@@ -177,7 +177,7 @@ def test_a_tool_needed_by_three_parts_is_one_entry_naming_all_three():
     lib = ToolLibrary([make_tool("EM-0512", default_slot=2)])
     entries = [
         _entry(lib, f"p{n}_1", f"p{n}.nc", f"A{n}",
-               {"T2": {"product_id": "EM-0512"}}, ["T2"])
+               {"T2": {"code": "EM-0512"}}, ["T2"])
         for n in range(3)
     ]
     st = _state(lib, entries)
@@ -193,9 +193,9 @@ def test_the_sole_user_of_a_tool_is_named_so_the_operator_need_not_scan():
     lib = ToolLibrary([make_tool("EM-0512", default_slot=2),
                        make_tool("BB-0250", default_slot=6)])
     st = _state(lib, [
-        _entry(lib, "shared_1", "shared.nc", "A0", {"T2": {"product_id": "EM-0512"}}, ["T2"]),
-        _entry(lib, "only_1", "only.nc", "A13", {"T2": {"product_id": "EM-0512"},
-                                                 "T7": {"product_id": "BB-0250"}}, ["T2", "T7"]),
+        _entry(lib, "shared_1", "shared.nc", "A0", {"T2": {"code": "EM-0512"}}, ["T2"]),
+        _entry(lib, "only_1", "only.nc", "A13", {"T2": {"code": "EM-0512"},
+                                                 "T7": {"code": "BB-0250"}}, ["T2", "T7"]),
     ])
     bowl = next(t for t in st["tools"] if t["code"] == "BB-0250")
     assert bowl["sole_instance_id"] == "only_1"
@@ -207,12 +207,12 @@ def test_the_message_changes_when_dragging_can_no_longer_help():
     changer is full. Operators are not developers; the wording carries the difference."""
     lib = ToolLibrary([make_tool("BB-0250", default_slot=None)])
     roomy = _state(lib, [_entry(lib, "p_1", "p.nc", "A0",
-                                {"T7": {"product_id": "BB-0250"}}, ["T7"])])
+                                {"T7": {"code": "BB-0250"}}, ["T7"])])
     assert "8 free" in roomy["messages"][0]["text"]
     assert roomy["messages"][0]["level"] == "warning"
 
     cramped = _state(lib, [_entry(lib, "p_1", "p.nc", "A0",
-                                  {"T7": {"product_id": "BB-0250"}}, ["T7"])], capacity=0)
+                                  {"T7": {"code": "BB-0250"}}, ["T7"])], capacity=0)
     assert "take a part off the bed" in cramped["messages"][0]["text"]
     assert cramped["messages"][0]["level"] == "error"
 
@@ -221,8 +221,8 @@ def test_the_doubled_pocket_message_stops_saying_drag_when_nothing_is_free():
     lib = ToolLibrary([make_tool("EM-0512", default_slot=1),
                        make_tool("EM-0520", default_slot=1)])
     st = _state(lib, [
-        _entry(lib, "a_1", "a.nc", "A0", {"T2": {"product_id": "EM-0512"}}, ["T2"]),
-        _entry(lib, "b_1", "b.nc", "A13", {"T2": {"product_id": "EM-0520"}}, ["T2"]),
+        _entry(lib, "a_1", "a.nc", "A0", {"T2": {"code": "EM-0512"}}, ["T2"]),
+        _entry(lib, "b_1", "b.nc", "A13", {"T2": {"code": "EM-0520"}}, ["T2"]),
     ], capacity=1)
     assert "every pocket is taken" in st["messages"][0]["text"]
     assert "drag" not in st["messages"][0]["text"]

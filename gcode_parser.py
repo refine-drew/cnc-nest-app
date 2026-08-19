@@ -12,7 +12,7 @@ HEADER_SIZE_PATTERN = re.compile(
 PART_SIZE_PATTERN = re.compile(r"\(\s*PART SIZE X\s*=\s*([0-9.+-]+)\s*Y\s*=\s*([0-9.+-]+)\s*\)", re.IGNORECASE)
 TOOL_HEADER_PATTERN = re.compile(r"\(\s*(T\d+)\s*=\s*(.+?)\s*\)", re.IGNORECASE)
 INLINE_TOOL_PATTERN = re.compile(r"\(\s*Tool:\s*([^\{\)]+)\{([0-9.]+)\s*inches\}\)", re.IGNORECASE)
-# Fusion's tool list, written by `post/syntec 4.cps` writeProgramHeader():
+# Fusion's tool list, written by `post/syntec_Refine.cps` writeProgramHeader():
 #   (T1 D=12.7 CR=6.35 - ZMIN=14.605 - BALL END MILL)
 #   (T3 D=12.7 CR=0. TAPER=45DEG - ZMIN=18.542 - CHAMFER MILL)
 # TAPER appears only for tapered tools, and ZMIN only when the job is 3D, so both
@@ -27,12 +27,19 @@ FUSION_TOOL_HEADER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 # The identity comment the REFINE post emits (spec §6.2.1), written by
-# `writeToolIdentity` in `post/syntec 4.cps`:
-#   (TOOLID T2 VENDOR=AMANA PRODUCT=46170-K FLUTES=3)
+# `writeToolIdentity` in `post/syntec_Refine.cps`:
+#   (TOOLID T2 CODE=EM-0512 VENDOR=AMANA FLUTES=3)
 #   (TOOLDESC T2 12 DOWNCUT SPIRAL)
-# `TOOLID` leads so the line can be found without guessing at comment shapes. The
-# identity is VENDOR+PRODUCT; the `T#` only ties the line to the header above it and
-# is not part of the identity.
+# `TOOLID` leads so the line can be found without guessing at comment shapes. `CODE`
+# alone is the identity — a shop-assigned code, typed into Fusion's Product Link field
+# — and VENDOR/FLUTES are for a human reading the file. The `T#` only ties the line to
+# the header above it and is not part of the identity.
+#
+# There is deliberately no `PRODUCT=` field. It existed until 2026-08-19, when the code
+# moved to Product Link so that Fusion's Product ID could hold the manufacturer's real
+# part number instead. Reading a part number as a code is the dangerous direction — two
+# shop tools ground from the same catalogue item would merge — so the key is gone
+# rather than kept as an alias.
 TOOLID_PATTERN = re.compile(r"\(\s*TOOLID\s+(T\d+)\s*(.*?)\s*\)", re.IGNORECASE)
 TOOLDESC_PATTERN = re.compile(r"\(\s*TOOLDESC\s+(T\d+)\s+(.+?)\s*\)", re.IGNORECASE)
 TOOLID_FIELD_PATTERN = re.compile(r"\b([A-Z_]+)=(\S*)", re.IGNORECASE)
@@ -244,11 +251,11 @@ def _fusion_tool_entry(match: "re.Match", to_inches: float) -> Dict[str, Optiona
 def _toolid_fields(body: str) -> Dict[str, object]:
     """Parse the KEY=value pairs of a TOOLID comment.
 
-    The post emits a blank field as `VENDOR=` rather than omitting it, and that
+    The post emits a blank field as `CODE=` rather than omitting it, and that
     distinction is the whole point: an empty value says the Fusion library entry is
     blank, which the operator can go and fill in, while a *missing* key says only
     that the file predates the identity comment. Preserve it — an absent key leaves
-    nothing in the dict, so `.get("vendor")` returns None, whereas a blank one
+    nothing in the dict, so `.get("code")` returns None, whereas a blank one
     returns "".
     """
     fields: Dict[str, object] = {}
@@ -256,8 +263,8 @@ def _toolid_fields(body: str) -> Dict[str, object]:
         name = key.upper()
         if name == "VENDOR":
             fields["vendor"] = value
-        elif name == "PRODUCT":
-            fields["product_id"] = value
+        elif name == "CODE":
+            fields["code"] = value
         elif name == "FLUTES":
             fields["flutes"] = int(value) if value.isdigit() else None
     return fields

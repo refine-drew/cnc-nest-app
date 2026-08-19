@@ -280,7 +280,7 @@ def test_job_safe_z_honours_a_file_retract_above_stock_clearance(client, tmp_pat
     tall = (
         "( Material Size)\n( X= 100.0, Y= 100.0, Z= 19.05)\n"
         "(T2 D=12.7 CR=0. - ZMIN=14.605 - FLAT END MILL)\n"
-        "(TOOLID T2 VENDOR= PRODUCT=EM-0500 FLUTES=3)\n"
+        "(TOOLID T2 VENDOR= CODE=EM-0500 FLUTES=3)\n"
         "T2 M06\nG43 Z57.15 H02\nG01 X50 Y50 Z14.605\nM30\n"
     )
     _seed_library(tmp_path, monkeypatch, {"tall.nc": tall})

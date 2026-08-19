@@ -2,6 +2,8 @@
   Copyright (C) 2012-2026 by Autodesk, Inc.
   All rights reserved.
 
+  Refine Products version of this post processor updated 8/19/26
+
   SYNTEC post processor configuration.
 
   $Revision: 44229 e780fd31175d3ecc1f0eb61106a1f48cbb5c06bf $
@@ -3054,12 +3056,119 @@ properties.writeTools = {
 };
 properties.writeToolIdentity = {
   title      : "Write tool identity (CNC Nest)",
-  description: "Output a TOOLID comment per tool, naming vendor and product id. CNC Nest matches these against its tool library to tell two cutters apart when both post the same description.",
+  description: "Output a TOOLID comment per tool, naming vendor and the shop tool code taken from the tool's Product Link field. CNC Nest matches the code against its tool library to tell two cutters apart when both post the same description. Product ID is deliberately not read, so it stays free for the manufacturer's real part number.",
   group      : "formats",
   type       : "boolean",
   value      : true,
   scope      : "post"
 };
+
+/**
+  The Fusion field the shop tool code is typed into.
+
+  Product *Link*, not Product ID. The code needs a field that is (a) per tool in the
+  Fusion library, (b) reachable from a post, and (c) not wanted for anything else.
+  Product ID satisfies the first two but fails the third -- it is the natural home for
+  the manufacturer's real part number (46170-K), and a shop that wants both a code and
+  a part number has only one field for them. Product Link is the field this shop will
+  never otherwise use, and the real URL has a better home anyway: CNC Nest's own
+  tool_library.json carries `vendor` and `product_link` per tool for reorder info.
+
+  Note the naming trap that creates: Fusion's "Product Link" holds the *code*, while
+  tool_library.json's `product_link` holds the *URL*. They are not the same value.
+
+  Product Link is not a member of the post kernel's Tool class -- `tool.productId` and
+  `tool.vendor` exist, `tool.productLink` does not -- so it can only be read as a
+  section parameter. This is Autodesk's own idiom for it; their setup-sheet.cps and
+  tool-sheet.cps read "operation:tool_productLink" through the identical helper.
+  Matching on tool.number is safe because a pocket number identifies one tool within
+  a single Fusion document, which is the only scope this walks.
+
+  An older Fusion that does not publish the parameter returns undefined, which becomes
+  an empty CODE= and orphans the tool to a manual bind in the app. That is the safe
+  direction: a tool the app cannot identify stops at a prompt.
+*/
+function getSectionParameterForTool(tool, id) {
+  var numberOfSections = getNumberOfSections();
+  for (var i = 0; i < numberOfSections; ++i) {
+    var section = getSection(i);
+    if (section.getTool().number == tool.number) {
+      return section.hasParameter(id) ? section.getParameter(id) : undefined;
+    }
+  }
+  return undefined;
+}
+
+// Keeps the TOOLID line inside the 78 characters of comment text that
+// settings.comments allows, with room for the longest plausible VENDOR.
+var TOOL_CODE_MAX_LENGTH = 24;
+
+/**
+  Return the shop tool code, or "" -- but abort the post rather than emit a mangled one.
+
+  `settings.comments` filters comments to a permitted character set and then truncates
+  at 80 characters, and neither step reports what it removed. For free text that is
+  harmless; for an identity key it is not, in two distinct ways:
+
+    - Filtering silently rewrites the value. A real URL pasted into Product Link loses
+      every ':' and '/', so ".../46170-k-cnc-solid-carbide..." posts as
+      "HTTPSWWW.AMANATOOL.COM46170-K-CNC-SOLID-CARBIDE...". That string still looks like
+      a code to a reader and to the app.
+    - Truncation then cuts it at 78 characters, and two different cutters whose URLs
+      share a long prefix collapse to the *same* truncated string -- one code on two
+      physical cutters, which is precisely the failure this whole comment exists to
+      prevent, arriving by the one route the description seal cannot see.
+
+  Truncation would also drop VENDOR= and FLUTES= off the right, defeating the
+  empty-vs-missing rule below.
+
+  So the rule is: emit the code only if it survives the filter byte for byte. A code
+  that cannot be written faithfully must not be written at all, and post time is the
+  right place to say so -- the CAM programmer is present and can fix the field, whereas
+  at the machine the same mistake is a wrong cutter in a merged block. An *empty* field
+  is not an error: it is the designed path to a manual bind in the app.
+*/
+function getToolCode(tool) {
+  var raw = getSectionParameterForTool(tool, "operation:tool_productLink");
+  var code = (raw == undefined) ? "" : String(raw).trim();
+  if (code == "") {
+    return "";
+  }
+  // Interior whitespace has to go first, because the filter *permits* a space while the
+  // app's grammar cannot represent one: gcode_parser.TOOLID_FIELD_PATTERN matches
+  // `KEY=(\S*)`, so "EM 0512" would be read back as the code "EM" -- silently, and with
+  // every "EM ...." code collapsing onto that same truncated key.
+  if (/\s/.test(code)) {
+    error(
+      localize("Tool") + " " + tool.number + ": " +
+      localize("the shop tool code must not contain spaces") + ": \"" + code + "\""
+    );
+    return "";
+  }
+  // formatComment() applies the same filter, so a faithful code is one it leaves alone.
+  var posted = formatComment(code).slice(
+    settings.comments.prefix.length,
+    -settings.comments.suffix.length
+  );
+  if (posted != code.toUpperCase()) {
+    error(
+      localize("Tool") + " " + tool.number + ": " +
+      localize("the Product Link field must hold the shop tool code, not a URL.") + " \"" + code + "\" " +
+      localize("cannot be written to a comment unchanged (letters, digits and . , = _ - only).") + " " +
+      localize("Put the code in Product Link and the manufacturer part number in Product ID.")
+    );
+    return "";
+  }
+  if (code.length > TOOL_CODE_MAX_LENGTH) {
+    error(
+      localize("Tool") + " " + tool.number + ": " +
+      localize("the shop tool code is longer than the TOOLID comment can carry without truncation") +
+      " (" + code.length + " > " + TOOL_CODE_MAX_LENGTH + "): \"" + code + "\""
+    );
+    return "";
+  }
+  return code;
+}
 
 /**
   Emit a stable per-tool identity token for CNC Nest's tool library.
@@ -3068,22 +3177,26 @@ properties.writeToolIdentity = {
   identity. An upcut, a downcut and a compression spiral of the same diameter all
   post as "FLAT END MILL D=12.7 CR=0.", byte for byte, so nesting two programs
   that both call T2 cannot tell whether one cutter or two are involved. Merging
-  them cuts with whatever happens to be loaded. VENDOR+PRODUCT is the only stable
-  key Fusion exposes per tool -- `toolId` is unique only within a document, so the
-  same physical cutter yields a different id in every design and must not be used.
+  them cuts with whatever happens to be loaded.
+
+  CODE alone is the identity, and it is a *shop-assigned* code, not a manufacturer
+  part number -- the same code is typed into Fusion's Product Link and into the VCarve
+  tool name, which is the only field VCarve's post lets reach a file. VENDOR and FLUTES
+  are emitted for a human reading the file and are not read by the app. `toolId` is
+  unique only within a document, so the same physical cutter yields a different id in
+  every design and must not be used.
 
   A missing field is emitted as an empty value, never omitted: "VENDOR=" says the
   Fusion library entry is blank, whereas a *missing* VENDOR is indistinguishable
   from an older post. Only the first is something the operator can act on.
 
-  Two lines rather than one, and no geometry repeated. `settings.comments` filters
-  comments to a permitted character set and truncates at 80 characters, so a single
-  long line would silently drop fields off the right -- which would defeat the
-  empty-vs-missing rule above. The description is the only unbounded field, so it
-  goes last, on its own line, where a truncation can only cost free text and never
-  identity. D/CR/TYPE are deliberately not repeated here: they are already on the
-  adjacent tool list line, and spending the line budget on them is what would make
-  truncation possible.
+  Two lines rather than one, and no geometry repeated. `settings.comments` truncates at
+  80 characters, and truncation *omits* fields, which would defeat the empty-vs-missing
+  rule above. The description is the only unbounded field, so it goes last, on its own
+  line, where a truncation can only cost free text and never identity. CODE is bounded
+  by getToolCode() instead of being given its own line. D/CR/TYPE are deliberately not
+  repeated here: they are already on the adjacent tool list line, and spending the line
+  budget on them is what would make truncation possible.
 */
 function writeToolIdentity(tool) {
   if (!getProperty("writeToolIdentity")) {
@@ -3092,8 +3205,8 @@ function writeToolIdentity(tool) {
   var t = "T" + toolFormat.format(tool.number);
   writeComment(
     "TOOLID " + t +
+    " CODE=" + getToolCode(tool) +
     " VENDOR=" + (tool.vendor ? tool.vendor : "") +
-    " PRODUCT=" + (tool.productId ? tool.productId : "") +
     " FLUTES=" + (tool.numberOfFlutes ? tool.numberOfFlutes : "")
   );
   if (tool.description) {
