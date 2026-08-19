@@ -68,45 +68,51 @@ comment specified in `docs/tool-changer-pocket-management-spec.md` §6.2.1:
 
 **`CODE` alone is the identity, and it carries a shop-assigned code** — not a
 manufacturer part number (spec §3.1, #9, 2026-08-17). The operator types the same code
-into Fusion's **Product Link** field and into the VCarve tool **name**, which is the only
+into Fusion's **Product ID** field and into the VCarve tool **name**, which is the only
 field VCarve's post lets reach a file. Matching is exact or it does not happen: an
 uncoded tool orphans to a job-scoped manual bind, and no string is ever compared.
 `VENDOR` and `FLUTES` are emitted but unread. `toolId` is document-scoped and must never
 be used. The `T#` only ties the line to the header above it.
 
-**Product Link, not Product ID, and the field choice is deliberate** (2026-08-19). The
-code needs a per-tool Fusion field that is reachable from a post and wanted for nothing
-else. Product ID met the first two tests and failed the third — it is the natural home
-for the manufacturer's real part number, and one field cannot hold both. Product Link is
-the field this shop will never otherwise use, and the URL has a better home already:
-`tool_library.json` carries `vendor` and `product_link` per tool for reorder info. Note
-the resulting naming trap — Fusion's *Product Link* holds the **code**, while
-`LibraryTool.product_link` holds the **URL**; they are never the same value.
+**Product ID, and Product Link was tried and does not work** (2026-08-19). The code needs
+a per-tool Fusion field that is (a) reachable from a post and (b) wanted for nothing else.
+Product Link looked better on (b) — Product ID is the natural home for the manufacturer's
+part number, and one field cannot hold both — so the code moved there for a morning. It
+fails (a): `productLink` is **not a member of the post kernel's `Tool` class**
+(`tool.productId` and `tool.vendor` are), and reading it as the section parameter
+`operation:tool_productLink` — Autodesk's own idiom from their `setup-sheet.cps` — did not
+deliver the value from this Fusion. Files posted with the field filled came out with an
+empty `CODE=`. A field the post cannot read is not a candidate, whatever the division of
+labour. `getSectionParameterForTool` is gone and `getToolCode` reads `tool.productId`.
 
-**Product Link is not on the post kernel's `Tool` class.** `tool.productId` and
-`tool.vendor` exist; `tool.productLink` does not. It is reachable only as a section
-parameter, `operation:tool_productLink`, via `getSectionParameterForTool` — Autodesk's
-own idiom, lifted from their `setup-sheet.cps`. A Fusion that does not publish the
-parameter yields `undefined` → empty `CODE=` → orphan, which is the safe direction.
+**So (b) holds by rule instead: Product ID carries the shop code and nothing else.** That
+rule is the price of the reversal and is load-bearing — a leftover catalogue part number
+in the field posts as a code, and two cutters ground from one catalogue item then share it
+and merge into one block. Nothing is displaced today (the shop's tool sheet has no
+part-number column); if part numbers ever need a home it is `tool_library.json`, beside
+`vendor` and `product_link`, never the CAM field.
 
-**`getToolCode` aborts the post rather than emit a code it cannot write faithfully**,
-and that guard is load-bearing because the new field's *intended* content is a URL.
-`settings.comments` strips `:` and `/` silently, so a pasted product URL posts as
-`HTTPSWWW.AMANATOOL.COM46170-K-CNC-SOLID-…` — still code-shaped to every reader — and
-truncation at 78 characters then collapses two cutters whose URLs share a long prefix
-onto **one** code, the exact failure the identity split exists to prevent and the one
-route the description seal cannot see. So the rule is byte-for-byte survival of the
+**`getToolCode` aborts the post rather than emit a code it cannot write faithfully.** The
+guard was written for Product Link, whose intended content was a URL, and it earns its
+keep on Product ID too: `settings.comments` silently drops everything outside
+`" a-z0-9.,=_-"`, so anything **pasted** rather than typed is rewritten without a word — a
+product URL posts as `HTTPSWWW.AMANATOOL.COM46170-K-CNC-SOLID-…`, and `1/8" Roundover`
+copied off a product page posts as `18 ROUNDOVER`. Both stay code-shaped to every reader,
+and truncation at 78 characters then collapses two cutters whose values share a long
+prefix onto **one** code — the exact failure the identity split exists to prevent, by the
+one route the description seal cannot see. So the rule is byte-for-byte survival of the
 comment filter, plus a 24-character cap, plus **no interior whitespace** — the parser's
 `KEY=(\S*)` grammar reads `EM 0512` back as `EM`, silently, and
 `test_a_code_containing_a_space_cannot_round_trip` pins why that third check exists.
 An *empty* field is not an error; it is the designed path to a manual bind.
 
-**There is no `PRODUCT=` field any more, and it must not come back as an alias.** With
-Product ID now holding real part numbers, reading one as a code is the dangerous
-direction: two shop tools ground from the same catalogue item share a part number and
-would merge into one block. `test_toolid_product_field_is_not_read_as_a_code` guards it.
-Renaming the key cost nothing — no posted file in the library carried a `TOOLID` comment
-yet, so there was no migration.
+**The comment key is `CODE=`, and `PRODUCT=` must not come back as an alias.** The key was
+named `PRODUCT=` until 2026-08-19; reverting the *source field* is no reason to revert the
+*key*. `CODE=` names what the value is rather than where it came from, and one key with one
+meaning is the point — an alias is a second candidate code in one line, and the app must
+never choose between two. `test_toolid_product_field_is_not_read_as_a_code` guards it.
+Renaming cost nothing — no posted file in the library carried a `TOOLID` comment yet, so
+there was no migration.
 
 **A blank field is emitted as `CODE=`/`VENDOR=`, never omitted** — empty means the Fusion
 library entry needs filling in, missing means the file predates the comment, and only
@@ -227,7 +233,7 @@ the sole diameter authority. Built 2026-08-17 (issues #9, #24); data lives in
 
 **Identity is matched exactly or not at all, and no string is ever compared.**
 `code_in_file_tool` looks in two places, because there are two CAM apps: Fusion's
-`CODE=` from the `TOOLID` comment (sourced from the tool's Product Link field), and —
+`CODE=` from the `TOOLID` comment (sourced from the tool's Product ID field), and —
 for VCarve, whose post lets only the tool *name* reach a file — a code-shaped token
 inside the description. A file either carries a code the library knows, or the tool
 **orphans** to an explicit operator decision.

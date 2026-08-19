@@ -192,7 +192,7 @@ def audit_part(part, rel_path, tool_lib, thresholds):
     if uncoded:
         flags.append(("warning",
                       f"No shop code on {', '.join(sorted(uncoded))} — type the code "
-                      "into Fusion's Product Link field or the VCarve tool name so this file "
+                      "into Fusion's Product ID field or the VCarve tool name so this file "
                       "matches the library on its own"))
 
     if not part.tools and not metrics:

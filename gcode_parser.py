@@ -31,15 +31,16 @@ FUSION_TOOL_HEADER_PATTERN = re.compile(
 #   (TOOLID T2 CODE=EM-0512 VENDOR=AMANA FLUTES=3)
 #   (TOOLDESC T2 12 DOWNCUT SPIRAL)
 # `TOOLID` leads so the line can be found without guessing at comment shapes. `CODE`
-# alone is the identity — a shop-assigned code, typed into Fusion's Product Link field
-# — and VENDOR/FLUTES are for a human reading the file. The `T#` only ties the line to
+# alone is the identity — a shop-assigned code, typed into Fusion's Product ID field —
+# and VENDOR/FLUTES are for a human reading the file. The `T#` only ties the line to
 # the header above it and is not part of the identity.
 #
-# There is deliberately no `PRODUCT=` field. It existed until 2026-08-19, when the code
-# moved to Product Link so that Fusion's Product ID could hold the manufacturer's real
-# part number instead. Reading a part number as a code is the dangerous direction — two
-# shop tools ground from the same catalogue item would merge — so the key is gone
-# rather than kept as an alias.
+# `CODE=` is the one key, and there is deliberately no `PRODUCT=` alias for it. The key
+# was called `PRODUCT=` until 2026-08-19 and was briefly sourced from Fusion's Product
+# Link field instead; Product Link turned out not to reach a post, so the source field
+# is Product ID again while the key stays `CODE=`. One key with one meaning is the point
+# — an alias is a second place a code could come from, and the app must never have to
+# choose between two.
 TOOLID_PATTERN = re.compile(r"\(\s*TOOLID\s+(T\d+)\s*(.*?)\s*\)", re.IGNORECASE)
 TOOLDESC_PATTERN = re.compile(r"\(\s*TOOLDESC\s+(T\d+)\s+(.+?)\s*\)", re.IGNORECASE)
 TOOLID_FIELD_PATTERN = re.compile(r"\b([A-Z_]+)=(\S*)", re.IGNORECASE)
@@ -252,8 +253,8 @@ def _toolid_fields(body: str) -> Dict[str, object]:
     """Parse the KEY=value pairs of a TOOLID comment.
 
     The post emits a blank field as `CODE=` rather than omitting it, and that
-    distinction is the whole point: an empty value says the Fusion library entry is
-    blank, which the operator can go and fill in, while a *missing* key says only
+    distinction is the whole point: an empty value says the tool's Product ID field in
+    Fusion is blank, which the operator can go and fill in, while a *missing* key says only
     that the file predates the identity comment. Preserve it — an absent key leaves
     nothing in the dict, so `.get("code")` returns None, whereas a blank one
     returns "".

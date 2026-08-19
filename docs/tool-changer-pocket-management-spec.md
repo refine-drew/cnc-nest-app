@@ -195,10 +195,10 @@ carried whatever the cutter's manufacturer happened to publish. **They do not ha
 to.** The operator assigns a **unique code by hand, one per physical cutter**, and
 types it into the CAM tool library:
 
-- **Fusion** — the code goes in **Product Link**, which `writeToolIdentity`
-  (`post/syntec_Refine.cps`) emits as `CODE=`. See the 2026-08-19 note below: this was
-  **Product id** as first built, and moved so that Product id could hold the
-  manufacturer's real part number.
+- **Fusion** — the code goes in **Product id**, which `writeToolIdentity`
+  (`post/syntec_Refine.cps`) emits as `CODE=`. See the 2026-08-19 note below: it briefly
+  moved to **Product Link** so that Product id could hold the manufacturer's real part
+  number, and moved back when Product Link proved unreachable from a post.
 - **VCarve** — the code goes in the tool **name**, the only field that reaches a
   posted file. The corpus confirms it arrives verbatim — `(T1 = Ball Nose .5 inches
   Dia)` is a hand-typed name rendered unaltered — so `(T4 = RK-004 End Mill)` is
@@ -208,34 +208,53 @@ types it into the CAM tool library:
 is present and known to the library, that is an exact match. Otherwise the tool is
 **orphaned**, and the operator binds it for that run only (§3.5.3).
 
-**2026-08-19 — the Fusion field moves from Product id to Product Link.** The code needs
-a per-tool Fusion field that is (a) reachable from a post and (b) not wanted for anything
-else. Product id passes the first test and fails the second: it is the natural home for
-the manufacturer's real part number (`46170-K`), and a shop that wants both a code and a
-part number has only one field for them. Product Link is the field this shop will never
-otherwise use, and the URL it was meant for already has a better home — `tool_library.json`
-carries `vendor` and `product_link` per tool for reorder info (§3.5.1). Three consequences:
+**2026-08-19 — the Fusion field is Product id, after a failed attempt at Product Link.**
+The code needs a per-tool Fusion field that is (a) reachable from a post and (b) not
+wanted for anything else. The morning's reasoning was that Product id passes the first
+test and fails the second — it is the natural home for the manufacturer's real part
+number (`46170-K`), and one field cannot hold both — so the code moved to Product Link,
+with the URL it was meant for rehoused in `tool_library.json`'s per-tool `product_link`
+(§3.5.1).
 
-- **`PRODUCT=` is gone from the comment, not kept as an alias.** With Product id now
-  holding part numbers, reading one as a code is the dangerous direction — two shop tools
-  ground from one catalogue item share a part number and would merge into a single block,
-  which is exactly what §3.1 forbids. Renaming cost nothing: no file in the library
-  carried a `TOOLID` comment yet, so there was no migration.
-- **Product Link is not on the post kernel's `Tool` class.** `tool.productId` and
-  `tool.vendor` exist; `tool.productLink` does not. It is readable only as the section
-  parameter `operation:tool_productLink`, through a `getSectionParameterForTool` helper
-  lifted from Autodesk's own `setup-sheet.cps`. A Fusion that does not publish the
-  parameter yields `undefined` → empty `CODE=` → orphan, which is the safe direction.
-- **The post now validates the code and aborts rather than emit a mangled one**, because
-  the new field's *intended* content is an unbounded URL and §6.2.1's character filter
-  strips `:` and `/` in silence. A pasted product URL posts as
-  `HTTPSWWW.AMANATOOL.COM46170-K-CNC-SOLID-…`, still code-shaped to every reader, and
-  truncation at 78 characters then collapses two cutters whose URLs share a long prefix
-  onto **one** code — the failure this section exists to prevent, arriving by the one
-  route the description seal (§3.5.3) cannot see. `getToolCode` therefore requires
-  byte-for-byte survival of the comment filter, a length of at most 24, and **no interior
-  whitespace**: the parser's `KEY=(\S*)` grammar reads `EM 0512` back as `EM`, silently.
-  An *empty* field is not an error — it is the designed path to a manual bind.
+**Product Link fails test (a), which outranks the tidiness argument.** It is not a member
+of the post kernel's `Tool` class — `tool.productId` and `tool.vendor` exist,
+`tool.productLink` does not — so the post read it as the section parameter
+`operation:tool_productLink`, through a `getSectionParameterForTool` helper lifted from
+Autodesk's own `setup-sheet.cps`. Posted from this Fusion with the field filled in, the
+value did not reach the file: `CODE=` came out empty. A field the post cannot read is not
+a candidate for identity, however clean the division of labour looks on paper. The helper
+is deleted and `getToolCode` reads `tool.productId`, a plain property.
+
+Three consequences:
+
+- **Test (b) is settled by decree instead of by field choice: Product id holds the shop
+  code and nothing else.** That rule is load-bearing, and it is the price of the reversal
+  — a leftover catalogue part number in the field posts as a code, and two cutters ground
+  from one catalogue item then share it and merge into a single block, which is exactly
+  what §3.1 forbids. The cost is low today: the shop's own tool sheet (§3.5.5) has no
+  part-number column, so nothing is being displaced. Should the shop start tracking part
+  numbers, they go in `tool_library.json` beside `vendor` and `product_link`, never back
+  into the CAM field.
+- **The comment key stays `CODE=`, and `PRODUCT=` does not come back as an alias.** The
+  key was named `PRODUCT=` until this morning; renaming it cost nothing then (no file in
+  the library carried a `TOOLID` comment yet) and reverting the *source field* is no
+  reason to revert the *key*. `CODE=` names what the value is rather than where it came
+  from, and one key with one meaning is the point — an alias is a second candidate code in
+  one line, and the app must never choose between two.
+  `test_toolid_product_field_is_not_read_as_a_code` pins it.
+- **The post still validates the code and aborts rather than emit a mangled one.** This
+  guard was written for Product Link, whose *intended* content was an unbounded URL, but
+  it earns its place on Product id too: §6.2.1's character filter silently drops anything
+  outside `" a-z0-9.,=_-"`, so anything **pasted** rather than typed is rewritten without
+  a word — a catalogue URL posts as `HTTPSWWW.AMANATOOL.COM46170-K-CNC-SOLID-…`, and a
+  size copied off a product page, `1/8" Roundover`, posts as `18 ROUNDOVER`. Both are
+  still code-shaped to every reader, and truncation at 78 characters then collapses two
+  cutters whose values share a long prefix onto **one** code — the failure this section
+  exists to prevent, arriving by the one route the description seal (§3.5.3) cannot see.
+  `getToolCode` therefore requires byte-for-byte survival of the comment filter, a length
+  of at most 24, and **no interior whitespace**: the parser's `KEY=(\S*)` grammar reads
+  `EM 0512` back as `EM`, silently. An *empty* field is not an error — it is the designed
+  path to a manual bind.
 
 **This does not reopen the argument above.** What this section forbids is treating
 description text *as identity* — inferring which cutter a file means from free-form
@@ -1236,7 +1255,7 @@ New, opened by #10:
 | `gcode_parser.py:137` `extract_tools` | Source of per-file tool data. What the feature reads from it narrows to the **code token** and `cam_description`; the parsed diameter stops being authoritative (§3.5.2) |
 | `gcode_parser.py` `_extract_diameter` | **Retire the bare-decimal fallback** — it would read a code like `RK-004` as a 0.04" cutter, a 25× under-inflation (§3.5.2) |
 | `gcode_parser.py` `TOOLID_PATTERN` / `_toolid_fields` | Reads `CODE=`; that value is the match key. `PRODUCT=` is no longer read at all (2026-08-19). The `""`-vs-absent distinction stays load-bearing — empty means the CAM entry needs a code |
-| `post/syntec_Refine.cps` `writeToolIdentity` / `getToolCode` | Emits `CODE=` from the tool's **Product Link** field, read as the section parameter `operation:tool_productLink` (2026-08-19). Aborts the post on a code the comment filter would mangle, one over 24 characters, or one containing whitespace |
+| `post/syntec_Refine.cps` `writeToolIdentity` / `getToolCode` | Emits `CODE=` from the tool's **Product id** field (`tool.productId`). Product Link was tried on 2026-08-19 and does not reach a post. Aborts the post on a code the comment filter would mangle, one over 24 characters, or one containing whitespace |
 | `tool_library.py` | Today a `T#`→diameter registry; becomes the identity library keyed by **code** (§3.5) |
 | `tool_library.py:39` `find_unknown_tools` | Existing block-on-unresolvable pattern to mirror |
 | `config.json` `tools` | **Delete** — junk in its entirety, migrates nothing (§8). Its `T4` diameter is wrong by 1.6" |

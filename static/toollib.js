@@ -86,7 +86,7 @@ var ToolLib = (() => {
     form.innerHTML = `
       <div class="tl-form-head">${isNew ? "New tool" : esc(t.name || t.code)}</div>
       <div class="tl-field">
-        <label>Shop code <small>you type this same code into Fusion's Product Link field and the VCarve tool name</small></label>
+        <label>Shop code <small>you type this same code into Fusion's Product ID field and the VCarve tool name</small></label>
         <input type="text" id="tl-code" value="${esc(t ? t.code : "")}" placeholder="EM-0512"/>
       </div>
       <div class="tl-field">

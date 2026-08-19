@@ -666,18 +666,19 @@ def test_toolid_blank_field_is_distinct_from_a_missing_one():
 
 
 def test_toolid_blank_code_is_distinct_from_a_missing_one():
-    # Same rule, on the field that now carries the identity: "CODE=" says the Fusion
-    # Product Link field is empty and wants a code typed into it, while a missing CODE
-    # says only that the file predates the comment. Only the first is actionable.
+    # Same rule, on the field that now carries the identity: "CODE=" says the tool's
+    # Product ID field in Fusion is empty and wants a code typed into it, while a missing
+    # CODE says only that the file predates the comment. Only the first is actionable.
     blank = parse_vcarve_text(_with_toolid("(TOOLID T2 CODE= VENDOR=AMANA FLUTES=3)"))
     assert blank.tools["T2"]["code"] == ""
     assert parse_vcarve_text(_with_toolid()).tools["T2"].get("code") is None
 
 
 def test_toolid_product_field_is_not_read_as_a_code():
-    # Fusion's Product ID is free for the manufacturer's real part number now that the
-    # code lives in Product Link, so a stray PRODUCT= must not be mistaken for identity.
-    # Two shop tools ground from one catalogue item share a part number and would merge.
+    # `CODE=` is the only identity key, and no other key aliases it. `PRODUCT=` was the
+    # key's name until 2026-08-19; a file or a future post emitting one must not give the
+    # app a second candidate code in the same line to choose between. An unrecognised key
+    # is ignored, not promoted.
     part = parse_vcarve_text(_with_toolid("(TOOLID T2 CODE=EM-0512 PRODUCT=46170-K FLUTES=3)"))
     info = part.tools["T2"]
     assert info["code"] == "EM-0512"
