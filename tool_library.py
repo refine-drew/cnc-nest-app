@@ -333,6 +333,13 @@ class ToolBinding:
     cam_description: str = ""
     posted_diameter_inches: Optional[float] = None
     description: str = ""
+    # The raw `CODE=` field, carried through so an orphan can say *why* it orphaned:
+    # `""` means the file has a TOOLID comment with the field left blank — the Fusion
+    # tool's Product ID is empty and one edit fixes it for good — while None means the
+    # file carries no code at all (every VCarve file, and everything posted before the
+    # comment existed), where a job-scoped bind is the whole answer. The parser keeps
+    # the two apart for exactly this; collapsing them at the dialog wasted it.
+    code_field: Optional[str] = None
 
     @property
     def resolved(self) -> bool:
@@ -428,6 +435,7 @@ def resolve_part(
             cam_description=cam_description_of(info),
             posted_diameter_inches=posted_diameter_of(info),
             description=str(info.get("description") or ""),
+            code_field=info.get("code"),
         )
 
         if code and code in library:

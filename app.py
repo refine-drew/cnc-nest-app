@@ -432,6 +432,11 @@ def _resolution_block(rel: str, res) -> Optional[tuple]:
                 "tool_number": b.tool_number,
                 "status": b.status,
                 "code": b.code,
+                # `""` = the file has a TOOLID comment with CODE= left blank, so the
+                # Fusion tool's Product ID is empty and one edit fixes it for every
+                # future post; null = the file carries no code at all. The resolver
+                # says which, because only the first is worth going back to CAM for.
+                "code_field": b.code_field,
                 "description": b.description,
                 "cam_description": b.cam_description,
                 # Display only, and never compared against the declaration — it is the

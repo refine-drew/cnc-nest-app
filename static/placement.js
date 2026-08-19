@@ -114,6 +114,23 @@ var Placement = (() => {
     _renderResolver();
   }
 
+  // Why this tool did not resolve, in the operator's terms. Three cases, and the
+  // middle one is the one worth naming: a `CODE=` the post wrote but left empty means
+  // the tool exists in Fusion with an empty Product ID, so one edit there fixes every
+  // file it is ever used in. An absent code is the ordinary floor — every VCarve file
+  // and everything posted before the comment existed — and a bind is the whole answer.
+  function _whyUnresolved(t) {
+    if (t.status === "unknown_code") {
+      return `The file names tool code ${t.code}, which is not in your library yet.`;
+    }
+    if (t.code_field === "") {
+      return "This file was posted with an empty tool code: the tool's Product ID " +
+             "field is blank in Fusion. Fill it in with the shop code and re-post to " +
+             "fix it for good — or say which tool it is, for this job only.";
+    }
+    return "The file carries no tool code, so there is nothing to match it against.";
+  }
+
   function _renderResolver() {
     const overlay = document.getElementById("resolve-overlay");
     if (!_queue.length) {
@@ -124,9 +141,7 @@ var Placement = (() => {
     const t = _queue[0];
     document.getElementById("resolve-tool").textContent = t.tool_number;
     document.getElementById("resolve-file").textContent = t.path || _lastPath;
-    document.getElementById("resolve-why").textContent = t.status === "unknown_code"
-      ? `The file names tool code ${t.code}, which is not in your library yet.`
-      : "The file carries no tool code, so there is nothing to match it against.";
+    document.getElementById("resolve-why").textContent = _whyUnresolved(t);
     document.getElementById("resolve-posted").textContent =
       t.cam_description || t.description || "(no description in the file)";
 

@@ -109,6 +109,25 @@ def test_a_file_with_no_code_orphans():
     assert res.blocked
 
 
+def test_an_orphan_says_whether_the_code_field_was_blank_or_absent():
+    """Blank `CODE=` is actionable in CAM; an absent one is not.
+
+    A blank field means the Fusion tool exists with an empty Product ID, so one edit
+    there fixes every file that tool is ever used in. An absent field means the file
+    carries no identity comment at all — every VCarve file — where a job-scoped bind
+    is the whole answer. The resolver tells them apart with this.
+    """
+    lib = _lib(make_tool("EM-0512"))
+
+    blank = resolve_part(lib, _make_part({"T1": {"code": ""}}, ["T1"]))
+    assert blank.bindings["T1"].status == "orphan"
+    assert blank.bindings["T1"].code_field == ""
+
+    absent = resolve_part(lib, _make_part({"T1": {"description": "End Mill"}}, ["T1"]))
+    assert absent.bindings["T1"].status == "orphan"
+    assert absent.bindings["T1"].code_field is None
+
+
 def test_an_orphan_binds_to_a_library_tool_for_this_run():
     lib = _lib(make_tool("EM-0512", diameter=0.5))
     part = _make_part({"T4": {"description": "End Mill {0.5 inches}"}}, ["T4"])
