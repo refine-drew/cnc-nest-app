@@ -176,6 +176,24 @@ now does a load-bearing job for the seal instead.
 
 **`gcode_generator.py`** — merges placed parts into a single master G-code. Walks tool passes in order-of-operations sequence (all T1 cuts across all parts, then all T2, etc.), applies coordinate transforms matching `collision.py`, and uses nearest-neighbor sorting to minimize rapid travel.
 
+**Nothing reaches a comment without going through `gcode_generator.comment`**
+(2026-08-20). A comment ends at the **first** `)` — no nesting, no escape — so a job
+named `(9) 18G Test` posted `(Job: (9) 18G Test)`, whose comment ended after `(9`,
+leaving `) 18G Test)` on the block as code for the control to alarm on. The job name
+was the visible case; the one that mattered is that `_compute_job_safe_z` writes its
+own driver as `18G.nc (retract)`, so **every master the app had written since #22
+carried a broken header**, whatever the operator typed. Every comment string here is
+authored elsewhere — job name, source file names, `driven_by`, the CAM `(Tool: …)`
+text — so all of them are wrapped, not just the ones that have failed. Parens become
+**brackets** rather than being deleted (`(9)` deleted reads as a bare `9`), and
+non-printing characters become spaces: the `.nc` is UTF-8, so the header's old em dash
+reached the Syntec as three bytes it has no code page for, and a stray newline would
+split one comment into an unterminated block and a bare-code one. Whitespace is
+otherwise untouched — the header's alignment is part of its format. Comments copied
+out of a source file are the one thing `comment()` never composes, so `_transform_line`
+passes them through byte-for-byte unless `comment_is_wellformed` says the control
+cannot read them, and re-wraps only then; `(A) (B)` is two comments and is fine.
+
 **`gcode_validator.py`** — gates `/api/generate`. Re-derives the emitted file's
 modal state by reading it block by block, the way the control does, and reports
 `Finding`s at two severities. **It deliberately shares no state with
@@ -186,7 +204,9 @@ output. The split follows what a check can prove: a G49 cutting move is wrong
 under every reading, a straight-down plunge may be exactly what was intended.
 `G71` is correct for Syntec (the one documented deviation from Fanuc 0M) and must
 never be "fixed" to `G21`. The three files from the 2026-08-15 output review are
-pinned as fixtures in `tests/test_gcode_validator.py`.
+pinned as fixtures in `tests/test_gcode_validator.py`. `_check_comment_syntax` is the
+independent half of the comment rule above and shares no scanner with the generator —
+the generator sanitises, and this is what says whether it did.
 
 **Job safe Z is the highest clearance any placed part needs, from either of two
 sources.** `app._compute_job_safe_z` takes the max of *(thickest material +

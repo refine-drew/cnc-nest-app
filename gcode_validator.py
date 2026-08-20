@@ -100,6 +100,7 @@ def validate_gcode(text: str, advanced: Optional[dict] = None) -> List[Finding]:
     findings: List[Finding] = []
     lines = text.splitlines()
 
+    findings += _check_comment_syntax(lines)
     findings += _check_tape_marks(lines)
     findings += _walk(lines, advanced or {})
     findings.sort(key=lambda f: (f.line_no, f.check))
@@ -122,6 +123,52 @@ def format_findings(findings: List[Finding]) -> str:
 
 
 # ── structure ─────────────────────────────────────────────────────────────────
+
+def _check_comment_syntax(lines: List[str]) -> List[Finding]:
+    """Every `(` opens a comment that closes with `)` before the block ends.
+
+    A comment ends at the **first** `)` — there is no nesting and no escape — so
+    a paren inside one does not stay inside it. `(Job: (9) 18G Test)` is a
+    comment that ends after `(9`, and the control reads `) 18G Test)` as code and
+    alarms. The alarm arrives at whatever line the bad comment sits on, which for
+    a header comment is after the operator has loaded the program and started it.
+
+    ERROR, not WARNING: the block is unreadable under every interpretation, and
+    what the control does with the remainder is undefined.
+
+    This reads the emitted characters and shares no scanner with
+    `gcode_generator.comment`, which is the point — the generator sanitises every
+    string it interpolates, and this is what says whether it did. The one thing
+    it cannot see is a comment the generator never touched *and* the source file
+    got right; those pass, correctly.
+    """
+    out: List[Finding] = []
+    for idx, raw in enumerate(lines):
+        n = idx + 1
+        depth = 0
+        problem = None
+        for ch in raw:
+            if ch == "(":
+                if depth:
+                    problem = ("a '(' inside a comment that is already open — the "
+                               "comment ends at the first ')', so the rest of the "
+                               "block is read as code")
+                    break
+                depth = 1
+            elif ch == ")":
+                if not depth:
+                    problem = "a ')' with no comment open"
+                    break
+                depth = 0
+        if problem is None and depth:
+            problem = "a comment that is never closed before the end of the block"
+        if problem:
+            out.append(Finding(
+                ERROR, "comment-syntax", n, raw.strip(),
+                f"Malformed comment: {problem}.",
+            ))
+    return out
+
 
 def _check_tape_marks(lines: List[str]) -> List[Finding]:
     marks = [i for i, l in enumerate(lines) if l.strip() == "%"]

@@ -8,7 +8,10 @@ import re
 import pytest
 from gcode_parser import parse_vcarve_text
 from collision import PlacedPart, RAIL_DEFAULTS, slot_mark_y
+from gcode_validator import validate_gcode
 from gcode_generator import (
+    comment,
+    comment_is_wellformed,
     generate_master_gcode,
     block_tool_sequence,
     _build_blocks,
@@ -995,3 +998,106 @@ def test_generated_output_has_no_illegal_plane_axis_pairs():
             assert not re.search(r"[YJ][-\d.]", line), f"Y/J word in G18 block: {line}"
         elif plane == "G19":
             assert not re.search(r"[XI][-\d.]", line), f"X/I word in G19 block: {line}"
+
+
+# ── comment syntax ────────────────────────────────────────────────────────────
+#
+# A comment ends at the first ')', with no nesting and no escape, so anything
+# this file interpolates into one has to survive that rule. The strings involved
+# are all written by somebody else — the operator's job name, the source file
+# names, `driven_by`, the CAM tool comment — and the failure lands as an alarm
+# mid-program, after the operator has already started the job.
+
+def _comment_lines(text):
+    return [l for l in text.splitlines() if l.lstrip().startswith("(")]
+
+
+def _every_comment_is_readable(text):
+    """The whole file, checked the way the control reads it: one pass, one depth."""
+    for line in text.splitlines():
+        depth = 0
+        for ch in line:
+            if ch == "(":
+                assert depth == 0, f"nested '(' in: {line}"
+                depth = 1
+            elif ch == ")":
+                assert depth == 1, f"stray ')' in: {line}"
+                depth = 0
+        assert depth == 0, f"comment never closed: {line}"
+
+
+def test_comment_wraps_parens_as_brackets():
+    assert comment("Job: (9) 18G Test") == "(Job: [9] 18G Test)"
+
+
+def test_comment_keeps_whitespace_exactly_as_passed():
+    # The header aligns its fields with runs of spaces, and the pass banner pads
+    # inside the parens. Sanitising must not reflow either.
+    assert comment(" ---- T2 pass 1 ---- ") == "( ---- T2 pass 1 ---- )"
+    assert comment("Instances: 9  Tools: T2, T1") == "(Instances: 9  Tools: T2, T1)"
+
+
+def test_comment_replaces_non_ascii_and_cannot_split_a_block():
+    # The .nc is written as UTF-8: an em dash reaches the control as three bytes
+    # it has no code page for, and a newline would end the block mid-comment.
+    assert comment("2.250\" — driven by 18G.nc") == '(2.250"   driven by 18G.nc)'
+    out = comment("first\nsecond")
+    assert "\n" not in out and out == "(first second)"
+
+
+def test_job_name_with_parens_stays_one_comment():
+    # "(9) 18G Test" — a real job name, typed by the operator on 2026-08-20. Emitted
+    # verbatim it closed the header comment after "(9" and left ") 18G Test)" as code.
+    p = _placed(SINGLE_T2, "A", 39)
+    text = generate_master_gcode([p], {**SETTINGS, "job_name": "(9) 18G Test"})
+    assert "(Job: [9] 18G Test)" in text
+    _every_comment_is_readable(text)
+
+
+def test_safe_z_driver_with_parens_stays_one_comment():
+    # `_compute_job_safe_z` writes its own driver as "18G.nc (retract)", so this one
+    # is the app breaking its own header without any operator input at all.
+    p = _placed(SINGLE_T2, "A", 39)
+    text = generate_master_gcode([p], {
+        **SETTINGS,
+        "job_safe_z": {"value": 57.15, "driven_by": "18G.nc (retract)"},
+    })
+    assert "(Safe Z: 2.250\" - driven by 18G.nc [retract])" in text
+    _every_comment_is_readable(text)
+
+
+def test_tool_description_with_parens_stays_one_comment():
+    # `_tool_comment` reads up to the first ')', so a CAM tool named
+    # "End Mill (3 flute)" hands the block an unbalanced description.
+    nc = SINGLE_T2.replace("(Tool: End Mill {0.5 inches})",
+                           "(Tool: End Mill (3 flute) {0.5 inches})")
+    text = generate_master_gcode([_placed(nc, "A", 39)], SETTINGS)
+    _every_comment_is_readable(text)
+    assert "3 flute" in text
+
+
+def test_a_malformed_source_comment_is_repaired_rather_than_copied_through():
+    # Body comments pass through byte-for-byte, which is right until the source
+    # file wrote one the control cannot read. A toolpath named "Pocket (2)" in
+    # VCarve is the live case; the master is the file that gets run, so it is the
+    # one that has to be readable.
+    params = _transform_params(
+        PlacedPart(part=parse_vcarve_text(SINGLE_T2, filename="p.nc"),
+                   rail="A", slot_inches=13, instance_id="i1"))
+    assert _transform_line("(POCKET X2)", params) == "(POCKET X2)"
+    assert _transform_line("(A) (B)", params) == "(A) (B)"          # two comments, fine
+    repaired = _transform_line("(POCKET (2))", params)
+    assert comment_is_wellformed(repaired) and "2" in repaired
+
+
+def test_generated_output_passes_the_validator_comment_check():
+    # The two layers meet here: the generator sanitises, and the validator — which
+    # shares none of that code — is what says whether it did.
+    text = generate_master_gcode(
+        [_placed(SINGLE_T2, "A", 13, "i1"), _placed(TWO_PASS_T2_T4, "B", 26, "i2")],
+        {**SETTINGS, "job_name": "(9) 18G Test",
+         "job_safe_z": {"value": 57.15, "driven_by": "18G.nc (retract)"}})
+    findings = validate_gcode(text, SETTINGS["advanced"])
+    assert [f for f in findings if f.check == "comment-syntax"] == []
+    _every_comment_is_readable(text)
+    assert _comment_lines(text)   # the check above is vacuous on a file with none

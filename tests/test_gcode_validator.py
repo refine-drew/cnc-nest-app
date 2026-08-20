@@ -72,6 +72,28 @@ def test_non_increasing_sequence_number_is_an_error():
     assert "sequence" in checks(CLEAN.replace("N90 G01", "N75 G01"), ERROR)
 
 
+def test_nested_comment_is_an_error():
+    # "(Job: (9) 18G Test)" — the header of a real 2026-08-20 job. The comment ends
+    # at the first ')', so the control reads ") 18G Test)" as code and alarms, at
+    # the line the comment sits on rather than at the tool that was mis-described.
+    assert "comment-syntax" in checks(
+        CLEAN.replace("(TEST)", "(Job: (9) 18G Test)"), ERROR)
+
+
+def test_stray_close_paren_is_an_error():
+    assert "comment-syntax" in checks(CLEAN.replace("(TEST)", "TEST)"), ERROR)
+
+
+def test_unclosed_comment_is_an_error():
+    assert "comment-syntax" in checks(CLEAN.replace("(TEST)", "(TEST"), ERROR)
+
+
+def test_two_comments_on_one_line_are_fine():
+    # Balanced and sequential, not nested — the control reads two comments and no
+    # code. Flagging this would fire on ordinary posted output.
+    assert "comment-syntax" not in checks(CLEAN.replace("(TEST)", "(A) (B)"))
+
+
 def test_lone_tape_mark_is_an_error():
     assert "tape-marks" in checks(CLEAN[1:], ERROR)      # trailing % only
     assert "tape-marks" in checks(CLEAN[:-2], ERROR)     # leading % only
