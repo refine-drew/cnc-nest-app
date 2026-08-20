@@ -30,6 +30,11 @@ var BedCanvas = (() => {
   // slot data loaded from /api/slots
   let SLOTS = [];
 
+  // Rail locating pins, machine mm, from /api/slots — the same resolved circles
+  // collision.check_pins gates placement on. Never re-derive them here: a pin
+  // drawn somewhere it is not is worse than one not drawn at all.
+  let PINS = [];
+
   // corporate logo watermark
   let _logoImg = null;
   const _logoEl = new Image();
@@ -186,6 +191,7 @@ var BedCanvas = (() => {
     _drawBed(w, h);
     _drawLogo();
     _drawSlotMarks();
+    _drawPins();
     _drawRuler();
     _drawParts();
     _drawDragFeedback();
@@ -331,6 +337,44 @@ var BedCanvas = (() => {
         // A rail label below mark
         ctx.fillText(slot.label_a, aPos.x, aPos.y + size + fontSize + 2);
         ctx.fillText(slot.label_b, bPos.x, bPos.y - size - 4);
+      }
+    }
+  }
+
+  // ── rail locating pins ────────────────────────────────────────────────────
+  //
+  // Steel dowels standing proud of the table, outboard of each rail's datum, so
+  // they never sit under a blank — the thing that reaches them is a wide cutter
+  // running along the datum edge. Drawn at true 3/4" diameter, with a floor of a
+  // few pixels so they stay findable zoomed out: a pin the operator cannot see
+  // is one they will not think about when choosing a slot.
+  //
+  // Grey on purpose. Colour on this canvas is already spoken for — red is a
+  // collision, blue is the A rail, green is B, and the band palette is stock
+  // thickness — so hardware that is always there and never changes reads as
+  // metal rather than joining any of those conversations.
+  function _drawPins() {
+    if (!PINS.length) return;
+    const s = baseScale * zoom;
+    for (const pin of PINS) {
+      const p = toCanvas(pin.x_mm, pin.y_mm);
+      const r = Math.max(pin.radius_mm * s, 3);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = "#8d8d93";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(230,230,235,0.8)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Label only once there is room for it to mean something.
+      if (s > 0.25) {
+        ctx.font = "10px system-ui";
+        ctx.fillStyle = "rgba(220,220,225,0.75)";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(pin.label, p.x + r + 4, p.y);
+        ctx.textBaseline = "alphabetic";
       }
     }
   }
@@ -857,6 +901,7 @@ var BedCanvas = (() => {
         }
       }
       SLOTS    = slotData.slots;
+      PINS     = slotData.pins || [];
       resize();
     }).catch(() => resize());
 

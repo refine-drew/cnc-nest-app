@@ -125,6 +125,67 @@ Y_FLOOR_MM = 0.0
 EDGE_MARGIN_DEFAULT_IN = 0.5
 
 
+# ── rail locating pins ────────────────────────────────────────────────────────
+#
+# Four 3/4" dowel pins stand proud of the table and locate the removable rails
+# laterally. They are machine hardware, not stock: nothing moves them, and a
+# cutter that reaches one hits steel.
+#
+# Measured on the SS2 2026-08-19, in machine inches, two per rail:
+#
+#     A  (3.425, 119.100)   (3.425,  54.100)
+#     B (62.275,   3.851)  (62.295,  68.851)
+#
+# The pattern is how those readings were checked, not a rule the code enforces:
+# each pair sits 1.875" outboard of its rail corner and 65.000" apart, with the
+# first pin's edge tangent to that rail's slot-0 datum (A 119.476, B 3.476). A
+# re-measure that breaks the pattern is worth reading twice before it lands —
+# test_each_rail_pair_sits_65_inches_apart_outboard_of_its_rail says so.
+#
+# OUTBOARD is the whole reason this check is subtle. A blank registers against
+# the rail corner and runs inboard, so no blank covers a pin and no programmed
+# coordinate reaches one. What reaches a pin is the CUTTER: coordinates are tool
+# centre with no comp, so the edge stands one radius outside the path, and a
+# path hugging the datum edge sweeps a radius outboard of it. The nearest pin
+# edge is 1.5" outboard of the rail corner, so this bites only above a 3"
+# cutter — a backstop like Y_FLOOR_MM, not a working limit. It is checked
+# because the consequence is a crash, not because it is close.
+#
+# Unlike the X hard stop, a pin IS a slot problem: pins sit at two discrete
+# points per rail, so moving along the rail can clear one.
+PIN_DIAMETER_DEFAULT_IN = 0.75
+
+PIN_DEFAULTS = [
+    {"label": "A1", "x_in":  3.425, "y_in": 119.100},
+    {"label": "A2", "x_in":  3.425, "y_in":  54.100},
+    {"label": "B1", "x_in": 62.275, "y_in":   3.851},
+    {"label": "B2", "x_in": 62.295, "y_in":  68.851},
+]
+
+
+def locating_pins(advanced: Optional[dict] = None) -> List[dict]:
+    """The rail locating pins as machine mm, with config overriding the set.
+
+    Configured in inches (`advanced.locating_pins`), because that is how the
+    machine was measured and how it will be re-measured. An explicit empty list
+    means no pins; only a missing key falls back to the measured defaults.
+    """
+    raw = (advanced or {}).get("locating_pins")
+    if raw is None:
+        raw = PIN_DEFAULTS
+    pins = []
+    for i, p in enumerate(raw, start=1):
+        dia = p.get("diameter_in")
+        pins.append({
+            "label": str(p.get("label") or f"P{i}"),
+            "x_mm": float(p["x_in"]) * MM_PER_IN,
+            "y_mm": float(p["y_in"]) * MM_PER_IN,
+            "radius_mm": float(PIN_DIAMETER_DEFAULT_IN if dia is None else dia)
+                         * MM_PER_IN / 2,
+        })
+    return pins
+
+
 def travel_limits(advanced: Optional[dict] = None) -> dict:
     """Axis travel limits in machine mm, with config overrides. None = unchecked."""
     limits = dict(TRAVEL_DEFAULTS)
@@ -311,6 +372,57 @@ def _envelope_result(placed: PlacedPart, slot: str, tool: str, axis: str,
     )
 
 
+def _rect_circle_gap(r: Rect, cx: float, cy: float) -> float:
+    """Distance from a point to the nearest point of a rect; 0.0 when inside."""
+    dx = max(r.min_x - cx, 0.0, cx - r.max_x)
+    dy = max(r.min_y - cy, 0.0, cy - r.max_y)
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def check_pins(
+    placed: PlacedPart,
+    rails: Optional[dict] = None,
+    advanced: Optional[dict] = None,
+) -> CollisionResult:
+    """Check one placement against the rail locating pins.
+
+    The pin is a circle, so the clearance is measured from the TOOL CENTRE path
+    to the pin centre and compared against tool radius + pin radius. That is the
+    same test as inflating the toolpath rect by the tool radius and the pin by
+    its own, except at the rect's corners, where this form rounds the corner the
+    way a round cutter actually sweeps it instead of squaring it off. Squaring it
+    would refuse placements that clear the pin diagonally by millimetres.
+
+    Placement-time only. `gcode_validator` reads tool-centre coordinates with no
+    radius to inflate them by, so it could only catch a path drawn straight
+    through a pin — this is the check that has the radius, so this is the one
+    that has to be right.
+    """
+    radius = _max_tool_radius(placed)
+    centre = toolpath_rect(placed, rails)
+    slot = slot_label(placed.rail, placed.slot_inches)
+    tool = _largest_tool_str(placed) or "cutter "
+
+    for pin in locating_pins(advanced):
+        needed = radius + pin["radius_mm"]
+        gap = _rect_circle_gap(centre, pin["x_mm"], pin["y_mm"])
+        if gap < needed:
+            return CollisionResult(
+                collides=True,
+                message=(
+                    f"Cannot place {placed.part.filename} at slot {slot}: its "
+                    f"{tool}would hit rail locating pin {pin['label']} at machine "
+                    f"X {pin['x_mm']:.1f}, Y {pin['y_mm']:.1f} mm. The toolpath "
+                    f"passes {gap:.1f} mm from the pin centre and the cutter needs "
+                    f"{needed:.1f} mm to clear it — an overlap of {needed - gap:.1f} "
+                    "mm. The pins locate the rails and do not come out. Move the "
+                    "part to a slot clear of the pin, or cut it with a smaller tool."
+                ),
+            )
+
+    return CollisionResult(collides=False)
+
+
 def rects_overlap(a: Rect, b: Rect) -> bool:
     """True when two rects share interior area. Touching edges are not a collision."""
     return not (
@@ -326,11 +438,12 @@ def check_placement(
     advanced: Optional[dict] = None,
 ) -> CollisionResult:
     """
-    Check whether new_placed is legal: inside the machine envelope, and clear of
-    every already-placed part.
+    Check whether new_placed is legal: inside the machine envelope, clear of the
+    rail locating pins, and clear of every already-placed part.
 
-    The envelope is checked first — a placement the machine cannot reach is not
-    made acceptable by having the bed to itself.
+    The envelope and the pins are checked first — a placement the machine cannot
+    reach, or that hits fixed hardware, is not made acceptable by having the bed
+    to itself.
 
     A collision occurs when:
       - new part's toolpath extents (expanded by its largest tool radius) overlap
@@ -348,6 +461,10 @@ def check_placement(
     envelope = check_envelope(new_placed, rails, advanced)
     if envelope.collides:
         return envelope
+
+    pins = check_pins(new_placed, rails, advanced)
+    if pins.collides:
+        return pins
 
     new_radius = _max_tool_radius(new_placed)
     new_tool_str = _largest_tool_str(new_placed)

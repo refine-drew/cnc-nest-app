@@ -4,6 +4,7 @@ from collision import (
     PlacedPart, Rect, RAIL_DEFAULTS, TRAVEL_DEFAULTS,
     blank_rect, toolpath_rect, rects_overlap, check_placement, slot_label,
     rail_geom, slot_mark_y, check_envelope, travel_limits, edge_margin_mm,
+    check_pins, locating_pins,
 )
 
 # Measured SS2 rail geometry (collision.RAIL_DEFAULTS) — the two rails are
@@ -624,3 +625,105 @@ def test_check_placement_envelope_message_names_the_part_and_slot():
     part = make_part(300, 100, -70.0, 300, 0, 100, "crowder.nc", tools=HALF_INCH_TOOL)
     msg = check_placement(placed(part, "A", 0), []).message
     assert "crowder.nc" in msg and "slot A0" in msg
+
+
+# --- rail locating pins ---
+#
+# Four 3/4" dowels locating the removable rails laterally, measured 2026-08-19.
+# They sit OUTBOARD of each rail's datum, so no blank covers one and no
+# programmed coordinate reaches one: only the cutter edge, standing a radius
+# outside the tool-centre path, can get there. Unlike the X hard stop this is a
+# slot problem — the pins are two discrete points per rail, so moving along the
+# rail can clear one.
+
+THREE_HALF_TOOL = {"T5": {"description": "Rabbeting Head", "diameter_inches": 3.5}}
+
+
+def test_pin_defaults_match_the_measured_machine_positions():
+    # Measured in machine inches on 2026-08-19. Re-measure and update
+    # collision.PIN_DEFAULTS, config.json and this test together.
+    pins = {p["label"]: p for p in locating_pins()}
+    assert set(pins) == {"A1", "A2", "B1", "B2"}
+    for label, x_in, y_in in (("A1",  3.425, 119.100),
+                              ("A2",  3.425,  54.100),
+                              ("B1", 62.275,   3.851),
+                              ("B2", 62.295,  68.851)):
+        assert pins[label]["x_mm"] == pytest.approx(x_in * 25.4)
+        assert pins[label]["y_mm"] == pytest.approx(y_in * 25.4)
+        # 3/4" across, every one of them.
+        assert pins[label]["radius_mm"] == pytest.approx(0.375 * 25.4)
+
+
+def test_each_rail_pair_sits_65_inches_apart_outboard_of_its_rail():
+    # How the four readings were cross-checked, kept as a test because it is the
+    # only thing that would catch a transposed digit: each pair is 1.875"
+    # outboard of its rail corner and 65.000" apart, with the first pin's EDGE
+    # tangent to that rail's slot-0 datum.
+    pins = {p["label"]: p for p in locating_pins()}
+    for rail, near, far, rail_x, datum in (("A", "A1", "A2", A_X, A_Y0),
+                                           ("B", "B1", "B2", B_X, B_Y0)):
+        outboard = abs(rail_x - pins[near]["x_mm"])
+        assert outboard == pytest.approx(1.875 * 25.4, abs=0.02)
+        spacing = abs(pins[near]["y_mm"] - pins[far]["y_mm"])
+        assert spacing == pytest.approx(65.0 * 25.4)
+        tangent = abs(datum - pins[near]["y_mm"])
+        assert tangent == pytest.approx(pins[near]["radius_mm"], abs=0.05)
+
+
+def test_the_widest_shop_cutter_clears_the_pins():
+    # A path hugging the datum edge stands one radius outboard of it, and the
+    # nearest pin edge is 1.5" out. The 2.5" surfacing cutter reaches 1.25" —
+    # the crossover is a 3" tool, so nothing in the shop gets near one today.
+    part = make_part(1000, 100, 0, 1000, 0, 100, "wide.nc", tools=BIG_TOOL)
+    assert not check_pins(placed(part, "A", 0)).collides
+    assert not check_pins(placed(part, "B", 0)).collides
+
+
+def test_a_cutter_over_three_inches_hits_the_pin_at_the_datum_edge():
+    # 3.5" tool: 44.45 mm of radius plus the pin's 9.525 needs 53.975 mm, and
+    # the A datum stands only 47.633 mm off pin A1.
+    part = make_part(1000, 100, 0, 1000, 0, 100, "wide.nc", tools=THREE_HALF_TOOL)
+    result = check_pins(placed(part, "A", 0))
+    assert result.collides
+    assert "A1" in result.message
+    assert "53.9" in result.message or "54.0" in result.message
+
+
+def test_a_clear_slot_avoids_the_pin():
+    # The same oversized cutter on a part short enough to sit between the two A
+    # pins (Y 3025.1 and 1374.1). Moving along the rail is a real fix here, which
+    # is what the message tells the operator to do.
+    part = make_part(400, 100, 0, 400, 0, 100, "wide.nc", tools=THREE_HALF_TOOL)
+    assert not check_pins(placed(part, "A", 39)).collides
+
+
+def test_pin_clearance_is_measured_round_not_square():
+    # A rounds the corner instead of squaring it. This part stands 47.633 mm
+    # clear of pin A2 in X and 45.0 mm clear in Y — each less than the 53.975 mm
+    # a 3.5" cutter needs — but the diagonal is 65.5 mm, so the round cutter
+    # sweeps past the round pin. A bounding-box keep-out would refuse it.
+    part = make_part(300, 100, 0, 294.76, 0, 100, "corner.nc", tools=THREE_HALF_TOOL)
+    assert not check_pins(placed(part, "A", 52)).collides
+
+
+def test_pins_are_checked_on_an_empty_bed():
+    part = make_part(1000, 100, 0, 1000, 0, 100, "wide.nc", tools=THREE_HALF_TOOL)
+    result = check_placement(placed(part, "A", 0), [])
+    assert result.collides
+    assert "locating pin" in result.message
+    assert "smaller tool" in result.message
+
+
+def test_the_pin_set_comes_from_config_when_it_is_given():
+    # Inches in, mm out, and the 3/4" default fills in an omitted diameter.
+    pins = locating_pins({"locating_pins": [{"label": "X1", "x_in": 10, "y_in": 20}]})
+    assert len(pins) == 1
+    assert pins[0]["x_mm"] == pytest.approx(254.0)
+    assert pins[0]["radius_mm"] == pytest.approx(0.375 * 25.4)
+
+
+def test_an_empty_pin_list_is_not_the_default_set():
+    # A missing key falls back to the measured pins; an explicit [] means none.
+    part = make_part(1000, 100, 0, 1000, 0, 100, "wide.nc", tools=THREE_HALF_TOOL)
+    assert check_pins(placed(part, "A", 0), None, {}).collides
+    assert not check_pins(placed(part, "A", 0), None, {"locating_pins": []}).collides

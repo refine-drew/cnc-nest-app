@@ -14,7 +14,8 @@ from audit_library import (
     write_csv,
 )
 from collision import (
-    PlacedPart, blank_rect, check_placement, slot_label, rail_geom, slot_mark_y,
+    PlacedPart, blank_rect, check_placement, locating_pins, slot_label, rail_geom,
+    slot_mark_y,
 )
 from config import (
     load_config, save_config,
@@ -702,7 +703,13 @@ def api_slots():
             "machine_y": y_a,
             "pitch": pitches,
         })
-    return jsonify({"slots": result, "rails": {r: rail_geom(r, rails) for r in ("A", "B")}})
+    # Pins come back resolved to machine mm, like `rails`, so the canvas draws the
+    # same circles collision.check_pins tests against and cannot drift from them.
+    return jsonify({
+        "slots": result,
+        "rails": {r: rail_geom(r, rails) for r in ("A", "B")},
+        "pins": locating_pins(config["advanced"]),
+    })
 
 
 @app.route("/api/library")

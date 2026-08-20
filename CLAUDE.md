@@ -476,6 +476,42 @@ and exactly 120.000", a design round number; the surface actually runs to
 contradicted the measured B rail corner at 1534.160 that every B-rail part cuts
 inboard from; the surface reaches 1606.499.
 
+#### Rail locating pins
+
+Four 3/4" dowels locate the removable rails laterally. They are fixed hardware, so
+`collision.check_pins` gates placement on them alongside the envelope. Measured in
+machine inches 2026-08-19, two per rail — A (3.425, 119.100) and (3.425, 54.100),
+B (62.275, 3.851) and (62.295, 68.851) — and stored in `config.json` as
+`advanced.locating_pins`, in inches because that is how they will be re-measured.
+An explicit `[]` means no pins; only a *missing* key falls back to `PIN_DEFAULTS`.
+
+**The pattern is a cross-check on the readings, not a rule the code enforces.** Each
+pair sits 1.875" outboard of its rail corner and 65.000" apart, with the first pin's
+edge tangent to that rail's slot-0 datum. That pattern is what identified a transposed
+digit in the original A reading (199.1 for 119.1, 77" off the end of the table);
+`test_each_rail_pair_sits_65_inches_apart_outboard_of_its_rail` keeps it checkable.
+
+**Outboard is why this check is subtle.** A blank registers against the rail corner
+and runs inboard, so no blank covers a pin and no programmed coordinate reaches one.
+What reaches a pin is the **cutter**: coordinates are tool centre with no comp, so the
+edge stands one radius outboard of the path. The nearest pin edge is 1.5" out, so a
+path hugging the datum edge only reaches it above a 3" cutter — a backstop like
+`Y_FLOOR_MM`. A file whose path runs *outboard* of the datum is the live case:
+`T24H.nc` reaches `vy −24.172` and clears pin A1 by **4.4 mm** with its 3/4" bowl bit,
+which is the whole margin. Nothing in `tool_library.json` (widest: CF-2380 at 2.38")
+is rejected anywhere today.
+
+Unlike the X hard stop, a pin **is** a slot problem — two discrete points per rail, so
+moving along the rail can clear one, and the message says so. Clearance is measured
+circle-to-rect (`_rect_circle_gap`, tool radius + pin radius from the *uninflated*
+toolpath rect) rather than box-to-box, so the corner rounds the way a round cutter
+sweeps it; squaring it refuses placements that clear diagonally by millimetres.
+
+This is placement-time only. `gcode_validator` reads tool-centre coordinates with no
+radius to inflate them by, so it could only catch a path drawn straight through a pin;
+the check with the radius is the one that has to be right. `static/bed.js` draws the
+pins from the resolved mm `/api/slots` returns — never re-derive them there.
+
 `gcode_validator` mirrors this per-axis policy (`_MARGINED_AXES`). It reads
 tool-centre coordinates out of the finished file and has no radius to inflate
 them by, so on X it is one radius **more permissive** than the placement gate —
