@@ -51,6 +51,23 @@ No build step, linter, or type checker is configured.
   deliberately in-memory job state, like `_placements`, which is what makes the whole
   class of "stale override in a saved job" problems not exist.
 
+**An auto-named job is `0820-1430`, and the seconds were replaced rather than
+dropped** (2026-08-20). `_timestamp` was `%Y%m%d_%H%M%S`, giving a 20-character stem
+of which about six discriminated anything: every file the app writes is a nest, so
+`nest_` said nothing, the year has never told two of this shop's jobs apart, and the
+seconds were a uniqueness mechanism wearing a timestamp's clothes. The stem is now
+`%m%d-%H%M` and `job_name_format` ships as a bare `{timestamp}` (the prefix machinery
+stays; the shipped value is empty). **`_unique_job_name` is what makes that safe** —
+it advances `0820-1430` → `0820-1430b` → `0820-1430c` against the output dir, so a
+second Generate inside one minute cannot overwrite the first. That guard is not
+housekeeping: the Syntec identifies a program **by file name** (a merged master
+carries no O-word, see `writeProgramIdentification`), so two different programs
+answering to one name are ambiguous *on the machine*, not just on disk. It guards
+**only** the auto name — an operator who types one means it, and re-generating over
+it is normal, so a typed name is used verbatim. Shortening `_timestamp` also shortens
+the audit CSV stamps, which is free: three CSVs share one stamp, they are not program
+identity, and two audit runs in a minute overwriting each other costs nothing.
+
 **`gcode_parser.py`** — parses `.nc`/`.mmg` VCarve G-code files into `GcodePart` dataclasses. Extracts blank dimensions, material thickness, tool info, XYZ bounding boxes per pass, and validates Z depths.
 
 **`post/syntec_Refine.cps`** — the REFINE Fusion post-processor. **It is ours to

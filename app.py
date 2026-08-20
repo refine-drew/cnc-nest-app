@@ -1,6 +1,8 @@
 import os
 from datetime import datetime
+from itertools import count
 from pathlib import Path
+from string import ascii_lowercase
 from typing import Dict, Optional
 
 from flask import Flask, abort, jsonify, render_template, request
@@ -601,11 +603,44 @@ def _output_dir() -> Path:
 
 
 def _timestamp() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
+    """`MMDD-HHMM`. Shortened from `%Y%m%d_%H%M%S` on 2026-08-20.
+
+    An auto-named job's file name is what the operator reads off the control's
+    program list and says out loud across the shop, so it is written to be read.
+    The year never told two of this shop's jobs apart, and the seconds were only
+    ever a uniqueness mechanism wearing a timestamp's clothes — `_unique_job_name`
+    does that job in one character instead of six.
+    """
+    return datetime.now().strftime("%m%d-%H%M")
+
+
+def _unique_job_name(base: str) -> str:
+    """`0820-1430`, then `0820-1430b`, `0820-1430c`… within the same minute.
+
+    Dropping the seconds means the bare name can repeat, and a silent overwrite
+    costs more here than a stray file would: the Syntec identifies a program by
+    file name — a merged master carries no O-word — so two different programs
+    answering to `0820-1430` are ambiguous *on the machine*, not just in the
+    output folder.
+
+    Only the auto-generated name is guarded, which is the whole distinction: an
+    operator who types a name means that name, and re-generating over it is a
+    normal thing to do. A collision in a name nobody chose is always an accident.
+    """
+    out = _output_dir()
+    for n in count():
+        suffix = "" if n == 0 else ascii_lowercase[n] if n < len(ascii_lowercase) else f"-{n}"
+        if not (out / f"{base}{suffix}.nc").exists():
+            return f"{base}{suffix}"
+    raise AssertionError("unreachable: count() is unbounded")
 
 
 def _job_name(data: dict) -> str:
-    return data.get("job_name") or config["job_name_format"].replace("{timestamp}", _timestamp())
+    explicit = data.get("job_name")
+    if explicit:
+        return explicit
+    return _unique_job_name(
+        config["job_name_format"].replace("{timestamp}", _timestamp()))
 
 
 # ── routes ────────────────────────────────────────────────────────────────────

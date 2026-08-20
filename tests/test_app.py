@@ -767,3 +767,50 @@ def test_every_placement_refusal_carries_a_sentence_not_just_a_slug(
     assert body["error"] == "unresolved_tools"
     assert len(body.get("message", "")) > 40
     assert "_" not in body["message"]        # no slug leaked into the prose
+
+
+# ── auto job names (2026-08-20) ───────────────────────────────────────────────
+
+def test_the_auto_job_name_carries_no_year_and_no_seconds():
+    """`0820-1430`. The name is what the operator reads off the control's program
+    list, and neither the century nor the second ever told two jobs apart."""
+    assert re.fullmatch(r"\d{4}-\d{4}", app_module._timestamp())
+
+
+def test_a_second_nest_in_the_same_minute_does_not_overwrite_the_first(
+        tmp_path, monkeypatch):
+    """Dropping the seconds means the bare name repeats, so the guard replaces them.
+
+    It costs more than a stray file: the Syntec identifies a program by file name —
+    a merged master carries no O-word — so two programs answering to `0820-1430`
+    are ambiguous on the machine, not just in the output folder.
+    """
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    assert app_module._unique_job_name("0820-1430") == "0820-1430"
+    (tmp_path / "0820-1430.nc").write_text("")
+    assert app_module._unique_job_name("0820-1430") == "0820-1430b"
+    (tmp_path / "0820-1430b.nc").write_text("")
+    assert app_module._unique_job_name("0820-1430") == "0820-1430c"
+    # An unrelated minute is untouched by any of it.
+    assert app_module._unique_job_name("0820-1431") == "0820-1431"
+
+
+def test_a_name_the_operator_typed_is_never_renamed(client, tmp_path, monkeypatch):
+    """The guard is for names nobody chose. Typing one and re-generating over it is
+    a normal thing to do, so an explicit name is used verbatim both times."""
+    _seed_library(tmp_path, monkeypatch, {"a.nc": _SETUP_A})
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    client.post("/api/place", json={"path": "a.nc", "rail": "A", "slot_inches": 39})
+    first = client.post("/api/generate", json={"job_name": "table-legs"}).get_json()
+    second = client.post("/api/generate", json={"job_name": "table-legs"}).get_json()
+    assert first["job_name"] == second["job_name"] == "table-legs"
+    assert first["nc_path"] == second["nc_path"]
+
+
+def test_the_shipped_format_adds_nothing_to_the_stamp(client, tmp_path, monkeypatch):
+    """`nest_` was five characters of no information — every file the app writes is
+    a nest. The placeholder machinery stays; the shipped value is bare."""
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    with open("config.json") as f:
+        assert json.load(f)["job_name_format"] == "{timestamp}"
+    assert re.fullmatch(r"\d{4}-\d{4}", app_module._job_name({}))

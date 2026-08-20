@@ -1,9 +1,9 @@
 {
   "library_path": [
-    "~/Documents/cnc_library"
+    "~/Documents/SS2_library"
   ],
   "output_path": "~/Downloads",
-  "job_name_format": "nest_{timestamp}",
+  "job_name_format": "{timestamp}",
   "advanced": {
     "bed_x_mm": 1606.4992,
     "bed_y_mm": 3098.0126,
