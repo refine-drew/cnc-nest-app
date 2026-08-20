@@ -353,6 +353,12 @@ var BedCanvas = (() => {
   // collision, blue is the A rail, green is B, and the band palette is stock
   // thickness — so hardware that is always there and never changes reads as
   // metal rather than joining any of those conversations.
+  //
+  // Unlabelled on purpose. The near pin on each rail is tangent to that rail's
+  // slot-0 datum, so its label lands on top of the A0/B0 slot label — and the
+  // slot label is the one the operator reads when choosing a slot. Four fixed
+  // dowels need no names on the bed; the only place a pin's name earns its
+  // keep is the collision message that names it.
   function _drawPins() {
     if (!PINS.length) return;
     const s = baseScale * zoom;
@@ -366,16 +372,6 @@ var BedCanvas = (() => {
       ctx.strokeStyle = "rgba(230,230,235,0.8)";
       ctx.lineWidth = 1;
       ctx.stroke();
-
-      // Label only once there is room for it to mean something.
-      if (s > 0.25) {
-        ctx.font = "10px system-ui";
-        ctx.fillStyle = "rgba(220,220,225,0.75)";
-        ctx.textAlign = "left";
-        ctx.textBaseline = "middle";
-        ctx.fillText(pin.label, p.x + r + 4, p.y);
-        ctx.textBaseline = "alphabetic";
-      }
     }
   }
 
