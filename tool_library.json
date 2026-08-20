@@ -8,7 +8,9 @@
       "geometry_class": "Bowl Bit",
       "flute_direction": "straight",
       "cutting_length_in": null,
-      "cam_descriptions": [],
+      "cam_descriptions": [
+        "14 BOWL BIT"
+      ],
       "default_slot": 4,
       "vendor": "Whiteside",
       "product_link": ""
@@ -120,7 +122,9 @@
       "geometry_class": "Roundover",
       "flute_direction": "straight",
       "cutting_length_in": null,
-      "cam_descriptions": [],
+      "cam_descriptions": [
+        "18 ROUNDOVER"
+      ],
       "default_slot": 5,
       "vendor": "",
       "product_link": ""
