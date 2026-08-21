@@ -273,12 +273,78 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict,
         "",
         "( ---- park ---- )",
         N("G00 G53 Z0"),
+    ]
+
+    # Leave the next job's first tool in the spindle. Emitted here rather than at the
+    # top of the file because it is the *previous* job that can afford the change: the
+    # bed is cut, nothing is waiting on the machine, and the operator is unloading.
+    # The preconditions are the ones every mid-file change already runs under — spindle
+    # stopped by the last block's M05, Z retracted to machine 0 by the line above — and
+    # no G43 follows, because nothing after this cuts. See `park_tool_word` for why this
+    # one `T#` names a pocket rather than an identity.
+    park_tool = park_tool_word(adv, [b["tool"] for b in blocks])
+    if park_tool:
+        out += [
+            comment(f" ---- {park_tool} loaded ready for the next job ---- "),
+            N(f"{park_tool} M06"),
+        ]
+
+    out += [
         N(f"G00 G53 X{park_x:.4f} Y{park_y:.4f} M05"),
         N("M30"),
         "%",
     ]
 
     return "\n".join(out) + "\n"
+
+
+# ── the tool the job ends holding ─────────────────────────────────────────────
+
+def park_tool_word(advanced: Dict, tool_sequence: List[str]) -> Optional[str]:
+    """The tool word of the end-of-job change, or `None` if none is emitted.
+
+    The shop starts almost every job with the ½" end mill and keeps it in pocket 2, so
+    a job that ends holding it saves the first change of the next job. `advanced.
+    end_of_job_pocket` names that pocket; absent or `null` means no end-of-job change,
+    which is what every job did before this existed.
+
+    **It is a pocket, not an identity, and that is the one place in the app where the
+    pocket is the right half of the split.** Everywhere else a `T#` is rewritten from
+    the cutter's identity, because the block that follows cuts material and has to cut
+    it with the right tool. This block cuts nothing: it commands the carousel to leave
+    *whatever is in that pocket* in the spindle, and "whatever is in pocket 2" is
+    exactly the operator's standing arrangement. Resolving an identity here would emit a
+    different pocket whenever a job remapped the mill, and there are two ½" mills in the
+    library (`EM-0512`, `EM-0520`) that both declare slot 2 — so an identity would also
+    have to guess which one is loaded. The assumption this does carry is that pocket 2
+    still holds a ½" mill; a job that drags another cutter into pocket 2 ends holding
+    that cutter instead, and the setup sheet says which pocket the spindle keeps.
+
+    **Skipped when the last block already ran from that pocket** — the tool is in the
+    spindle, so the change is a carousel cycle and a touch-off (27–57 s, issue #6) that
+    buys nothing. The machine state after the program is identical either way, which is
+    what makes the skip free rather than a shortcut.
+    """
+    adv = advanced or {}
+    raw = adv.get("end_of_job_pocket")
+    if raw is None or raw == "":
+        return None
+    try:
+        pocket = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"advanced.end_of_job_pocket must be a pocket number or null, not {raw!r}."
+        )
+    capacity = int(adv.get("tool_capacity", 8))
+    if not 1 <= pocket <= capacity:
+        raise ValueError(
+            f"advanced.end_of_job_pocket is {pocket}, which is not a pocket in a "
+            f"{capacity}-pocket changer."
+        )
+    word = f"T{pocket}"
+    if tool_sequence and tool_sequence[-1] == word:
+        return None
+    return word
 
 
 # ── block building ────────────────────────────────────────────────────────────

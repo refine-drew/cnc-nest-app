@@ -194,6 +194,39 @@ out of a source file are the one thing `comment()` never composes, so `_transfor
 passes them through byte-for-byte unless `comment_is_wellformed` says the control
 cannot read them, and re-wraps only then; `(A) (B)` is two comments and is fine.
 
+**Every job ends by loading pocket 2, and that `T#` is a pocket rather than an
+identity** (2026-08-20). The shop starts almost every job with the ½" end mill and keeps
+it in pocket 2, so the job that just finished is the cheap place to load it — the bed is
+cut, nothing is waiting on the machine, and the next job starts with the tool already up.
+`advanced.end_of_job_pocket` names the pocket; absent or `null` means no end-of-job
+change, which is what every job did before this existed.
+`gcode_generator.park_tool_word` is the **single rule** for whether one is emitted, read
+by the generator, the live panel and the setup sheet, so none of the three can claim a
+tool the program does not leave in the spindle.
+
+It is the one `T#` in the file that names a **pocket** instead of a cutter identity, and
+that is not a lapse in the split — the block cuts nothing, so it means "leave whatever is
+in pocket 2 in the spindle", which is exactly the standing arrangement it restores.
+Resolving an identity here would emit a *different* pocket whenever a job remapped the
+mill, and the library holds two ½" mills (`EM-0512`, `EM-0520`) that both declare slot 2,
+so it would also have to guess which one is loaded. The assumption it does carry is that
+pocket 2 still holds a ½" mill: a job that drags another cutter there ends holding that
+cutter, which is why the setup sheet names the pocket **and** what is in it.
+
+Three details are load-bearing. It is **skipped when the last block already ran from that
+pocket** — the tool is up, the machine state after the program is identical either way,
+so the skip is free and saves a 27–57 s carousel cycle and touch-off. **No `G43` follows
+it**, because nothing after it cuts; a `G43` would leave the file ending under an offset
+the program never uses. And it sits **after** the park's `G53 Z0` and **before** the park
+traverse — the same preconditions every mid-file change already runs under, and a change
+after the traverse would drive the gantry off the park it just made.
+
+The estimator counts it like any other `T# M06`, so it is charged a full change in both
+the file-derived report and the live panel. Making the panel agree is what moved
+`_compute_job_stats` onto `_identity_map`: it counted raw `T#` strings, which the skip
+rule cannot be decided from (the last block's *pocket* decides it) and which disagreed
+with the file anyway wherever identity merging joins two `T#` into one block.
+
 **`gcode_validator.py`** — gates `/api/generate`. Re-derives the emitted file's
 modal state by reading it block by block, the way the control does, and reports
 `Finding`s at two severities. **It deliberately shares no state with
@@ -337,7 +370,8 @@ identical string were never flagged and sailed into a merged block — the libra
 exactly that case (`T2` and `T9` post `End Mill {0.5 inch}` byte-for-byte in one file).
 `_tool_compatibility` is **deleted**; both layers now read `_changer_state()["valid"]`.
 
-**`config.py`** — loads/saves `config.json`. Config defines library paths (a list of candidates; the first that exists locally wins), output path, bed dimensions, per-rail geometry (`advanced.rails` — see Coordinate Systems), `tool_capacity` (generation is blocked above it), fence-origin offsets, safe Z, and slot positions.
+**`config.py`** — loads/saves `config.json`. Config defines library paths (a list of candidates; the first that exists locally wins), output path, bed dimensions, per-rail geometry (`advanced.rails` — see Coordinate Systems), `tool_capacity` (generation is blocked above it), `end_of_job_pocket` (the tool every job
+ends holding), fence-origin offsets, safe Z, and slot positions.
 
 **`config.json` no longer has a `tools` map, and it must not get one back.** It was
 junk in its entirety (operator, 2026-08-17): `T4` "Table Stiff" declared 0.75" for a

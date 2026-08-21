@@ -23,7 +23,9 @@ from config import (
     load_config, save_config,
     _sanitize_path_str, normalize_library_paths, resolve_library_root,
 )
-from gcode_generator import IdentityMap, block_tool_sequence, generate_master_gcode
+from gcode_generator import (
+    IdentityMap, block_tool_sequence, generate_master_gcode, park_tool_word,
+)
 from gcode_parser import GcodePart, parse_vcarve_text
 from gcode_validator import format_findings, validate_gcode
 from pdf_report import generate_layout_pdf, palette_color as pdf_palette_color
@@ -240,8 +242,15 @@ def _compute_job_safe_z() -> dict:
     return {"value": round(best, 4), "driven_by": driver}
 
 
-def _compute_job_stats() -> dict:
-    """Tool sequence, change count, and bed utilization across all placements."""
+def _compute_job_stats(state: Optional[dict] = None) -> dict:
+    """Tool sequence, change count, and bed utilization across all placements.
+
+    `state` is the changer state, passed in so the panel's change count is counted over
+    the same identity/pocket map the generator will emit from. Counting raw `T#` strings
+    instead agreed with the file only by luck: two files calling one cutter `T2` and `T4`
+    merge into one block but are two `T#` strings, and the end-of-job change
+    (`park_tool_word`) is decided by the *pocket* the last block ran from.
+    """
     bed_x = float(config["advanced"]["bed_x_mm"])
     bed_y = float(config["advanced"]["bed_y_mm"])
 
@@ -280,7 +289,14 @@ def _compute_job_stats() -> dict:
     # gets changed back to, so this is longer than `ordered_tools` whenever the
     # parts disagree about tool order. Counting distinct tools instead understated
     # both the change count and the run time (issue #7).
-    block_tools = block_tool_sequence(list(_placements.values()))
+    identity = _identity_map(state if state is not None else _changer_state())
+    block_tools = block_tool_sequence(list(_placements.values()), identity)
+    # The end-of-job change is a real `T# M06` in the file, so it is a real change to
+    # count and a real 27-57 s to charge. `park_tool_word` is the single rule for
+    # whether it is emitted, so the panel and the file cannot disagree about it.
+    tool_changes = len(block_tools) + (
+        1 if park_tool_word(config["advanced"], block_tools) else 0
+    )
 
     # Per-part runtimes deliberately exclude tool-change time (the generator
     # merges same-tool passes across parts, so a part's own change count means
@@ -291,13 +307,13 @@ def _compute_job_stats() -> dict:
     # the precise number; this is the live approximation.
     runtime_seconds = (
         sum(p.part.runtime_seconds for p in _placements.values())
-        + len(block_tools) * DEFAULT_TOOL_CHANGE_SECONDS
+        + tool_changes * DEFAULT_TOOL_CHANGE_SECONDS
     )
 
     capacity = _tool_capacity()
     return {
         "tool_sequence": ordered_tools,
-        "tool_changes": len(block_tools),
+        "tool_changes": tool_changes,
         "tool_count": len(ordered_tools),
         "tool_capacity": capacity,
         "tools_over_capacity": len(ordered_tools) > capacity,
@@ -476,7 +492,8 @@ def _setup_rows(state: dict) -> list:
     )
 
 
-def _setup_sheet_text(job_name: str, state: dict, safe_z: dict) -> str:
+def _setup_sheet_text(job_name: str, state: dict, safe_z: dict,
+                      park_tool: Optional[str] = None) -> str:
     """The same sheet as plain text, written beside the `.nc`.
 
     Generation is deliberately **not** gated on confirming the changer is loaded
@@ -516,6 +533,17 @@ def _setup_sheet_text(job_name: str, state: dict, safe_z: dict) -> str:
     if safe_z.get("value"):
         out.append(f"  Safe Z for the whole job: {safe_z['value'] / 25.4:.3f}\" "
                    f"(driven by {safe_z.get('driven_by')})")
+    if park_tool:
+        # The program hands the machine back with a tool already in the spindle, which
+        # the operator has to know before reaching for the next job — and if this job
+        # borrowed that pocket for something else, this is where the two facts sit
+        # together (the row above says the pocket was moved, this says what the spindle
+        # keeps). Named by pocket, because that is what the program calls.
+        pocket = park_tool.lstrip("Tt")
+        held = next((r["name"] for r in rows if str(r["pocket"]) == pocket), None)
+        out.append(f"  Ends holding pocket {pocket}"
+                   + (f" ({held})" if held else "")
+                   + " in the spindle, ready for the next job.")
     return "\n".join(out) + "\n"
 
 
@@ -819,11 +847,14 @@ def api_load_file():
 
 @app.route("/api/placements", methods=["GET"])
 def api_placements_get():
+    # One changer state for both — the map is recomputed from scratch every time, so
+    # sharing it here is only about not resolving every placement twice.
+    state = _changer_state()
     return jsonify({
         "placements": [_placement_dict(iid, p) for iid, p in _placements.items()],
-        "changer": _changer_state(),
+        "changer": state,
         "job_safe_z": _compute_job_safe_z(),
-        **_compute_job_stats(),
+        **_compute_job_stats(state),
     })
 
 
@@ -1247,9 +1278,9 @@ def api_generate():
     safe_z = _compute_job_safe_z()
     settings = {**config, "job_name": job_name, "job_safe_z": safe_z}
 
+    identity = _identity_map(state)
     try:
-        gcode = generate_master_gcode(
-            list(_placements.values()), settings, _identity_map(state))
+        gcode = generate_master_gcode(list(_placements.values()), settings, identity)
     except Exception as e:
         return jsonify({"error": f"Generation failed: {e}"}), 500
 
@@ -1280,7 +1311,18 @@ def api_generate():
         (out / f"{job_name}_validation.txt").write_text(
             format_findings(findings), encoding="utf-8")
     setup_path = out / f"{job_name}_setup.txt"
-    setup_path.write_text(_setup_sheet_text(job_name, state, safe_z), encoding="utf-8")
+    setup_path.write_text(
+        _setup_sheet_text(
+            job_name, state, safe_z,
+            # Same rule the generator emitted from, over the same block sequence, so
+            # the sheet cannot claim a tool the program does not leave in the spindle.
+            park_tool_word(
+                config["advanced"],
+                block_tool_sequence(list(_placements.values()), identity),
+            ),
+        ),
+        encoding="utf-8",
+    )
 
     try:
         meta, parts, geom = _build_pdf_model(job_name, settings, gcode, state)

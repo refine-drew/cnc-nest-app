@@ -495,6 +495,16 @@ def test_output_has_park_line():
     assert "G00 G53 X0.0000 Y3048.0000" in result
 
 
+def test_park_line_follows_the_configured_position():
+    """The park is a setting, not a constant — the settings panel writes these two."""
+    p = _placed(SINGLE_T2, "A", 39)
+    settings = {**SETTINGS, "advanced": {**SETTINGS["advanced"],
+                                         "park_x": 1500.0, "park_y": 24.994}}
+    result = generate_master_gcode([p], settings)
+    assert "G00 G53 X1500.0000 Y24.9940 M05" in result
+    assert "Y3048.0000" not in result
+
+
 def test_output_has_line_numbers():
     p = _placed(SINGLE_T2, "A", 39)
     result = generate_master_gcode([p], SETTINGS)
@@ -1101,3 +1111,97 @@ def test_generated_output_passes_the_validator_comment_check():
     assert [f for f in findings if f.check == "comment-syntax"] == []
     _every_comment_is_readable(text)
     assert _comment_lines(text)   # the check above is vacuous on a file with none
+
+
+# ── the end-of-job tool change ────────────────────────────────────────────────
+#
+# The shop starts almost every job with the 1/2" end mill and keeps it in pocket 2, so
+# the job that just finished is the cheap place to load it: the bed is cut, nothing is
+# waiting on the machine, and the next job then starts with the tool already up.
+#
+# This is the one `T#` in the file that names a *pocket* rather than a cutter identity,
+# because the block cuts nothing — it says "leave whatever is in pocket 2 in the
+# spindle", which is exactly the standing arrangement it exists to restore.
+
+END_ON_2 = {**SETTINGS, "advanced": {**SETTINGS["advanced"], "end_of_job_pocket": 2}}
+
+
+def test_the_program_ends_by_loading_the_configured_pocket():
+    p = _placed(_nc([("T4", "Table Stiff", 0.75)]), "A", 39)
+    park = _park_block(generate_master_gcode([p], END_ON_2))
+    changes = [l for l in park if re.search(r"\bT\d+ M06\b", l)]
+    assert len(changes) == 1 and re.search(r"\bT2 M06\b", changes[0])
+
+
+def test_the_end_of_job_change_runs_after_the_retract_and_before_the_traverse():
+    """The preconditions are the ones every mid-file change already runs under: the
+    spindle stopped by the last block's M05 and Z retracted to machine 0. The park
+    traverse has to follow the change, or the change moves the gantry off the park."""
+    p = _placed(_nc([("T4", "Table Stiff", 0.75)]), "A", 39)
+    park = _park_block(generate_master_gcode([p], END_ON_2))
+    retract = next(i for i, l in enumerate(park)
+                   if re.search(r"\bG53\b", l) and re.search(r"\bZ0\b", l))
+    change = next(i for i, l in enumerate(park) if re.search(r"\bT2 M06\b", l))
+    traverse = next(i for i, l in enumerate(park) if re.search(r"\bX[-+.\d]", l))
+    assert retract < change < traverse
+
+
+def test_the_end_of_job_change_asserts_no_tool_length_offset():
+    """No G43 follows it, because nothing after it cuts. A G43 here would activate an
+    offset the program never uses and leave the file ending under G43 rather than the
+    G49 the per-tool retract set."""
+    p = _placed(_nc([("T4", "Table Stiff", 0.75)]), "A", 39)
+    park = _park_block(generate_master_gcode([p], END_ON_2))
+    assert not any(re.search(r"\bG43\b", l) for l in park)
+
+
+def test_the_end_of_job_change_is_skipped_when_that_pocket_is_already_up():
+    """The tool is in the spindle, so the change is a carousel cycle and a touch-off
+    that buys nothing. The machine state after the program is identical either way."""
+    p = _placed(SINGLE_T2, "A", 39)
+    result = generate_master_gcode([p], END_ON_2)
+    assert len(re.findall(r"\bT\d+ M06\b", result)) == 1
+    assert not any(re.search(r"\bM06\b", l) for l in _park_block(result))
+
+
+def test_a_recurring_pocket_still_ends_on_the_configured_one():
+    # T2, T4, T2 -> the last block is already pocket 2 and the change is skipped; the
+    # skip is decided by the *last* block, not by whether the pocket appears at all.
+    p = _placed(THREE_PASS_T2_T4_T2, "A", 39)
+    result = generate_master_gcode([p], END_ON_2)
+    assert re.findall(r"\bT(\d+) M06\b", result) == ["2", "4", "2"]
+
+
+def test_no_end_of_job_change_without_the_key():
+    """Absent or null means no change — every job before this feature existed ended
+    that way, and an operator's older config.json must keep behaving as it did."""
+    p = _placed(_nc([("T4", "Table Stiff", 0.75)]), "A", 39)
+    plain = generate_master_gcode([p], SETTINGS)
+    nulled = generate_master_gcode(
+        [p], {**SETTINGS, "advanced": {**SETTINGS["advanced"], "end_of_job_pocket": None}})
+    assert plain == nulled
+    assert not any(re.search(r"\bM06\b", l) for l in _park_block(plain))
+
+
+@pytest.mark.parametrize("pocket", [0, -1, 9, "two"])
+def test_an_impossible_end_of_job_pocket_is_refused_rather_than_emitted(pocket):
+    """A pocket the changer does not have is a config error, and emitting it would send
+    the carousel after a tool that is not there at the end of every job."""
+    p = _placed(SINGLE_T2, "A", 39)
+    settings = {**SETTINGS,
+                "advanced": {**SETTINGS["advanced"], "end_of_job_pocket": pocket,
+                             "tool_capacity": 8}}
+    with pytest.raises(ValueError):
+        generate_master_gcode([p], settings)
+
+
+def test_the_end_of_job_change_adds_no_validator_finding():
+    """Relative to the same job without it, because these fixtures carry no F word and
+    trip the no-feed check on their own. What has to hold is that the change itself
+    reports nothing — no missing G43, no stray stop, no unreachable block after M30."""
+    p = _placed(_nc([("T4", "Table Stiff", 0.75)]), "A", 39)
+    plain = [str(f) for f in validate_gcode(
+        generate_master_gcode([p], SETTINGS), SETTINGS["advanced"])]
+    ended = [str(f) for f in validate_gcode(
+        generate_master_gcode([p], END_ON_2), END_ON_2["advanced"])]
+    assert ended == plain

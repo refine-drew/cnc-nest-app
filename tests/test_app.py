@@ -583,10 +583,11 @@ def test_tool_changes_counts_revisits_not_distinct_tools(client, tmp_path, monke
     client.post("/api/place", json={"path": "ba.nc", "rail": "A", "slot_inches": 26})
 
     info = client.get("/api/placements").get_json()
-    # Two distinct tools, but the blocks run T1, T2, T1, T2.
+    # Two distinct tools, but the blocks run T1, T3, T1, T3 (pockets 1 and 3) — plus
+    # the end-of-job change into pocket 2, which the shipped config asks for.
     assert info["tool_sequence"] == ["T1", "T2"]
     assert info["tool_count"] == 2
-    assert info["tool_changes"] == 4
+    assert info["tool_changes"] == 5
 
 
 def test_tool_changes_matches_the_emitted_file(client, tmp_path, monkeypatch):
@@ -616,7 +617,8 @@ def test_job_runtime_charges_every_tool_change(client, tmp_path, monkeypatch):
     info = client.get("/api/placements").get_json()
     cutting = sum(p.part.runtime_seconds for p in app_module._placements.values())
     assert info["runtime_seconds"] == pytest.approx(
-        cutting + 4 * DEFAULT_TOOL_CHANGE_SECONDS, abs=0.01,
+        # Four blocks plus the end-of-job change into pocket 2.
+        cutting + 5 * DEFAULT_TOOL_CHANGE_SECONDS, abs=0.01,
     )
 
 
@@ -684,6 +686,23 @@ def test_setup_sheet_says_nothing_temporary_when_nothing_moved(client, tmp_path,
 def test_setup_sheet_lists_the_pockets_the_job_leaves_alone(client, tmp_path, monkeypatch):
     sheet = _generate_with_setup(client, tmp_path, monkeypatch)
     assert "Pockets not used by this job: 1, 4, 5, 6, 7, 8" in sheet
+
+
+def test_setup_sheet_says_which_tool_the_program_leaves_in_the_spindle(
+        client, tmp_path, monkeypatch):
+    """The program hands the machine back with a tool already up (`end_of_job_pocket`),
+    which the operator has to know before reaching for the next job — and if this job
+    borrowed that pocket, this is the line that says what the spindle actually keeps."""
+    sheet = _generate_with_setup(client, tmp_path, monkeypatch)
+    assert "Ends holding pocket 2" in sheet
+    assert '1/2" End Mill' in sheet
+
+
+def test_setup_sheet_is_silent_about_the_spindle_when_no_tool_is_left_in_it(
+        client, tmp_path, monkeypatch):
+    monkeypatch.setitem(app_module.config["advanced"], "end_of_job_pocket", None)
+    sheet = _generate_with_setup(client, tmp_path, monkeypatch)
+    assert "Ends holding" not in sheet
 
 
 def test_setup_sheet_is_written_beside_the_output(client, tmp_path, monkeypatch):

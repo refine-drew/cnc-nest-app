@@ -37,6 +37,7 @@
       { "label": "B2", "x_in": 62.295, "y_in": 68.851, "diameter_in": 0.75 }
     ],
     "tool_capacity": 8,
+    "end_of_job_pocket": 2,
     "safe_z_clearance_mm": 29.971999999999998,
     "park_x": 0.0,
     "park_y": 3048.0,
