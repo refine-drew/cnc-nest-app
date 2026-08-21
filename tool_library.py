@@ -43,6 +43,10 @@ CODE_TOKEN_PATTERN = re.compile(r"\b[A-Z][A-Z0-9]*-[A-Z0-9]+\b", re.IGNORECASE)
 # The operator's own class names, growing on demand (§3.5.1). Five classes, each with a
 # tool behind it. Adding a sixth is cheap; forcing two different profile bits into one
 # bucket is not.
+# Bumped only when the on-disk shape changes in a way this app cannot read.
+# `ToolLibrary.from_dict` refuses anything higher.
+SCHEMA_VERSION = 1
+
 GEOMETRY_CLASSES = (
     "Flat End Mill",
     "Ball Nose",
@@ -147,10 +151,6 @@ class LibraryTool:
         dia = f"{self.diameter_inches:g}\""
         return f"{dia} · {flute_display(self.flute_direction)}"
 
-    @property
-    def radius_mm(self) -> float:
-        return self.diameter_inches * 25.4 / 2
-
 
 class ToolLibraryError(ValueError):
     """A library edit that must be refused rather than absorbed."""
@@ -169,10 +169,25 @@ class ToolLibrary:
     # ── persistence ──
     @classmethod
     def from_dict(cls, data: dict) -> "ToolLibrary":
-        return cls([LibraryTool.from_dict(t) for t in (data or {}).get("tools", [])])
+        data = data or {}
+        # `version` is written by `to_dict`, so it gets a reader here: §3.5.1's rule
+        # is that every field has a named consumer, and a schema stamp nobody checks
+        # is one that cannot do the only job it exists for. A file from a future
+        # schema is refused rather than read under this one's assumptions — the
+        # library is the sole diameter authority (§3.5.2), so a field silently
+        # misread here lands in the envelope check.
+        version = data.get("version", SCHEMA_VERSION)
+        if int(version) > SCHEMA_VERSION:
+            raise ToolLibraryError(
+                f"This tool library was written by a newer version of the app "
+                f"(schema {version}; this app reads {SCHEMA_VERSION}). Update the "
+                f"app rather than editing the file."
+            )
+        return cls([LibraryTool.from_dict(t) for t in data.get("tools", [])])
 
     def to_dict(self) -> dict:
-        return {"version": 1, "tools": [t.to_dict() for t in self.sorted_tools()]}
+        return {"version": SCHEMA_VERSION,
+                "tools": [t.to_dict() for t in self.sorted_tools()]}
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "ToolLibrary":
@@ -196,9 +211,6 @@ class ToolLibrary:
 
     def __contains__(self, code) -> bool:
         return normalize_code(code) in self.tools
-
-    def __len__(self) -> int:
-        return len(self.tools)
 
     @property
     def codes(self) -> List[str]:
@@ -296,8 +308,11 @@ def cam_description_of(info: dict) -> str:
     """What this file posts as the tool's description — the seal's input.
 
     `TOOLDESC` for Fusion, and the tool name for VCarve, which is the same string the
-    code was typed into. Deliberately *not* `_tool_compatibility`'s `description`
-    field for Fusion: free text must not move that signal (CLAUDE.md).
+    code was typed into. Deliberately *not* the `description` field for Fusion, which
+    is built from the header's stable geometry and feeds display and the
+    orphan-binding dialog. The split was originally about keeping free text out of
+    `app._tool_compatibility`'s signal; that function is gone, and the split now does
+    a load-bearing job for the seal instead (CLAUDE.md).
     """
     return str(info.get("cam_description") or info.get("description") or "").strip()
 
@@ -380,13 +395,6 @@ class PartResolution:
     @property
     def blocked(self) -> bool:
         return bool(self.unresolved or self.duplicate_codes or self.seal_prompts)
-
-    def library_codes(self) -> List[str]:
-        seen: List[str] = []
-        for binding in self.bindings.values():
-            if binding.library_code and binding.library_code not in seen:
-                seen.append(binding.library_code)
-        return seen
 
     def diameters_by_tool_number(self, library: ToolLibrary) -> Dict[str, float]:
         """`T#` → declared diameter, for the collision and envelope checks."""

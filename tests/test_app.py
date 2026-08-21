@@ -5,7 +5,6 @@ All file system access is either stubbed or uses temp dirs.
 import json
 import os
 import re
-import tempfile
 from pathlib import Path
 
 import pytest

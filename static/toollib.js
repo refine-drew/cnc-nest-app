@@ -15,9 +15,9 @@
  *   - **The code is declared here**, and it is what every file matches on.
  *
  * Two rules that are easy to get backwards: duplicate default slots must be *permitted*
- * (§3.5.6 — the declared library contests slots 2 and 4 on purpose, and that is the
- * motivating case), and `cam_descriptions` is the seal's memory, shown but never edited
- * by hand.
+ * (§3.5.6 — the declared library contests several pockets on purpose, and that is the
+ * motivating case; which pockets is operator data and moves, so don't name them here),
+ * and `cam_descriptions` is the seal's memory, shown but never edited by hand.
  */
 
 var ToolLib = (() => {

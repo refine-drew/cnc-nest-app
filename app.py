@@ -446,8 +446,6 @@ def _resolution_block(rel: str, res) -> Optional[tuple]:
                 "different tool numbers, so this has to be fixed in Fusion or VCarve — "
                 "the nest tool will not merge them."
             ),
-            "duplicates": [{"library_code": c, "tool_numbers": n}
-                           for c, n in res.duplicate_codes],
         }, 422)
 
     if res.seal_prompts:
@@ -696,6 +694,11 @@ def _timestamp() -> str:
     return datetime.now().strftime("%m%d-%H%M")
 
 
+# The four files one Generate writes. `_unique_job_name` treats the whole set as
+# the name's footprint; `api_generate` writes them.
+_JOB_SUFFIXES = (".nc", ".pdf", "_setup.txt", "_validation.txt")
+
+
 def _unique_job_name(base: str) -> str:
     """`0820-1430`, then `0820-1430b`, `0820-1430c`… within the same minute.
 
@@ -708,11 +711,17 @@ def _unique_job_name(base: str) -> str:
     Only the auto-generated name is guarded, which is the whole distinction: an
     operator who types a name means that name, and re-generating over it is a
     normal thing to do. A collision in a name nobody chose is always an accident.
+
+    A name is taken if *any* of the four files a job writes is already there, not
+    just the `.nc`. They are one set: an operator who moved the program onto the
+    machine and left the setup sheet behind would otherwise have the sheet
+    silently replaced by the next job, and a sheet describing a different nest is
+    worse than no sheet.
     """
     out = _output_dir()
     for n in count():
         suffix = "" if n == 0 else ascii_lowercase[n] if n < len(ascii_lowercase) else f"-{n}"
-        if not (out / f"{base}{suffix}.nc").exists():
+        if not any((out / f"{base}{suffix}{ext}").exists() for ext in _JOB_SUFFIXES):
             return f"{base}{suffix}"
     raise AssertionError("unreachable: count() is unbounded")
 

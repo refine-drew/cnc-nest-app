@@ -19,6 +19,8 @@ blanks and toolpath segments already in machine coordinates.
 
 from pathlib import Path
 
+from collision import slot_mark_y
+
 from reportlab.lib.colors import HexColor, black
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib.utils import ImageReader
@@ -167,9 +169,6 @@ def _draw_diagram(c, x0, y0, w, h, parts, geom) -> None:
     rail_a_w = abs(float(geom_a.get("x_mm", 0.0)))
     rail_b_w = abs(BED_X - float(geom_b.get("x_mm", BED_X)))
 
-    def _slot_y(rg, slot):
-        return float(rg.get("slot0_y_mm", 0.0)) + float(rg.get("slot_dir", -1)) * slot * 25.4
-
     ruler_room = 30
     s = min(w / BED_Y, (h - ruler_room) / BED_X)
     draw_w, draw_h = BED_Y * s, BED_X * s
@@ -208,7 +207,7 @@ def _draw_diagram(c, x0, y0, w, h, parts, geom) -> None:
     c.setFillColor(HexColor("#555555"))
     for slot in geom.get("slots", []):
         slot = float(slot)
-        px = ox + (BED_Y - _slot_y(geom_a, slot)) * s
+        px = ox + (BED_Y - slot_mark_y("A", slot, rails)) * s
         c.line(px, oy - 3, px, oy - 9)
         c.drawCentredString(px, oy - 17, f"{slot:g}")
     c.drawRightString(ox + draw_w, oy - 26, "A rail slot inches")
@@ -216,7 +215,7 @@ def _draw_diagram(c, x0, y0, w, h, parts, geom) -> None:
     top = oy + draw_h
     for slot in geom.get("slots", []):
         slot = float(slot)
-        px = ox + (BED_Y - _slot_y(geom_b, slot)) * s
+        px = ox + (BED_Y - slot_mark_y("B", slot, rails)) * s
         c.line(px, top + 3, px, top + 9)
         c.drawCentredString(px, top + 12, f"{slot:g}")
     c.drawRightString(ox + draw_w, top + 21, "B rail slot inches")
