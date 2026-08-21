@@ -52,7 +52,6 @@ UNITS_WORD_PATTERN = re.compile(r"\bG(70|71|20|21)\b")
 _INCH_UNITS_WORDS = frozenset({"70", "20"})
 TOOL_CHANGE_PATTERN = re.compile(r"\bT(\d+)\s+M06\b", re.IGNORECASE)
 G43_Z_PATTERN = re.compile(r"\bG43\b.*\bZ([+-]?\d*\.?\d+)", re.IGNORECASE)
-CUTTING_MOVE_PATTERN = re.compile(r"\bG0?[123]\b", re.IGNORECASE)
 MACHINE_COORD_PATTERN = re.compile(r"\bG53\b", re.IGNORECASE)
 
 # **Motion is modal, and reading it off the line is wrong.** VCarve repeats the
@@ -277,9 +276,15 @@ def _fusion_tool_entry(match: "re.Match", to_inches: float) -> Dict[str, Optiona
     `description` is assembled from the *stable* fields only. ZMIN is deliberately
     left out even though it is right there in the line: it is the job's Z range, not
     a property of the cutter, so the same physical tool posts `ZMIN=0.` in one file
-    and `ZMIN=-19.05` in another. Feeding that into `app._tool_compatibility`, which
-    compares description strings per `T#`, would flag one cutter as a conflict with
-    itself and block Generate on two perfectly compatible files.
+    and `ZMIN=-19.05` in another.
+
+    This first mattered for `app._tool_compatibility`, which compared description
+    strings per `T#` and would have flagged one cutter as conflicting with itself.
+    That function is gone, and the reason outlived it: the string reaches
+    `cam_description`, which is the **description seal**'s input
+    (`tool_library.resolve_part`) — the only cross-file detector of one code on two
+    physical cutters. A field that changes per job there prompts the operator on
+    every job, which is how a blocking prompt gets trained into a reflex.
     """
     diameter, corner_radius, taper, _zmin, type_name = match.group(2, 3, 4, 5, 6)
 

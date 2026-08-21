@@ -666,9 +666,10 @@ def test_fusion_header_without_zmin_still_parses():
 def test_fusion_description_excludes_zmin():
     # The regression this guards is subtle and app-breaking rather than unsafe.
     # ZMIN is the job's Z range, not a property of the cutter, so one physical tool
-    # posts ZMIN=0. in one file and ZMIN=-19.05 in another. `_tool_compatibility`
-    # flags a conflict when descriptions for one T# differ, so carrying ZMIN would
-    # make a tool conflict with itself and block Generate on compatible files.
+    # posts ZMIN=0. in one file and ZMIN=-19.05 in another. Carrying it would make a
+    # tool differ from itself between jobs — which used to mean `_tool_compatibility`
+    # flagged a conflict, and now means the description seal prompts every job.
+    # Different consumer, same defect.
     a = parse_vcarve_text(_fusion("(T2 D=12.7 CR=0. - ZMIN=0. - FLAT END MILL)"))
     b = parse_vcarve_text(_fusion("(T2 D=12.7 CR=0. - ZMIN=-19.05 - FLAT END MILL)"))
     assert a.tools["T2"]["description"] == b.tools["T2"]["description"]
@@ -807,15 +808,19 @@ def test_toolid_lines_are_not_read_as_operation_names():
     assert operation_name_in_comment("(TOOLDESC T2 12 DOWNCUT SPIRAL)") == ""
 
 
-_FORM_MILL_FILE = pathlib.Path.home() / "Documents" / "cnc_library" / "39x35.nc"
+# The #20 worst case, as a fixture rather than a path into the operator's library.
+# It guarded on `~/Documents/cnc_library/39x35.nc` until 2026-08-21; the library
+# had since been renamed to `~/Documents/SS2_library` and that file is gone, so
+# the skip had been silently passing over the assertion for weeks. The header line
+# below is the one the original carried — the rest is an ordinary REFINE-posted
+# skeleton, since only the tool header is under test.
+_FORM_MILL_FILE = pathlib.Path(__file__).parent / "fixtures" / "form-mill-header.nc"
 
 
-@pytest.mark.skipif(not _FORM_MILL_FILE.exists(), reason="library file not present")
-def test_library_form_mill_diameter_is_read_from_the_real_file():
-    # The worst case the old parser produced, pinned against the real file: a
-    # 59.728 mm form mill that resolved to diameter 0, so `_max_tool_radius`
-    # inflated the X envelope by nothing where it owed 1.176" per side. X is the
-    # axis with a hard stop just outside each end.
+def test_library_form_mill_diameter_is_read_from_a_posted_file():
+    # The worst case the old parser produced: a 59.728 mm form mill that resolved
+    # to diameter 0, so `_max_tool_radius` inflated the X envelope by nothing where
+    # it owed 1.176" per side. X is the axis with a hard stop just outside each end.
     part = parse_vcarve_text(_FORM_MILL_FILE.read_text(errors="replace"), "39x35.nc")
     assert part.tools["T4"]["diameter_inches"] == pytest.approx(2.3515, abs=1e-4)
     assert part.tools["T4"]["tool_type"] == "FORM MILL"
