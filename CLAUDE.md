@@ -23,7 +23,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Run (dev server on http://localhost:5000)
+# Run (dev server on http://localhost:5001)
 python app.py
 
 # Tests
@@ -44,7 +44,7 @@ No build step, linter, or type checker is configured.
 - `_instance_counts`: tracks how many times each part has been placed (for unique IDs)
 - `_tool_binds`: `path → {T#: code}` — the operator's job-scoped answers for files that carry no shop code
 - `_pocket_overrides`: `code → pocket` — the operator's drags in the changer dock
-- Key API routes: `/api/load-library`, `/api/place`, `/api/generate`, `/api/changer`, `/api/tool-library`, `/api/bind-tool`
+- Key API routes: `/api/library`, `/api/place`, `/api/generate`, `/api/changer`, `/api/tool-library`, `/api/bind-tool`
 - **Save/load job is gone** (issue #26, 2026-08-17). The routes, the `.cnj` format and
   its tests were deleted: a nest is quick enough to rebuild that reloading one was never
   worth the format. Do not reintroduce it, and do not persist the pocket map — it is
@@ -419,6 +419,19 @@ invisible until the model is otherwise right:
   across an event where the machine is stationary for most of a minute. `M05`/`M30`
   are barriers for the same reason.
 
+**The fence-origin offset is gone, and it must not come back unwired** (2026-08-21).
+`advanced.fence_offset_x_in` / `fence_offset_y_in` shifted every emitted cut coordinate
+and were read in exactly one place — `_transform_params`. `collision.check_envelope`,
+`check_pins` and `app._transform_segments` all went on working from the *unshifted*
+position, so a nonzero value moved the cut while the hard-stop check, the pin check and
+the canvas preview all validated somewhere the cutter no longer was. It had no UI, both
+values had been 0.0 since the commit that added them, and it had never been used, so it
+was removed rather than repaired. Reintroducing it means threading it through all four
+call sites in the same change — the offset belongs to the machine frame, and every
+consumer of that frame has to see it.
+`test_a_fence_offset_in_the_config_is_inert` pins that a stale pair of keys in an old
+`config.json` changes nothing.
+
 **One knob for rapids, not two.** A separate Z rapid rate was considered and rejected:
 acceleration dominates so completely that varying it from 300 to 1800 ipm moves the
 reference file's total by **2.6 s** — a retract is too short to reach any of those
@@ -471,16 +484,26 @@ SS2 2026-08-17 (issue #6): the swap alone is 27 s, swap plus touch-off is 57 s, 
 `TOOL_SWAP_SECONDS = 27.0`, `TOUCH_OFF_SECONDS = 30.0`, and
 `DEFAULT_TOOL_CHANGE_SECONDS` is their sum. Keep them split.
 
-**The posture is still decided — "auto tool" on, every job (issue #8, 2026-08-17) — and
-that is still the default. What changed on 2026-08-20 is that the estimate can price the
-other one without a code edit:** `advanced.auto_tool_touch_off` defaults to `true` and,
-when turned off, charges `TOOL_SWAP_SECONDS` per change instead
-(`tool_change_seconds_for`). This reverses "the estimate needs no flag", which was right
+**The shop runs "auto tool" OFF, and the shipped `config.json` says so** (2026-08-21).
+Issue #8 decided the opposite on 2026-08-17 — on, every job — and that decision is why
+the flag exists at all, but the posture has since moved and the config is the record of
+where it is now. **The code default is unchanged and still `true`:** a config predating
+the key must read as the #8 posture, so `advanced.auto_tool_touch_off` absent means on.
+Only the shipped file says off.
+
+The flag arrived on 2026-08-20 so the estimate could price either posture without a code
+edit: turned off it charges `TOOL_SWAP_SECONDS` per change instead of the sum
+(`tool_change_seconds_for`). That reversed "the estimate needs no flag", which was right
 about the *decision* and wrong about the *arithmetic* — the gap between the postures is
 4–7.5 minutes on a typical job, and a number you have to edit the source to see is a
-number nobody looks at. The flag does not reopen #8, and it commands nothing: it is the
-operator telling the estimate which control setting the machine is on, which is why
-`<job>_setup.txt` states the posture as an instruction rather than a note.
+number nobody looks at. The flag commands nothing: it is the operator telling the
+estimate which control setting the machine is on, which is why `<job>_setup.txt` states
+the posture as an instruction rather than a note.
+
+**The posture is part of an observation, not a setting to read at analysis time.** Both
+calibration tests hold their job at 27 s explicitly rather than reading `config.json`,
+so flipping this checkbox cannot re-price a measurement taken months ago — and
+`t24-test.nc`, the file the acceleration is fitted to, was timed with touch-off off.
 
 **The split between the two constants stays, and the flag is built out of it.** It is
 the only arithmetic that shows what the chosen posture costs (`TOUCH_OFF_SECONDS ×
@@ -488,14 +511,14 @@ tool_change_count`, every run); collapsing the two constants deletes the record 
 accepted cost and now also deletes the flag's implementation.
 
 Touch-off is charged on **every** `T# M06`, not once per distinct tool: with "auto
-tool" on, the control measures at every call, so a tool the pass-index walk
-returns to is measured again. The default therefore prices the always-on posture.
-Price the other one — touch off once as each tool is loaded, auto tool off — by turning
-`advanced.auto_tool_touch_off` off in Settings, which is `tool_change_seconds_for(False)`
-→ `TOOL_SWAP_SECONDS`; that moves the 30 s out of the cut
-cycle into setup, and the gap between postures is exactly
-`TOUCH_OFF_SECONDS × tool_change_count`. On a typical 8–15 block job that is 4–7.5
-minutes, which is what #8 is actually trading against.
+tool" on, the control measures at every call, so a tool the pass-index walk returns to
+is measured again. The *code* default therefore prices the always-on posture, which is
+the right fallback for a config that predates the key. The shipped config runs the
+other one — touch off once as each tool is loaded — which is
+`tool_change_seconds_for(False)` → `TOOL_SWAP_SECONDS`; that moves the 30 s out of the
+cut cycle into setup, and the gap between postures is exactly `TOUCH_OFF_SECONDS ×
+tool_change_count`. On a typical 8–15 block job that is 4–7.5 minutes, which is what
+#8 was trading against.
 
 **`H` is assumed to be honoured, and `H` always equals `T`.** Decided
 2026-08-17 (issue #5): Syntec documents `H` as an index into a touch-off register,
@@ -576,7 +599,7 @@ exactly that case (`T2` and `T9` post `End Mill {0.5 inch}` byte-for-byte in one
 `_tool_compatibility` is **deleted**; both layers now read `_changer_state()["valid"]`.
 
 **`config.py`** — loads/saves `config.json`. Config defines library paths (a list of candidates; the first that exists locally wins), output path, bed dimensions, per-rail geometry (`advanced.rails` — see Coordinate Systems), `tool_capacity` (generation is blocked above it), `end_of_job_pocket` (the tool every job
-ends holding), fence-origin offsets, safe Z, slot positions, and the machine's motion
+ends holding), safe Z, slot positions, and the machine's motion
 model.
 
 **The motion model is four `advanced` keys and one accessor pair.** `rapid_ipm`,
@@ -637,7 +660,7 @@ a collapse by the back door.
 
 ### Data Flow
 
-1. User picks library folder → `/api/load-library` → `gcode_parser` → populates `_loaded` → sidebar tree
+1. User picks library folder → `/api/library` → `gcode_parser` → populates `_loaded` → sidebar tree
 2. User drags part to bed slot → `/api/place` → **tools resolve against the identity
    library first** (`tool_library.resolve_part`) → `collision.py` validates → adds to
    `_placements` → bed canvas and changer dock redraw
@@ -696,10 +719,18 @@ slot_mark = slot0_y_mm + slot_dir * slot_inches * 25.4
 
 **`collision.slot_mark_y` / `collision.rail_geom` are the single source of truth.**
 `collision.py`, `gcode_generator._transform_params`, `app._transform_segments`,
-`app.api_slots` and `static/bed.js` all derive from them. Do not re-derive slot
-positions anywhere else — a part simulated somewhere it does not cut is how you
-crash a cutter. (`bed.js` gets the resolved geometry from `/api/slots`; placement
-blanks arrive pre-computed as `placement.blank` so the canvas never recomputes them.)
+`app.api_slots`, `pdf_report._draw_diagram` and `static/bed.js` all derive from them.
+Do not re-derive slot positions anywhere else — a part simulated somewhere it does not
+cut is how you crash a cutter. (`bed.js` gets the resolved geometry from `/api/slots`;
+placement blanks arrive pre-computed as `placement.blank` so the canvas never
+recomputes them.)
+
+`pdf_report` is on that list as of 2026-08-21 and was the counter-example that earned
+it a mention: it carried its own `_slot_y` and imported nothing from `collision`, and
+its private copy defaulted `slot_dir` to `-1` — right for A, backwards for B. Nothing
+had gone wrong only because the resolved geometry always arrived populated. A fourth
+copy of a formula is not a style problem when the formula decides where a part is
+drawn.
 
 Slot positions are deliberately **independent of `bed_x_mm` / `bed_y_mm`**, which
 only drive canvas/PDF extents and the utilization figure.
@@ -766,13 +797,16 @@ Checking Y like X is what made **A slot 0** unusable (datum Y 3034.700);
 `test_a_slot_zero_is_usable_with_the_shipped_config` guards it. Checking X like
 Y would license a real crash.
 
-Do not re-derive these from the park block. Its `G00 G53 X0 Y3048` is the only
-machine-frame coordinate in the output, and both numbers were read as limits
-once. `Y 3048` is a position the machine *reaches* — a lower bound on travel,
-and exactly 120.000", a design round number; the surface actually runs to
-3098.013 and travel runs past that to the tool changer. `X 0 → 1524`
-contradicted the measured B rail corner at 1534.160 that every B-rail part cuts
-inboard from; the surface reaches 1606.499.
+Do not re-derive these from the park block, which is the only machine-frame
+coordinate in the output. It was `G00 G53 X0 Y3048` when both numbers were read as
+limits once — the config has since moved it to `park_x: 830` / `park_y: 3175`, so the
+emitted line is now `X830.0000 Y3175.0000`, but the reasoning is about what a park
+*is*, not about where this one sits. A park is a position the machine **reaches**: a
+lower bound on travel and nothing more. The original `Y 3048` was exactly 120.000", a
+design round number, while the surface actually runs to 3098.013 and travel runs past
+that to the tool changer; `X 0 → 1524` contradicted the measured B rail corner at
+1534.160 that every B-rail part cuts inboard from, and the surface reaches 1606.499.
+The current pair is no more a limit than the old one was.
 
 #### Rail locating pins
 

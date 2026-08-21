@@ -1,8 +1,11 @@
 CNC Nest Tool
 =============
-Optimize CNC cutting layouts on a 5×10 ft dual-rail bed.
-Load VCarve G-code files, drag parts onto A/B rails, detect collisions,
-and generate a merged master G-code file.
+Nest CNC parts on the 5x10 dual-rail bed and post one merged program for the
+whole sheet.
+
+This is the short version, kept as plain text so it opens in Notepad on the shop
+PC. README.md is the full one - same instructions, plus what the tool library and
+the changer dock are for, and what each generated file is.
 
 
 WINDOWS SETUP
@@ -14,47 +17,47 @@ WINDOWS SETUP
 
 3. Open Command Prompt and run:
    git clone https://github.com/refine-drew/cnc-nest-app.git
-   cd cnc-nest-app
 
 4. Double-click launch.bat
 
 5. Browser opens automatically at http://localhost:5001
 
-To update: just double-click launch.bat again (pulls latest automatically)
-
 
 MAC SETUP
 =========
-1. Python is pre-installed on Mac
+1. Install Python 3 from python.org
+   (The Python that ships with macOS is not enough on its own.)
 
-2. Install Git (if not already):
+2. Install Git, if you don't have it:
    xcode-select --install
 
 3. In Terminal:
    git clone https://github.com/refine-drew/cnc-nest-app.git
-   cd cnc-nest-app
-   chmod +x launch.command
 
 4. Double-click launch.command
-   (If macOS blocks it: right-click → Open → Open)
+   (If macOS blocks it: right-click -> Open -> Open)
 
 5. Browser opens automatically at http://localhost:5001
 
-To update: just double-click launch.command again (pulls latest automatically)
+
+UPDATING
+========
+Windows:  double-click update.bat
+Mac:      double-click update.command
+
+Do NOT expect launch.bat or launch.command to update anything. They only start
+the version you already have. Updating is update.bat / update.command, and
+nothing else.
 
 
-PROJECT STRUCTURE
+WHAT A JOB WRITES
 =================
-app.py              Flask application and API routes
-config.py           Config loading/saving (cross-platform paths)
-config.json         Default application settings
-gcode_parser.py     VCarve G-code parser
-gcode_generator.py  Master G-code builder (order-of-operations merge)
-collision.py        Rectangle overlap collision detection
-tool_library.py     Tool registry and diameter resolution
-requirements.txt    Python dependencies
-templates/          HTML templates
-static/             Browser JavaScript and CSS
-tests/              Pytest test suite
-launch.bat          Windows launcher
-launch.command      macOS launcher
+Generate produces four files in your output folder:
+
+  <job>.nc               the master program - this goes on the machine
+  <job>.pdf              the layout: which part is in which slot
+  <job>_setup.txt        how to load the changer, and the cycle-time estimate
+  <job>_validation.txt   anything the validator flagged
+
+If the validator finds a hard error the .nc is NOT written, and the app tells you
+why. That is deliberate.

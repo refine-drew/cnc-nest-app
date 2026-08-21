@@ -22,12 +22,21 @@ choices until you know what they are refusing to do.
 > - **The setup sheet** — the PDF's ATC graphic re-keyed onto pockets, plus
 >   `<job>_setup.txt`, with off-home pockets called out as temporary (#13).
 >
-> **The one prerequisite that remains is the operator's**: the ten shop codes are
-> seeded in `tool_library.json` (`EM-0512`, `EM-0520`, `EM-0750`, `EM-08MM`,
-> `BN-0500`, `RN-1000`, `RO-0125`, `CF-2380`, `CF-1500`, `BB-0250`) and need typing
-> into Fusion's Product id and the VCarve tool names. Until then every file orphans
-> to a one-time manual bind, which is the safe default working — but nothing
-> auto-matches, so the feature is not yet exercised end to end (§3.5.5).
+> **That prerequisite has since been met, and the feature runs end to end**
+> (re-checked 2026-08-21). The ten shop codes were seeded in `tool_library.json`
+> (`EM-0512`, `EM-0520`, `EM-0750`, `EM-08MM`, `BN-0500`, `RN-1000`, `RO-0125`,
+> `CF-2380`, `CF-1500`, `BB-0250`; `RO-0187` was added later) and typed into Fusion.
+> **All seven files in `~/Documents/SS2_library` now carry `TOOLID` comments**, and
+> the codes reaching real posted output are `EM-0512` (7 uses), `BN-0500` (4),
+> `BB-0250` and `RO-0125`. Files auto-match, and `tests/fixtures/t24-test.nc` is a
+> master generated through that path.
+>
+> **One entry is still blank and it is the actionable kind:** `T24G.nc`'s `T1` posts
+> `CODE=` empty for the 12.7 mm ball end mill that every other file codes as
+> `BN-0500`, so that Fusion tool's Product id field was never filled in. This is
+> precisely the case §3.5.3's resolver dialog words differently — "the Product ID
+> field is blank in Fusion, one edit fixes it for good" rather than "this file
+> carries no code" — and it is worth fixing in CAM rather than binding per job.
 >
 > Two things the build confirmed against the real corpus. The motivating case of
 > §3.5.6 reproduces exactly: `39x35` and `18G300` open with pocket 2 doubled and
@@ -267,9 +276,11 @@ rather than a similarity score. `End Mill` is never compared against anything.
 outlives a corrected library" failures. A bind is job-scoped and never remembered,
 which is how pocket assignment already works (§3.2).
 
-**The key is `PRODUCT` alone, not `VENDOR`+`PRODUCT`.** A shop-assigned code is
-unique by construction, so requiring a second field to be populated would only add
-one more thing that can be blank. `vendor` stays as reorder information.
+**The key is the code alone, not code+vendor.** A shop-assigned code is unique by
+construction, so requiring a second field to be populated would only add one more
+thing that can be blank. `vendor` stays as reorder information. (The comment key that
+carries it is `CODE=`; it was written `PRODUCT=` for one day in 2026-08-19 and the
+name must not come back — see the end of this section.)
 
 **Two format constraints, both from the post's own comment handling** (CLAUDE.md):
 comment text is uppercased and filtered to `" a-z0-9.,=_-"`, so `RK-004` survives
@@ -362,7 +373,9 @@ depend on an assignment that depends on the output.
 
 There are no reserved tool numbers, no manual-change convention, and no tooling
 outside the ATC. All 8 tools live in the changer for the full duration of a
-program. The `T99` entry in `config.json` is leftover test data, not a convention.
+program. (`config.json` used to carry a `T#`-keyed `tools` map whose `T99` entry was
+leftover test data rather than a convention; the whole map was deleted in 2026-08-17's
+build — see §8 — so there is nothing left to mistake for one.)
 
 No allow-list, no reserved range, no exclusions. This is a significant
 simplification and it should stay that way — see §7.
@@ -412,8 +425,12 @@ dangerous direction, is replaced by the three rules above.
   bar, 8 pockets left-to-right to match how the machine is read, force-expanded while
   the map is invalid so a disabled Generate always has a visible reason. It replaces
   the right sidebar's `#compat-section`, which is where the screen budget comes from.
-  Layout detail and the agreed mockup are in
-  `brainstorms/2026-08-17-pocket-auto-assignment.md`; **#11 owns the build.**
+  Layout detail is in `brainstorms/2026-08-17-pocket-auto-assignment.md` and the
+  agreed mockup is `prototypes/2026-08-17-tool-changer-dock.html`, which renders the
+  dock's states against the real library. (This pointed at the brainstorm for both
+  until 2026-08-21; the brainstorm has no mockup in it, and the prototype was
+  unreachable from any document.) **#11 owns the build** — and has shipped it, so the
+  prototype is now a record of the intent rather than a target.
 
 ### 3.5 The tool library (#10)
 
@@ -425,9 +442,15 @@ cost. A sync feature is a **future ticket, explicitly not a dependency**.
 
 It lives in its own **`tool_library.json`** — operator data with its own lifecycle,
 backed up separately, portable to a second machine, and kept out of the settings file
-the settings panel writes. `config.json`'s pocket-keyed `tools` map seeds a one-time
-migration; most of it is junk to discard rather than carry (`T99` marked "test", `T5`
-with an empty name).
+the settings panel writes.
+
+**There was no migration in the end.** This paragraph originally had `config.json`'s
+pocket-keyed `tools` map seeding a one-time migration with "most of it junk to discard
+rather than carry". The operator's ruling (2026-08-17) was that it is junk *in its
+entirety* — §3.5.5 and §8 both record this — so the map was deleted and the library
+seeded from the CSV instead. That is strictly safer than a partial carry-over: nothing
+keyed by **pocket** should survive into a library keyed by **identity**, and the map's
+`T4` declared 0.75" for a cutter that is really 2.38".
 
 #### 3.5.1 Entry schema
 
@@ -609,6 +632,15 @@ files still carry the old one, so the prompt alternates between them forever. Th
 trains click-through, which destroys the check. A set costs one prompt per rename,
 answered once, after which old and new files both match cleanly.
 
+**The seal does not learn from a manual bind**, and this is the rule most likely to be
+"fixed" by someone tidying up. A bind exists because the file carries *no* code — the
+operator is naming which library tool this `T#` is, for one job. What that file's
+description says is therefore evidence about a tool the file never identified, so
+folding it into `cam_descriptions[]` would admit a string the code was never observed
+to post and blunt the only detector of one code on two cutters. Only a confirmed
+rename, on a file that *did* carry the code, grows the set. (`app.py`'s bind route and
+`tool_library.py`'s module docstring both say so; this is the spec saying it.)
+
 **The prompt is two-way and must show both strings**, because its whole value is the
 operator's ability to read it:
 
@@ -703,6 +735,17 @@ moves or changes:
 
 Slot 8 is unclaimed; slots 2 and 4 are contested (§3.5.6); `.25 Bowl Bit` stages.
 
+> **The table above is the CSV as transcribed on 2026-08-17 and `tool_library.json` has
+> since moved.** The library is operator data with its own lifecycle — that is why it
+> is a separate file — so this transcription is a *snapshot of the seed*, not a mirror,
+> and it should be read as history rather than corrected into agreement. As of
+> 2026-08-21 the live file holds **11** tools, not 10: `3/16 Roundover` (`RO-0187`) was
+> added, `0.75" End Mill` moved to slot 3, `8mm End Mill` to slot 7, and `.25 Bowl Bit`
+> was given slot 4. So the contested pockets are now **2, 3, 5 and 7**, slot 4 is
+> uncontested, and — see the capacity note below — **nothing stages any more.** Read
+> `tool_library.json` for the current state; read this table for what the feature was
+> designed against.
+
 **The `Product ID` column is where the code goes, and it is empty on all ten rows**
 (#9, 2026-08-17). The CSV's shape does not change — the column already exists; what
 changes is what fills it. It carries a **shop-assigned code**, unique per physical
@@ -727,6 +770,15 @@ argument.
 not an over-capacity condition: pockets are job-scoped (§3.2), the library is not. One
 tool (`.25 Bowl Bit`) declares no default slot and stages on load, so §3.2.1's staging
 path is exercised by real data on day one rather than being dead code.
+
+> **The staging claim expired on 2026-08-19 and nothing recorded it at the time.**
+> `6d9f95d` gave `.25 Bowl Bit` a default slot, so **every tool in the live library now
+> declares one** and §3.2.1's staging path has no real data exercising it. The path is
+> still correct and still tested, but it is tested only by fixtures
+> (`conftest.default_test_tools`'s slot-less `TT-0009`) — the day-one guarantee this
+> paragraph claimed is gone. That is a loss of coverage-by-data, not a bug: an operator
+> declaring a slot for every tool is the library working as intended. Worth knowing
+> because "real data exercises it" was the stated reason for not testing it harder.
 
 **Two corrections this data forces:**
 
@@ -777,13 +829,22 @@ read. That is the §3.5.1 discipline catching a real case.
 2. **The library's default-slot collisions are deliberate, and they are the point of
    the feature.** See §3.5.6.
 
-#### 3.5.6 The slot-4 collision is the feature's motivating case
+#### 3.5.6 A contested default slot is the feature's motivating case
 
 The library declares two tools into slot 2 (`0.5" x 1.25` and `0.5" x 2.0 End Mill`)
 and two into slot 4 (`0.75" End Mill` and `8mm End Mill`). Both were read here first as
 possible oversights, or as alternates that never co-run. **Neither** (operator,
 2026-08-17): *"Currently we can't run parts that use the T4 tools the way we do now, so
 being able to shift them to allow parts like this to run together is the point."*
+
+> **Which pockets are contested has changed; that they are contested has not.** This
+> section was titled "the slot-4 collision" until 2026-08-21, when the live library had
+> moved the two slot-4 tools apart (to 3 and 7) and contested **2, 3, 5 and 7** instead
+> — four pairs where there had been two. The declarations are operator data and will
+> keep moving, so the section is named for the shape of the case rather than for one
+> instance of it. Everything below is unaffected: the argument is that contested
+> defaults are a fossil of §1's defect, and the corpus evidence for that is about what
+> the *files* contain, which does not move when the library is edited.
 
 So a contested default slot is **not an exception to handle — it is the defect of §1,
 recorded in the library**. The corpus confirms it directly. `T4` across the library
@@ -925,19 +986,27 @@ is what multiplies the 30 s in §6.1.
 
 Frontier (takeable now):
 
+> **Nothing in this table is still takeable.** #12, #11 and #13 all landed on
+> 2026-08-17 — the document header says so — and the table was never reconciled with
+> it. Their rows are kept for the *why* in the right-hand column, which is the part
+> worth reading; strike the heading, not the reasoning. #11's one open question,
+> whether a permanently-contested pair should be declarable as such, is the only
+> genuinely unanswered thing here and it was **not** settled by the build.
+
+
 | # | Ticket | Type | Why it matters |
 |---|---|---|---|
 | ~~[#20](https://github.com/refine-drew/cnc-nest-app/issues/20)~~ | ~~Parse Fusion tool headers~~ | **done 2026-08-17** | All 26 library files now yield tools. `D`/`CR`/`TAPER`/type are read and converted from the file's declared units; the §6.2.1 `TOOLID`/`TOOLDESC` comments are read too, and the post emits them. Re-checked after: **no placement changed**, so the envelope under-inflation closed at zero cost |
-| [#12](https://github.com/refine-drew/cnc-nest-app/issues/12) | Define the no-geometry-change guarantee and its proving test | grilling | Turns the hard constraint into a test. **Its one open sub-question closed 2026-08-17** — blocks sort by identity, so the test takes the whole-file form (§4.2, §6.3) |
-| [#11](https://github.com/refine-drew/cnc-nest-app/issues/11) | Tool changer interface: 8 pockets, drag to reassign | prototype | **Unblocked by #10.** Surface, drag semantics and the mockup are settled in §3.4.1 — the build and the layout details are #11's. **Weightier than it looked:** dragging is the main path, not an exception (§3.5.6), the UI must *permit* duplicate default slots, and the one open question — whether a permanently-contested pair should be declarable as such — sits here |
-| [#13](https://github.com/refine-drew/cnc-nest-app/issues/13) | Define the operator setup sheet | grilling | **Unblocked by #10.** Note §3.2.1: a deviation from a default slot is a **temporary** instruction ("⅜" comp → pocket 6 for this job, return to 4"), because the standard is what the operator is trained toward |
+| ~~[#12](https://github.com/refine-drew/cnc-nest-app/issues/12)~~ | ~~Define the no-geometry-change guarantee and its proving test~~ | **done 2026-08-17** | Turns the hard constraint into a test. **Its one open sub-question closed 2026-08-17** — blocks sort by identity, so the test takes the whole-file form (§4.2, §6.3) |
+| ~~[#11](https://github.com/refine-drew/cnc-nest-app/issues/11)~~ | ~~Tool changer interface: 8 pockets, drag to reassign~~ | **done 2026-08-17** | **Unblocked by #10.** Surface, drag semantics and the mockup are settled in §3.4.1 — the build and the layout details are #11's. **Weightier than it looked:** dragging is the main path, not an exception (§3.5.6), the UI must *permit* duplicate default slots, and the one open question — whether a permanently-contested pair should be declarable as such — sits here |
+| ~~[#13](https://github.com/refine-drew/cnc-nest-app/issues/13)~~ | ~~Define the operator setup sheet~~ | **done 2026-08-17** | **Unblocked by #10.** Note §3.2.1: a deviation from a default slot is a **temporary** instruction ("⅜" comp → pocket 6 for this job, return to 4"), because the standard is what the operator is trained toward |
 
 Resolved:
 
 | # | Ticket | Answer |
 |---|---|---|
 | [#9](https://github.com/refine-drew/cnc-nest-app/issues/9) | Define tool identity matching, and no-match behaviour | **Resolved 2026-08-17** — see §3.1, §3.5.1, §3.5.3. Identity is a **shop-assigned code**, typed by hand into Fusion's Product id and VCarve's tool name, and matched exactly. Present and known → match; absent → orphan and bind for that run only. The alias list, its collision hole and guard (b) are all **deleted**; guard (a) survives with a new job. A **description seal** (`cam_descriptions[]`) is the only detector of a code duplicated in CAM, and it blocks |
-| [#8](https://github.com/refine-drew/cnc-nest-app/issues/8) | Which safety posture? | **Posture 2 — "auto tool" on, every job** (2026-08-17, operator's call). The machine check that would confirm the self-correcting claim was **declined**; see §6.1 for what that leaves unproven. The 57 s default already prices this posture, so no code changes |
+| [#8](https://github.com/refine-drew/cnc-nest-app/issues/8) | Which safety posture? | **Posture 2 — "auto tool" on, every job** (2026-08-17, operator's call). The machine check that would confirm the self-correcting claim was **declined**; see §6.1 for what that leaves unproven. The 57 s default already prices this posture, so no code changes. **The posture has since moved to off** (2026-08-21) and `advanced.auto_tool_touch_off` in the shipped `config.json` is the record of where it is now; the code default still reads as on, so a config predating the key behaves as #8 decided. This does not reopen #8 — the flag reports the control's setting, it does not choose it |
 | [#6](https://github.com/refine-drew/cnc-nest-app/issues/6) | How long is one touch-off cycle? | **Swap 27 s, swap + touch-off 57 s → touch-off is 30 s** (2026-08-17, timed on the machine). Charged on every `T# M06`. See §6.1 |
 | [#10](https://github.com/refine-drew/cnc-nest-app/issues/10) | Pocket auto-assignment and conflict resolution | **Resolved 2026-08-17** — see §3.2.1, §3.4, §3.5. **The assigner makes no arbitrary choices**: no tie-break (collisions surface), no fill rule (blanks stage), no write-back (defaults are prescriptive), nothing refused at placement. Determinism follows. Taken **ahead of #9** on the grounds that assignment consumes *"a set of resolved tools each with an optional default slot"* and does not care how resolution happened |
 | [#7](https://github.com/refine-drew/cnc-nest-app/issues/7) | Tool-change undercount | **Fixed** — counted off the emitted blocks, not distinct tools |
@@ -1102,34 +1171,50 @@ existing `(T2 D=12.7 …)` line:
 > `writeToolIdentity` emits them and `gcode_parser` reads them
 > (`TOOLID_PATTERN` / `TOOLDESC_PATTERN`).
 >
-> **Under #9 the load-bearing field is `PRODUCT`, and it now carries a shop-assigned
-> code** rather than a manufacturer part number (§3.1). `VENDOR` and `FLUTES` are
-> retained but unread by the app. `TOOLDESC` feeds the description seal (§3.5.3),
-> which is what makes it worth emitting rather than merely nice to have.
+> **Under #9 the load-bearing field is `CODE`, and it carries a shop-assigned code**
+> rather than a manufacturer part number (§3.1). The key was named `PRODUCT=` until
+> 2026-08-19 and **must not come back as an alias** — one key with one meaning is the
+> point, and a second candidate code in one line is a choice the app must never have
+> to make. `VENDOR` and `FLUTES` are retained but unread by the app. `TOOLDESC` feeds
+> the description seal (§3.5.3), which is what makes it worth emitting rather than
+> merely nice to have.
+
+**The rule list below is the original proposal and two of its rules are now false.**
+They are kept because the reasoning around them still explains the format, but read
+them against this correction first — a reader who follows them as written
+reintroduces exactly the alias §3.1 forbids:
+
+- *"The token that matters is `VENDOR`+`PRODUCT`"* — **no.** `CODE` alone is the
+  identity. `VENDOR` is emitted and unread.
+- *"`D=` and `CR=` are millimetres, matching what the post already writes"* —
+  **`writeToolIdentity` emits no `D` or `CR` at all.** They are on the tool-list line
+  above, and keeping them off the identity line is what buys the 80-character budget
+  described in the blockquote above.
+- Everywhere the list and the discussion below it say "alias matching", read
+  "orphaned to a job-scoped manual bind" — alias matching is deleted (§3.1, §8).
 
 Rules the format has to obey, each for a stated reason:
 
 - **`TOOLID` is a leading keyword**, so a parser can find the line without guessing at
   comment shapes; `T2` repeats the pocket only so the line can be tied to the header
-  it annotates. **The token that matters is `VENDOR`+`PRODUCT`, and the pocket in the
-  line is not part of the identity.**
+  it annotates. **The token that matters is `CODE`, and the pocket in the line is not
+  part of the identity.**
 - **Every field is `KEY=value`, whitespace-separated, `DESC` last** because it is the
   only free-text field and may contain spaces.
 - **A missing field is emitted as an empty value, never omitted.** `VENDOR=` tells the
   app the Fusion library entry is blank; a *missing* `VENDOR` is indistinguishable
   from an older post. This is the difference between "unpopulated" and "unknown",
   and only the first is actionable by the operator.
-- **`D=` and `CR=` are millimetres**, matching what the post already writes.
 - The comment must be **inert to the control** — a parenthesised comment in the header
   block, before the first motion, exactly like the lines already there.
 
 **What this fixes, and what it does not.** It kills the alias-collision hole (end of
 §3.5.3) for Fusion output: two cutters can no longer arrive as one byte-identical
-string, because `VENDOR`+`PRODUCT` distinguishes them even when both are
+string, because the shop code distinguishes them even when both are
 `FLAT END MILL` at `D=12.7`. It does **not** supply flute direction — Fusion has no
 such field, so `up`/`down`/`compression` remains library-declared (§3.5.1) and this
 changes nothing about §3.1's core claim. The win is *identity*, not *geometry*: once
-`VENDOR`+`PRODUCT` pins which physical cutter this is, the library supplies everything
+the code pins which physical cutter this is, the library supplies everything
 Fusion cannot.
 
 **Two things stay unsolved and must not be assumed away.**
@@ -1150,10 +1235,14 @@ Fusion cannot.
    re-posted."
 2. **`vendor`+`productId` must actually be populated in the Fusion library**, per
    cutter, uniquely. The post can only emit what Fusion holds. This is now a
-   *quality-of-outcome* dependency rather than a precondition — a blank pair degrades
-   to alias matching (§3.1), which still works — so §7's ruling continues to stand,
-   but the empty-value rule above exists so the app can *say* which entries are blank
-   instead of silently matching worse.
+   *quality-of-outcome* dependency rather than a precondition — a blank field orphans
+   the tool to a job-scoped manual bind (§3.5.3), which is an explicit operator
+   decision rather than a worse match — so §7's ruling continues to stand, and the
+   empty-value rule above is what lets the app say *which* entries are blank.
+
+   *Superseded in part by #9 (2026-08-19):* the pair is now a single `productId`
+   carrying the shop code, so "populated per cutter, uniquely" is a rule about the
+   shop's numbering rather than about CAM library hygiene.
 
 ### 6.3 Shape of the geometry guarantee (#12)
 
@@ -1245,27 +1334,33 @@ New, opened by #10:
 
 ## 9. Code map
 
-| File | Role in this feature |
+**Written as a work plan, kept as a map.** Every row below said what *had* to change;
+the feature shipped on 2026-08-17 and they now say where it landed. Line numbers were
+dropped on 2026-08-21 — they had drifted on every row (`_build_blocks` 159 → 495,
+`_max_tool_radius` 204 → 286) and a stale line number is worse than none, because it
+sends a reader to a real line that says something else. Symbol names are stable; grep
+for them.
+
+| Where | Role in this feature |
 |---|---|
-| `gcode_generator.py:159` `_build_blocks` | Groups by raw `T#` — the merge defect lives here. Its `sorted(by_tool)` becomes an identity order (§4.2) |
-| `gcode_generator.py:101` | Derives `H` from `T` — must move with the pocket |
-| `gcode_generator.py:56-71` | Capacity check counts `T#` strings, not physical tools |
-| `app.py:241` `_tool_compatibility` | Already detects the conflict; advisory only |
-| `app.py:232` | Under-reports tool changes (§5) |
-| `gcode_parser.py:137` `extract_tools` | Source of per-file tool data. What the feature reads from it narrows to the **code token** and `cam_description`; the parsed diameter stops being authoritative (§3.5.2) |
-| `gcode_parser.py` `_extract_diameter` | **Retire the bare-decimal fallback** — it would read a code like `RK-004` as a 0.04" cutter, a 25× under-inflation (§3.5.2) |
-| `gcode_parser.py` `TOOLID_PATTERN` / `_toolid_fields` | Reads `CODE=`; that value is the match key. `PRODUCT=` is no longer read at all (2026-08-19). The `""`-vs-absent distinction stays load-bearing — empty means the CAM entry needs a code |
-| `post/syntec_Refine.cps` `writeToolIdentity` / `getToolCode` | Emits `CODE=` from the tool's **Product id** field (`tool.productId`). Product Link was tried on 2026-08-19 and does not reach a post. Aborts the post on a code the comment filter would mangle, one over 24 characters, or one containing whitespace |
-| `tool_library.py` | Today a `T#`→diameter registry; becomes the identity library keyed by **code** (§3.5) |
-| `tool_library.py:39` `find_unknown_tools` | Existing block-on-unresolvable pattern to mirror |
-| `config.json` `tools` | **Delete** — junk in its entirety, migrates nothing (§8). Its `T4` diameter is wrong by 1.6" |
-| `Source Data/Refine Tools - Sheet1.csv` | The operator's declared library — 10 tools; seeds `tool_library.json` (§3.5.5). Its **`Product ID` column carries the shop code** and is empty on every row today |
-| `tool_library.json` | **New** — the identity library, **`code`-keyed**, operator data (§3.5) |
-| `static/bed.js`, `static/sidebar.js` | Where the changer UI has to live |
-| `templates/index.html:24` `#main` grid | The dock is a new full-width row above `#statusbar` (§3.4.1) |
-| `templates/index.html:201` `#compat-section` | **Retired** by the changer dock — this is the screen budget |
-| `static/job.js:36`, `index.html:342` | The Generate gate, already present; re-point it at §3.4's three rules |
-| `app.py:661` | The 422 gate, already present; becomes a backstop |
-| `collision.py:204` `_max_tool_radius` | Reads the parsed file's diameter; must read the library instead (§3.5.2) |
-| `app.py` `/api/save-job`, `/api/load-job` | **Delete** — save/load is sunset (§3.2) |
-| `pdf_report.py` | Natural home for the setup sheet |
+| `gcode_generator._build_blocks` | Groups by **identity**, not by raw `T#` — this is where the merge defect lived, and `sorted(by_tool)` became an identity order (§4.2) |
+| `gcode_generator.generate_master_gcode`'s `h_num` | Derives `H` from the emitted `T#` (`"T2"` → `G43 H2`), so it moves with the pocket on a remap. `gcode_validator._check_g43` rejects a mismatch at ERROR (§6.1) |
+| `gcode_generator.IdentityMap` | The remap itself: rewrites `T# M06` and `G43 H#` and nothing else |
+| `gcode_parser.extract_tools` | Source of per-file tool data. What this feature reads from it is the **code token** and `cam_description`; the parsed diameter is no longer authoritative (§3.5.2) |
+| `gcode_parser.TOOLID_PATTERN` / `_toolid_fields` | Reads `CODE=`; that value is the match key. `PRODUCT=` is not read at all (2026-08-19). The `""`-vs-absent distinction is load-bearing — empty means the CAM entry needs a code, absent means the file predates the comment |
+| `post/syntec_Refine.cps` `writeToolIdentity` / `getToolCode` | Emits `CODE=` from the tool's **Product id** (`tool.productId`). Product Link was tried on 2026-08-19 and cannot reach a post. Aborts the post on a code the comment filter would mangle, one over 24 characters, or one containing whitespace |
+| `tool_library.py` | The identity library, keyed by **code**. Guard (a), the description seal, and the sole diameter authority (§3.5) |
+| `pocket_map.py` | The assigner that makes no arbitrary choices, and the §3.4 validity gate |
+| `collision._max_tool_radius` | Reads the **declared** diameters the library supplied at placement time (`PlacedPart.tool_diameters`), never the parsed header, when they are present (§3.5.2) |
+| `tool_library.json` | The identity library on disk — operator data with its own lifecycle, deliberately not inside `config.json` (§3.5) |
+| `static/changer.js` | The changer dock: 8 pockets, drag to reassign (#11) |
+| `static/toollib.js` | The library manager and the description-seal prompt (#24) |
+| `static/job.js` + the `/api/generate` 422 | The Generate gate, both layers reading `_changer_state()["valid"]` — the three rules of §3.4 |
+| `pdf_report.py` + `<job>_setup.txt` | The setup sheet, keyed on pockets, with off-home pockets called out as temporary (#13) |
+| `tests/test_geometry_guarantee.py` | #12's proving test, in the whole-file form (§6.3) |
+
+**Gone, and listed so nobody goes looking:** `app._tool_compatibility` and its
+`has_conflict` signal (deleted — §3.4 replaced the signal, not just the wiring),
+`tool_library.find_unknown_tools`, `config.json`'s `tools` map, `/api/save-job` and
+`/api/load-job`, `#compat-section` in `templates/index.html`, and
+`gcode_parser._extract_diameter`'s bare-decimal fallback.
