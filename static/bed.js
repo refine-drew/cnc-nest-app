@@ -11,8 +11,8 @@
 
 var BedCanvas = (() => {
   // ── machine constants (overwritten from /api/config on init) ──────────────
-  let BED_X_MM = 1668.788;
-  let BED_Y_MM = 3123.0;
+  let BED_X_MM = 1606.4992;
+  let BED_Y_MM = 3098.0126;
 
   // Per-rail geometry — the two rails are independent fixturing systems at
   // opposite ends of the machine and run in OPPOSITE slot directions, so each
@@ -56,7 +56,6 @@ var BedCanvas = (() => {
   let panOrigin   = {x: 0, y: 0};
   let dragState   = null;   // set by placement.js via BedCanvas.beginDrag()
   let hoverSlot   = null;   // {rail, slot_inches} during drag
-  let hoverPart   = null;   // instance_id under cursor
   let viewMode    = "all"; // "bounds" | "cuts" | "all"
 
   // ── part colors ───────────────────────────────────────────────────────────
@@ -195,7 +194,7 @@ var BedCanvas = (() => {
     _drawRuler();
     _drawParts();
     _drawDragFeedback();
-    _drawOriginLabel(w, h);
+    _drawOriginLabel();
     _updateZoomIndicator();
     _updateStockLegend();
   }
@@ -333,7 +332,6 @@ var BedCanvas = (() => {
         ctx.font = `${fontSize}px system-ui`;
         ctx.fillStyle = "rgba(180,180,180,0.55)";
         ctx.textAlign = "center";
-        const label = slot.label_a.replace("A", "");
         // A rail label below mark
         ctx.fillText(slot.label_a, aPos.x, aPos.y + size + fontSize + 2);
         ctx.fillText(slot.label_b, bPos.x, bPos.y - size - 4);
@@ -440,18 +438,12 @@ var BedCanvas = (() => {
   // ── placed parts ──────────────────────────────────────────────────────────
   function _drawParts() {
     const placements = App?.placements ?? [];
-    console.log("[render] _drawParts called, placements.length =", placements.length);
     for (const p of placements) {
       _drawOnePart(p);
     }
   }
 
   function _drawOnePart(p) {
-    console.log("[render] _drawOnePart", {
-      filename: p.filename, slot: p.slot,
-      machine_x: p.machine_x, machine_y: p.machine_y,
-      vcarve_x_span: p.vcarve_x_span, vcarve_y_span: p.vcarve_y_span,
-    });
     const identity = colorForPart(p.filename);
     const unknownStock = p.material_thickness == null;
     const color = colorMode === "thickness" ? bandColor(p) : identity;
@@ -501,27 +493,6 @@ var BedCanvas = (() => {
     }
 
     // Toolpath extents (dashed, lighter)
-    if (p.tp_min_x !== undefined && p.tp_max_x !== undefined) {
-      const tpTL = toCanvas(p.tp_max_x, p.tp_max_y);
-      const tpBR = toCanvas(p.tp_min_x, p.tp_min_y);
-      ctx.strokeStyle = hexToRgba(color, 0.5);
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 3]);
-      ctx.beginPath();
-      ctx.rect(tpTL.x, tpTL.y, tpBR.x - tpTL.x, tpBR.y - tpTL.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
-    // Collision highlight
-    if (p.collision) {
-      ctx.fillStyle = "rgba(255, 60, 60, 0.25)";
-      ctx.fillRect(tl.x, tl.y, rw, rh);
-      ctx.strokeStyle = "#ff3c3c";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(tl.x, tl.y, rw, rh);
-    }
-
     // Part label (hide when tiny)
     if (s > 0.05) {
       const fontSize = Math.min(Math.max(9, s * 10), 13);
@@ -639,7 +610,7 @@ var BedCanvas = (() => {
   }
 
   // ── origin label ──────────────────────────────────────────────────────────
-  function _drawOriginLabel(w, h) {
+  function _drawOriginLabel() {
     const pos = toCanvas(0, 0);
     ctx.font = "10px system-ui";
     ctx.fillStyle = "rgba(180,180,180,0.5)";
@@ -707,7 +678,6 @@ var BedCanvas = (() => {
     // Hover cursor
     const hit = _hitTestPart(pos.x, pos.y);
     canvas.style.cursor = hit ? "grab" : "crosshair";
-    if (hit !== hoverPart) { hoverPart = hit; render(); }
   }
 
   function _onMouseUp(e) {
@@ -772,15 +742,6 @@ var BedCanvas = (() => {
     dragState = state;
     hoverSlot = null;
     canvas.style.cursor = "grabbing";
-  }
-
-  function endDrag() {
-    const result = hoverSlot;
-    dragState = null;
-    hoverSlot = null;
-    canvas.style.cursor = "crosshair";
-    render();
-    return result;
   }
 
   // ── colour utils ──────────────────────────────────────────────────────────
@@ -898,6 +859,10 @@ var BedCanvas = (() => {
       }
       SLOTS    = slotData.slots;
       PINS     = slotData.pins || [];
+      // `App.slots` is what the status bar counts empty slots from. Assigning it
+      // here rather than letting it read `SLOTS` keeps the module private and the
+      // global in one place: this is the only fetch of /api/slots in the app.
+      if (window.App) App.slots = SLOTS;
       resize();
     }).catch(() => resize());
 
@@ -905,8 +870,7 @@ var BedCanvas = (() => {
   }
 
   // ── public API ────────────────────────────────────────────────────────────
-  return { init, render, beginDrag, endDrag, getColor, fitToWindow,
-           PALETTE, THICKNESS_BANDS, stockKey, stockLabel, stockBands };
+  return { init, render, beginDrag, getColor, PALETTE };
 })();
 
 document.addEventListener("DOMContentLoaded", () => BedCanvas.init());

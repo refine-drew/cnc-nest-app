@@ -181,8 +181,8 @@ body.resizing-y{user-select:none;cursor:row-resize}
 .toollib-head h3{font-size:14px}
 .toollib-body{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:14px;min-height:0}
 #toollib-list{overflow:auto;border:1px solid #333;border-radius:5px}
-/* One table, so every column solves once for the whole list. Fixed layout with the
-   short columns sized explicitly: Name and Shape take what is left and ellipsize. */
+/* One table, so every column solves once for the whole list. Fixed layout with every
+   column sized explicitly except Name, which absorbs the slack and ellipsizes. */
 .tl-table{width:100%;min-width:760px;border-collapse:collapse;table-layout:fixed;font-size:12px}
 .tl-table th,.tl-table td{padding:6px 9px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tl-table thead th{position:sticky;top:0;z-index:1;background:#26262a;border-bottom:1px solid #3a3a3a;
@@ -501,9 +501,7 @@ table.audit td.feed-varies{color:#ffd60a}
 // Global app state shared across all modules
 var App = {
   placements: [],       // array of placement objects from /api/placements
-  tray: [],             // array of part objects loaded into the tray
-  config: {},           // from /api/config
-  slots: [],            // from /api/slots
+  slots: [],            // from /api/slots, assigned by bed.js on init
   changer: {},          // tool-changer map + validity gate, from /api/changer
   jobSafeZ: {},         // {value, driven_by}
   toolSequence: [],     // ordered tool list for the full job

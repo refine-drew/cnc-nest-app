@@ -216,11 +216,7 @@ var TrayPanel = (() => {
     }
   }
 
-  function refresh() { _render(); }
-
-  function getAll() { return [...trayParts.values()]; }
-
-  return { add, remove, refresh, getAll };
+  return { add, remove };
 })();
 
 

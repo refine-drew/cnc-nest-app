@@ -118,6 +118,12 @@ def build_changer_state(
                 "cam_description": binding.cam_description,
                 "description": binding.description,
                 "posted_diameter_inches": binding.posted_diameter_inches,
+                # Why it orphaned, not just that it did: `""` is a TOOLID comment
+                # with the field left blank (one Fusion edit fixes it for every
+                # file), `None` is a file carrying no code at all. The resolver
+                # dialog words those two differently, and the dock reaches it by
+                # this path — `/api/place`'s 422 body carries the same field.
+                "code_field": binding.code_field,
             })
         for code, numbers in res.duplicate_codes:
             duplicate_codes.append({
