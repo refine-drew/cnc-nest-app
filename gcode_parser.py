@@ -75,6 +75,15 @@ MACHINE_COORD_PATTERN = re.compile(r"\bG53\b", re.IGNORECASE)
 #     a cut back to the origin that the machine never makes.
 MOTION_WORD_PATTERN = re.compile(r"\bG0?([0-3])\b", re.IGNORECASE)
 NON_MODAL_COORD_PATTERN = re.compile(r"\bG(?:10|28|30|53|92)\b", re.IGNORECASE)
+
+# The work plane is modal for exactly the same reason motion is, one level down:
+# VCarve restores G17 on a line of its own, so a walker that reads the plane off the
+# arc block misses it. `runtime_estimator` needs it because a G19 arc's centre
+# offsets are J/K, not I/J — reading them as I/J times every vertical lead-in ramp
+# at zero. `gcode_generator` and `gcode_validator` keep their own plane tracking on
+# purpose: the generator's is in file-vs-machine terms (it *rewrites* the word), and
+# the validator deliberately shares no state with the code it checks.
+PLANE_WORD_PATTERN = re.compile(r"\bG1([789])\b", re.IGNORECASE)
 BARE_COMMENT_PATTERN = re.compile(r"^\(([^)]*)\)$")
 
 # Comments that are file metadata rather than a toolpath name. A toolpath name
@@ -143,7 +152,7 @@ class GcodePart:
     runtime_seconds: float = 0.0
 
 
-def parse_vcarve_text(text: str, filename: str = "") -> GcodePart:
+def parse_vcarve_text(text: str, filename: str = "", limits=None) -> GcodePart:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     vcarve_x_span, vcarve_y_span, material_thickness = extract_blank_and_material(lines)
     tools = extract_tools(lines)
@@ -158,8 +167,28 @@ def parse_vcarve_text(text: str, filename: str = "") -> GcodePart:
 
     segments = extract_file_segments(passes, material_thickness)
 
-    from runtime_estimator import estimate_passes_runtime
-    runtime_seconds = estimate_passes_runtime(passes, tool_change_seconds=0.0)["seconds"]
+    # `limits` is a `runtime_estimator.MotionLimits` the caller read from config; this
+    # function never looks inside it. Threading it rather than letting the estimator
+    # read a module global is the point: a per-part runtime computed under a different
+    # machine model than the job total is exactly the divergence this avoids.
+    #
+    # `unit_scale` is seeded from the *file*, not the passes: both posts write their
+    # G70/G71 in the header, before the first `T# M06`, which puts it outside every
+    # pass. Walking the passes alone never sees a units word and would price an
+    # inch-posted file as millimetres — a 25.4x error, latent only because nothing in
+    # this library posts inches.
+    from runtime_estimator import estimate_passes_runtime, MM_PER_INCH
+    # Both event costs are zeroed, not just the tool change: the generator merges
+    # same-tool passes across parts, so a part's own spindle starts no more survive
+    # into the merged job than its own tool changes do. Both are charged once per
+    # emitted block at job level.
+    runtime_seconds = estimate_passes_runtime(
+        passes,
+        limits=limits,
+        tool_change_seconds=0.0,
+        spindle_start_seconds=0.0,
+        unit_scale=MM_PER_INCH if file_is_inch(lines) else 1.0,
+    )["seconds"]
 
     return GcodePart(
         filename=filename,
@@ -348,6 +377,16 @@ def motion_mode(line: str, current: Optional[int]) -> Optional[int]:
     return int(match.group(1)) if match else current
 
 
+def plane_mode(line: str, current: int = 17) -> int:
+    """The modal work plane (17, 18 or 19) in effect for `line`.
+
+    A line naming a plane word sets it; any other line inherits it. Track it
+    *before* the motion filter — the word often arrives on a line of its own.
+    """
+    match = PLANE_WORD_PATTERN.search(line)
+    return int("1" + match.group(1)) if match else current
+
+
 def is_modal_move(line: str, mode: Optional[int]) -> bool:
     """True if `line` is a work-coordinate move under the current modal mode."""
     if mode is None:
@@ -529,7 +568,8 @@ def _arc_points(
     INCLUDING the exact end. Returns [(x1, y1)] (a single straight chord) for
     degenerate inputs. Center is taken from I/J when supplied, else derived from
     the chord + radius R. Mirrors the arc geometry in
-    runtime_estimator._arc_length (center/radius/sweep via atan2).
+    runtime_estimator._arc_segment (center/radius/sweep via atan2), which does the
+    same derivation in whichever plane is modal in order to time the arc.
     """
     if i is not None or j is not None:
         # I/J form: center is an offset from the start point.
@@ -591,7 +631,6 @@ def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[
     walks correctly — it names the mode once and then posts bare coordinate lines.
     """
     segments: List[dict] = []
-    plane_pat = re.compile(r"\bG1([789])\b", re.IGNORECASE)
 
     for pass_ in passes:
         # Position starts *unknown*, not at (0,0). The tool is at the changer when a
@@ -602,16 +641,14 @@ def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[
         cur_x: Optional[float] = None
         cur_y: Optional[float] = None
         cur_z = 0.0
-        plane = "G17"
+        plane = 17
         mode: Optional[int] = None
         for line in pass_.lines:
             if line.startswith("("):
                 continue
             # Track the modal plane before the motion filter: a plane word can
             # arrive on a line of its own (VCarve restores G17 that way).
-            pm = plane_pat.search(line)
-            if pm:
-                plane = "G1" + pm.group(1)
+            plane = plane_mode(line, plane)
             mode = motion_mode(line, mode)
             if MACHINE_COORD_PATTERN.search(line):
                 continue
@@ -640,7 +677,7 @@ def extract_file_segments(passes: List[GcodePass], material_thickness: Optional[
                 # its footprint is the straight lateral line, and flattening it
                 # as an XY arc invents a bulge the cutter never makes (I/J there
                 # are X/Y-vs-Z centre offsets, not an XY centre).
-                if (is_g2 or is_g3) and arc_params and plane == "G17":
+                if (is_g2 or is_g3) and arc_params and plane == 17:
                     points = _arc_points(
                         cur_x, cur_y, new_x, new_y,
                         r=arc_params.get("R"),

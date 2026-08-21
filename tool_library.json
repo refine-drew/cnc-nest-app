@@ -98,8 +98,10 @@
       "geometry_class": "Flat End Mill",
       "flute_direction": "down",
       "cutting_length_in": null,
-      "cam_descriptions": [],
-      "default_slot": 4,
+      "cam_descriptions": [
+        "8MM END MILL"
+      ],
+      "default_slot": 7,
       "vendor": "",
       "product_link": ""
     },
@@ -125,6 +127,18 @@
       "cam_descriptions": [
         "18 ROUNDOVER"
       ],
+      "default_slot": 5,
+      "vendor": "",
+      "product_link": ""
+    },
+    {
+      "code": "RO-0187",
+      "name": "3/16 Roundover",
+      "diameter_inches": 0.842,
+      "geometry_class": "Roundover",
+      "flute_direction": "straight",
+      "cutting_length_in": null,
+      "cam_descriptions": [],
       "default_slot": 5,
       "vendor": "",
       "product_link": ""

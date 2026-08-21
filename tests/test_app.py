@@ -12,7 +12,11 @@ import pytest
 
 import app as app_module
 from app import app
-from runtime_estimator import DEFAULT_TOOL_CHANGE_SECONDS
+from gcode_generator import RUNTIME_COMMENT_PREFIX, runtime_comment
+from runtime_estimator import (
+    DEFAULT_TOOL_CHANGE_SECONDS, SPINDLE_START_SECONDS, TOOL_SWAP_SECONDS,
+    TOUCH_OFF_SECONDS, estimate_lines_runtime,
+)
 
 
 # ── /api/config ───────────────────────────────────────────────────────────────
@@ -42,6 +46,40 @@ def test_config_no_longer_carries_a_tool_map(client, monkeypatch):
     r = client.post("/api/config", json={"tools": {"T99": {"diameter_inches": 0.1}}})
     assert r.status_code == 200
     assert "tools" not in r.get_json()
+
+
+def test_post_config_sets_the_park_position(client, monkeypatch):
+    """The end-of-job park is an editable setting, written in machine mm.
+
+    Values outboard of `machine_travel` are accepted on purpose: that box is the
+    machinable surface, and travel runs past it — the shipped park X0 is already
+    outboard of x_min 61.493.
+    """
+    import config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "save_config", lambda data: None)
+    monkeypatch.setattr(app_module, "save_config", lambda data: None)
+
+    r = client.post("/api/config", json={"advanced": {"park_x": 0.0, "park_y": 3200.5}})
+    assert r.status_code == 200
+    adv = r.get_json()["advanced"]
+    assert adv["park_x"] == pytest.approx(0.0)
+    assert adv["park_y"] == pytest.approx(3200.5)
+
+
+def test_post_config_rejects_a_non_numeric_park(client, monkeypatch):
+    """A bad park is a G53 move, so it is refused at the field, not at Generate."""
+    import config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "save_config", lambda data: None)
+    monkeypatch.setattr(app_module, "save_config", lambda data: None)
+
+    adv = app_module.config["advanced"]
+    adv["park_x"], adv["park_y"] = 0.0, 3048.0
+    for bad in ("far left", None, float("nan")):
+        r = client.post("/api/config", json={"advanced": {"park_x": bad}})
+        assert r.status_code == 400, bad
+        assert "Park X" in r.get_json()["error"]
+        # and the previous park is still in force
+        assert adv["park_x"] == pytest.approx(0.0)
 
 
 def test_post_config_normalizes_library_paths(client, monkeypatch):
@@ -487,6 +525,59 @@ def test_generate_writes_nc_and_pdf(client, tmp_path, monkeypatch):
         assert f.read(5) == b"%PDF-"
 
 
+def test_the_header_states_the_cycle_time_the_setup_sheet_states(
+        client, tmp_path, monkeypatch):
+    """One estimate, three places to read it.
+
+    The operator reads the cycle time off whichever of the three is in front of them —
+    the program at the control, the setup sheet at the bench, the PDF on the wall — so
+    a job that quotes two different numbers is worse than one that quotes none. They
+    agree by construction (`with_runtime_header` is handed the estimate the sheet
+    reports, rather than taking its own), and this is what keeps that true.
+    """
+    _seed_library(tmp_path, monkeypatch, {"a.nc": _SETUP_A, "b.nc": _SETUP_B})
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    for name, slot in (("a.nc", 39), ("b.nc", 26)):
+        client.post("/api/place", json={"path": name, "rail": "A", "slot_inches": slot})
+    r = client.post("/api/generate", json={"job_name": "timed"})
+    assert r.status_code == 200, r.get_json()
+
+    written = (tmp_path / "timed.nc").read_text().splitlines()
+    header = [ln for ln in written if ln.startswith(f"({RUNTIME_COMMENT_PREFIX}")]
+    assert len(header) == 1
+    sheet = (tmp_path / "timed_setup.txt").read_text()
+    stated = re.search(r"Estimated cycle time: (.+)", sheet).group(1).strip()
+    assert stated in header[0]
+
+    # A comment, so it sits above the first numbered block and renumbers nothing.
+    assert written.index(header[0]) < next(
+        i for i, ln in enumerate(written) if ln.startswith("N"))
+
+
+def test_the_header_cycle_time_survives_its_own_insertion(
+        client, tmp_path, monkeypatch):
+    """The line states an estimate of the file it is inserted into.
+
+    Which is circular unless adding it cannot change the estimate — it cannot, because
+    the estimator skips comments, and this is the assertion that says so rather than
+    the docstring. Re-reading the written file and re-pricing it has to reproduce the
+    number the file claims.
+    """
+    _seed_library(tmp_path, monkeypatch, {"a.nc": _SETUP_A, "b.nc": _SETUP_B})
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    for name, slot in (("a.nc", 39), ("b.nc", 26)):
+        client.post("/api/place", json={"path": name, "rail": "A", "slot_inches": slot})
+    assert client.post("/api/generate", json={"job_name": "timed"}).status_code == 200
+
+    written = (tmp_path / "timed.nc").read_text()
+    again = estimate_lines_runtime(
+        written.splitlines(),
+        limits=app_module._motion_limits(),
+        tool_change_seconds=app_module._tool_change_seconds(),
+    )
+    assert runtime_comment(again) in written
+
+
 def test_generate_blocked_by_a_contested_pocket(client, tmp_path, monkeypatch,
                                                 isolated_library):
     """The gate is the same 422 that has always been here, pointed at a sound signal."""
@@ -609,16 +700,25 @@ def test_job_runtime_charges_every_tool_change(client, tmp_path, monkeypatch):
     """
     Per-part runtimes exclude tool-change time; the job total adds it back once
     per emitted block. Without this, the always-on-touch-off posture looks free.
+
+    The posture is pinned rather than inherited from `config.json`: the subject here
+    is that *every* change is charged, not which of the two costs the shop is
+    currently on, and a config the operator edits in Settings must not be able to
+    fail a test about the count.
     """
     _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2, "ba.nc": _T2_THEN_T1})
+    monkeypatch.setitem(app_module.config["advanced"], "auto_tool_touch_off", True)
     client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
     client.post("/api/place", json={"path": "ba.nc", "rail": "A", "slot_inches": 26})
 
     info = client.get("/api/placements").get_json()
     cutting = sum(p.part.runtime_seconds for p in app_module._placements.values())
     assert info["runtime_seconds"] == pytest.approx(
-        # Four blocks plus the end-of-job change into pocket 2.
-        cutting + 5 * DEFAULT_TOOL_CHANGE_SECONDS, abs=0.01,
+        # Four blocks plus the end-of-job change into pocket 2 — and one spindle
+        # start per *block*, since the end-of-job change cuts nothing and spins
+        # nothing up.
+        cutting + 5 * DEFAULT_TOOL_CHANGE_SECONDS + 4 * SPINDLE_START_SECONDS,
+        abs=0.01,
     )
 
 
@@ -833,3 +933,88 @@ def test_the_shipped_format_adds_nothing_to_the_stamp(client, tmp_path, monkeypa
     with open("config.json") as f:
         assert json.load(f)["job_name_format"] == "{timestamp}"
     assert re.fullmatch(r"\d{4}-\d{4}", app_module._job_name({}))
+
+
+# ── auto tool touch-off posture (2026-08-20) ──────────────────────────────────
+#
+# Issue #8 decided the posture — auto tool on, every job — and the default is still
+# that. What is new is that the estimate can price the other one without a code edit.
+# The gap is 4-7.5 minutes on a typical job, and a number you have to edit the source
+# to see is a number nobody looks at.
+
+def test_turning_auto_tool_off_moves_the_touch_off_out_of_the_cycle(
+    client, tmp_path, monkeypatch,
+):
+    """The whole arithmetic issue #8 trades against, now live rather than hypothetical.
+
+    Turning the posture off must drop the job total by exactly
+    `TOUCH_OFF_SECONDS x tool_changes` — the touch-off does not vanish, it moves into
+    setup. That this is a subtraction and not a re-derivation is why the two constants
+    stay split.
+    """
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2, "ba.nc": _T2_THEN_T1})
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+    client.post("/api/place", json={"path": "ba.nc", "rail": "A", "slot_inches": 26})
+
+    monkeypatch.setitem(app_module.config["advanced"], "auto_tool_touch_off", True)
+    on = client.get("/api/placements").get_json()
+    monkeypatch.setitem(app_module.config["advanced"], "auto_tool_touch_off", False)
+    off = client.get("/api/placements").get_json()
+
+    # Relational against the reported count rather than a literal: the posture must
+    # not change *how many* changes there are, only what each one costs.
+    changes = on["tool_changes"]
+    assert changes == off["tool_changes"] and changes > 0
+    assert on["runtime_seconds"] - off["runtime_seconds"] == pytest.approx(
+        changes * TOUCH_OFF_SECONDS, abs=0.01,
+    )
+    assert app_module._tool_change_seconds() == TOOL_SWAP_SECONDS
+
+
+def test_a_missing_posture_key_reads_as_the_shipped_posture(monkeypatch):
+    """`config.py` has no defaults dict — every read site supplies its own fallback —
+    so a config predating this key must behave as auto tool on, not off."""
+    advanced = dict(app_module.config["advanced"])
+    advanced.pop("auto_tool_touch_off", None)
+    monkeypatch.setitem(app_module.config, "advanced", advanced)
+    assert app_module._tool_change_seconds() == DEFAULT_TOOL_CHANGE_SECONDS
+
+
+def test_a_boolean_advanced_setting_round_trips(client, monkeypatch):
+    """Guards the flat `config["advanced"].update()` in `api_config_post`, and the
+    JS-side trap it mirrors: `false` is a real value, so it must not be pruned the
+    way a blank number field is."""
+    import config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "save_config", lambda data: None)
+    monkeypatch.setattr(app_module, "save_config", lambda data: None)
+    monkeypatch.setitem(app_module.config["advanced"], "auto_tool_touch_off", True)
+
+    r = client.post("/api/config", json={"advanced": {"auto_tool_touch_off": False}})
+    assert r.status_code == 200
+    assert r.get_json()["advanced"]["auto_tool_touch_off"] is False
+    assert client.get("/api/config").get_json()["advanced"]["auto_tool_touch_off"] is False
+
+
+def test_changing_the_motion_model_reprices_loaded_parts(client, tmp_path, monkeypatch):
+    """`PlacedPart.part` is the same object as `_loaded[rel]`, so a config edit that
+    changes the acceleration would otherwise leave every cached per-part runtime on
+    the old machine model while the job's tool-change term used the new one."""
+    import config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "save_config", lambda data: None)
+    monkeypatch.setattr(app_module, "save_config", lambda data: None)
+    # Needs a real feedrate: a G01 with no modal F is unpriceable, so a fixture
+    # without one reprices from zero to zero and the test proves nothing.
+    fed = _T1_THEN_T2.replace("G01 X10 Y10 Z-0.254", "G01 X10 Y10 Z-0.254 F1000")
+    fed = fed.replace("G01 X20 Y20 Z-0.254", "G01 X20 Y20 Z-0.254 F1000")
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": fed})
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+
+    before = client.get("/api/placements").get_json()["runtime_seconds"]
+    placed = next(iter(app_module._placements.values()))
+    per_part_before = placed.part.runtime_seconds
+
+    r = client.post("/api/config", json={"advanced": {"accel_mm_s2": 20.0}})
+    assert r.status_code == 200
+
+    assert placed.part.runtime_seconds > per_part_before
+    assert client.get("/api/placements").get_json()["runtime_seconds"] > before

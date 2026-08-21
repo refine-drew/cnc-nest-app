@@ -181,15 +181,21 @@ def _check_word_syntax(lines: List[str]) -> List[Finding]:
     """Every block is a sequence of address words and nothing else.
 
     A block outside a comment is `letter` + optional signed number, repeated.
-    Anything the tokeniser cannot consume is something the control cannot read
-    either, so this is an ERROR under every reading — the same standard as
-    `_check_comment_syntax`, and for the same reason: the alarm arrives at
-    whatever line the bad block sits on, which is mid-cut.
+    Anything the tokeniser cannot consume is a word this app cannot defend having
+    written, so it is an ERROR — the same standard as `_check_comment_syntax`.
 
     What it was written for: `Y2727.7000.` — a stranded decimal point left
     behind when a substitution rewrote the number in front of it. Like the
     comment check, this shares no scanner with `gcode_generator`; the generator
     forms the words, and this is what says whether they are readable.
+
+    **The severity does not rest on an observed alarm, and it must not be softened
+    when one fails to appear.** This Syntec reads a doubled decimal point without
+    complaint: `tests/fixtures/t24-test.nc` carries five and ran a full cycle clean
+    on 2026-08-21. What a forgiving parser does with a malformed word is its own
+    business — it may take the value, take part of it, or take the next control's
+    reading of it — and the app has no way to tell which. A generator that emits
+    words only one control will accept is a generator whose output nobody can check.
     """
     out: List[Finding] = []
     for i, raw in enumerate(lines, start=1):

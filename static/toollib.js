@@ -26,6 +26,8 @@ var ToolLib = (() => {
   let sealQueue = [];
   let onSealDone = null;
 
+  const FLUTE_LABEL = { up: "Upcut", down: "Downcut", compression: "Compression", straight: "Straight" };
+
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
     c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -50,26 +52,63 @@ var ToolLib = (() => {
     document.getElementById("toollib-panel").classList.remove("open");
   }
 
+  /**
+   * One field per column, and the columns share tracks across every row — this is a
+   * real table rather than a grid per row on purpose. The old row-level grid re-solved
+   * its `auto` flag track for each row, so a row carrying a chip squeezed its
+   * neighbours and nothing lined up down the page. Numbers are right-aligned and
+   * tabular so `0.3149` and `1.5` compare by eye, and their units live in the header
+   * so the cells stay bare.
+   */
   function render() {
     const list = document.getElementById("toollib-list");
-    list.innerHTML = tools().map(t => {
+    const rows = tools().map(t => {
       const flags = [];
-      if (!t.default_slot) flags.push('<span class="chip home">no pocket</span>');
       if (t.cam_descriptions.length > 2)
         flags.push(`<span class="chip home" title="Three accepted descriptions on one code is worth a look">${t.cam_descriptions.length} names</span>`);
       if (t.in_use_by.length) flags.push(`<span class="chip parts">${t.in_use_by.length} placed</span>`);
-      return `<div class="tl-row${t.code === editing ? " on" : ""}" data-code="${esc(t.code)}">
-        <div class="tl-code">${esc(t.code)}</div>
-        <div class="tl-name">${esc(t.name)}</div>
-        <div class="tl-geo">${esc(t.display)}${t.default_slot ? ` · pocket ${t.default_slot}` : ""}</div>
-        <div class="tl-flags">${flags.join("")}</div>
-      </div>`;
-    }).join("") || '<div class="tl-empty">No tools yet.</div>';
+      return `<tr class="tl-row${t.code === editing ? " on" : ""}" data-code="${esc(t.code)}">
+        <td class="tl-code">${esc(t.code)}</td>
+        <td class="tl-name" title="${esc(t.name)}">${esc(t.name)}</td>
+        <td class="tl-num">${_num(t.diameter_inches)}</td>
+        <td class="tl-num">${_num(t.cutting_length_in)}</td>
+        <td class="tl-geo" title="${esc(t.geometry_class)}">${esc(t.geometry_class)}</td>
+        <td class="tl-geo">${esc(FLUTE_LABEL[t.flute_direction] || t.flute_direction)}</td>
+        <td class="tl-pocket">${t.default_slot
+          ? t.default_slot
+          : '<span class="tl-staged" title="No declared pocket — staged until you drag it into one">staged</span>'}</td>
+        <td class="tl-flags">${flags.join("")}</td>
+      </tr>`;
+    }).join("");
+
+    list.innerHTML = rows ? `<table class="tl-table">
+      <colgroup>
+        <col class="c-code"><col class="c-name"><col class="c-num"><col class="c-num">
+        <col class="c-shape"><col class="c-flute"><col class="c-pocket"><col class="c-flags">
+      </colgroup>
+      <thead><tr>
+        <th>Code</th>
+        <th>Name</th>
+        <th class="tl-num" title="Widest cutting diameter, inches">Dia in</th>
+        <th class="tl-num" title="Cutting length, inches — blank if not recorded">Len in</th>
+        <th>Shape</th>
+        <th>Flutes</th>
+        <th class="tl-pocket">Pocket</th>
+        <th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody></table>` : '<div class="tl-empty">No tools yet.</div>';
 
     list.querySelectorAll(".tl-row").forEach(row =>
       row.addEventListener("click", () => { editing = row.dataset.code; render(); }));
 
     _renderForm();
+  }
+
+  /** A bare number for a numeric column: trailing zeros trimmed, blank shown as an en dash. */
+  function _num(v) {
+    if (v === null || v === undefined || v === "") return '<span class="tl-blank">–</span>';
+    const n = Number(v);
+    return Number.isFinite(n) ? esc(String(+n.toFixed(4))) : esc(String(v));
   }
 
   function _renderForm(prefill) {
@@ -112,7 +151,7 @@ var ToolLib = (() => {
           <select id="tl-flute">
             ${(library.flute_directions || []).map(f =>
               `<option value="${f}"${t && t.flute_direction === f ? " selected" : ""}>${
-                { up: "Upcut", down: "Downcut", compression: "Compression", straight: "Straight" }[f] || f
+                FLUTE_LABEL[f] || f
               }</option>`).join("")}
           </select>
         </div>
@@ -128,11 +167,12 @@ var ToolLib = (() => {
         </div>
       </div>
       <div class="tl-row2">
-        <div class="tl-field"><label>Vendor <small>for reordering; the app never reads it</small></label>
+        <div class="tl-field"><label>Vendor</label>
           <input type="text" id="tl-vendor" value="${esc(t ? t.vendor : "")}"/></div>
         <div class="tl-field"><label>Link</label>
           <input type="text" id="tl-link" value="${esc(t ? t.product_link : "")}"/></div>
       </div>
+      <div class="tl-hint">Both are reorder notes — the app never reads either one.</div>
       ${isNew ? "" : `
       <div class="tl-field">
         <label>Names this code has posted <small>added only when you confirm a rename</small></label>

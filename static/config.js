@@ -22,6 +22,16 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("cfg-rail-b-y").value = rails.B?.slot0_y_mm ?? "";
     document.getElementById("cfg-bed-x").value = cfg.advanced?.bed_x_mm ?? "";
     document.getElementById("cfg-bed-y").value = cfg.advanced?.bed_y_mm ?? "";
+    // The park is a G53 move, so these are raw machine mm like the rail datums —
+    // the fence/work origin does not shift them.
+    document.getElementById("cfg-park-x").value = cfg.advanced?.park_x ?? "";
+    document.getElementById("cfg-park-y").value = cfg.advanced?.park_y ?? "";
+    // `!== false` rather than `?? true`: a config predating this key must read as the
+    // shipped posture (auto tool on), not as off.
+    document.getElementById("cfg-auto-tool").checked = cfg.advanced?.auto_tool_touch_off !== false;
+    document.getElementById("cfg-rapid-ipm").value = cfg.advanced?.rapid_ipm ?? "";
+    document.getElementById("cfg-accel").value     = cfg.advanced?.accel_mm_s2 ?? "";
+    document.getElementById("cfg-jd").value        = cfg.advanced?.junction_deviation_mm ?? "";
     panel.classList.add("open");
   });
 
@@ -70,6 +80,15 @@ document.addEventListener("DOMContentLoaded", () => {
           ? parseFloat(document.getElementById("cfg-safe-z").value) * 25.4 : undefined,
         bed_x_mm: num("cfg-bed-x"),
         bed_y_mm: num("cfg-bed-y"),
+        park_x: num("cfg-park-x"),
+        park_y: num("cfg-park-y"),
+        // A checkbox always has an opinion. `num()` returns undefined for blank so the
+        // key is omitted and the backend leaves it alone — right for a number field,
+        // wrong for a boolean, where `false` is a value the operator chose.
+        auto_tool_touch_off: document.getElementById("cfg-auto-tool").checked,
+        rapid_ipm: num("cfg-rapid-ipm"),
+        accel_mm_s2: num("cfg-accel"),
+        junction_deviation_mm: num("cfg-jd"),
         // Only send rail keys the user actually filled in; the backend merges
         // them over the current values so directions are preserved.
         rails: pruned({
@@ -88,6 +107,15 @@ document.addEventListener("DOMContentLoaded", () => {
       App.setMessage("Settings saved", false);
       // Reload library if path changed
       if (window.LibraryPanel) LibraryPanel.load();
+      // The motion model and the touch-off posture both move every displayed runtime,
+      // and the server has already re-priced the loaded parts. Without this the panel
+      // keeps showing the old estimate until the next drag.
+      if (window.Placement) Placement.refresh();
+    } else {
+      // The park fields are validated server-side; without this the panel closed
+      // silently on a rejected value and the old park stayed in force unseen.
+      const err = await r.json().catch(() => ({}));
+      App.setMessage(err.error || "Settings could not be saved", true);
     }
   });
 });

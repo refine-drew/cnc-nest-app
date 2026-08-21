@@ -74,6 +74,22 @@ def reset_job_state():
         state.clear()
 
 
+@pytest.fixture(autouse=True)
+def restore_config():
+    """`POST /api/config` mutates `app.config` in place and nothing puts it back.
+
+    `reset_job_state` above covers the placement globals; config was never mutated by
+    a test until the motion model became settable, and a leaked `accel_mm_s2` or a
+    leaked posture silently changes every runtime assertion that runs after it. Deep
+    enough to cover `advanced`, which is the nested dict the route updates.
+    """
+    import copy
+    saved = copy.deepcopy(app_module.config)
+    yield
+    app_module.config.clear()
+    app_module.config.update(saved)
+
+
 @pytest.fixture()
 def client():
     app_module.app.config["TESTING"] = True

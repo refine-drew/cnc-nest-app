@@ -31,16 +31,40 @@
     },
     "edge_margin_in": 0.5,
     "locating_pins": [
-      { "label": "A1", "x_in": 3.425, "y_in": 119.1, "diameter_in": 0.75 },
-      { "label": "A2", "x_in": 3.425, "y_in": 54.1, "diameter_in": 0.75 },
-      { "label": "B1", "x_in": 62.275, "y_in": 3.851, "diameter_in": 0.75 },
-      { "label": "B2", "x_in": 62.295, "y_in": 68.851, "diameter_in": 0.75 }
+      {
+        "label": "A1",
+        "x_in": 3.425,
+        "y_in": 119.1,
+        "diameter_in": 0.75
+      },
+      {
+        "label": "A2",
+        "x_in": 3.425,
+        "y_in": 54.1,
+        "diameter_in": 0.75
+      },
+      {
+        "label": "B1",
+        "x_in": 62.275,
+        "y_in": 3.851,
+        "diameter_in": 0.75
+      },
+      {
+        "label": "B2",
+        "x_in": 62.295,
+        "y_in": 68.851,
+        "diameter_in": 0.75
+      }
     ],
     "tool_capacity": 8,
     "end_of_job_pocket": 2,
+    "auto_tool_touch_off": false,
+    "rapid_ipm": 1800,
+    "accel_mm_s2": 189,
+    "junction_deviation_mm": 0.05,
     "safe_z_clearance_mm": 29.971999999999998,
-    "park_x": 0.0,
-    "park_y": 3048.0,
+    "park_x": 830.0,
+    "park_y": 3175.0,
     "fence_offset_x_in": 0.0,
     "fence_offset_y_in": 0.0,
     "slots": [

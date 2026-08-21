@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from math import isfinite
 from itertools import count
 from pathlib import Path
 from string import ascii_lowercase
@@ -25,13 +26,15 @@ from config import (
 )
 from gcode_generator import (
     IdentityMap, block_tool_sequence, generate_master_gcode, park_tool_word,
+    with_runtime_header,
 )
 from gcode_parser import GcodePart, parse_vcarve_text
 from gcode_validator import format_findings, validate_gcode
 from pdf_report import generate_layout_pdf, palette_color as pdf_palette_color
 from pocket_map import STAGED, build_changer_state
 from runtime_estimator import (
-    DEFAULT_TOOL_CHANGE_SECONDS, estimate_lines_runtime, format_duration,
+    MotionLimits, SPINDLE_START_SECONDS, estimate_lines_runtime,
+    estimate_passes_runtime, format_duration, tool_change_seconds_for,
 )
 from tool_library import (
     FLUTE_DIRECTIONS, GEOMETRY_CLASSES, LibraryTool, ToolLibrary, ToolLibraryError,
@@ -97,6 +100,19 @@ def _tool_capacity() -> int:
     return int(config["advanced"].get("tool_capacity", 8))
 
 
+def _motion_limits() -> MotionLimits:
+    """The machine's motion model — rapid rate, acceleration, junction deviation."""
+    return MotionLimits.from_config(config["advanced"])
+
+
+def _tool_change_seconds() -> float:
+    """57 s with auto tool touch-off on, 27 s with it off (the touch-off moves to
+    setup). The operator sets this to match the control; the app does not command it."""
+    return tool_change_seconds_for(
+        bool(config["advanced"].get("auto_tool_touch_off", True))
+    )
+
+
 def _make_instance_id(filename: str) -> str:
     stem = os.path.splitext(filename)[0]
     _instance_counts[stem] = _instance_counts.get(stem, 0) + 1
@@ -105,7 +121,11 @@ def _make_instance_id(filename: str) -> str:
 
 def _parse_file(abs_path: str) -> GcodePart:
     p = Path(abs_path)
-    return parse_vcarve_text(p.read_text(encoding="utf-8", errors="replace"), filename=p.name)
+    return parse_vcarve_text(
+        p.read_text(encoding="utf-8", errors="replace"),
+        filename=p.name,
+        limits=_motion_limits(),
+    )
 
 
 def _part_dict(part: GcodePart, rel_path: str = "") -> dict:
@@ -292,7 +312,7 @@ def _compute_job_stats(state: Optional[dict] = None) -> dict:
     identity = _identity_map(state if state is not None else _changer_state())
     block_tools = block_tool_sequence(list(_placements.values()), identity)
     # The end-of-job change is a real `T# M06` in the file, so it is a real change to
-    # count and a real 27-57 s to charge. `park_tool_word` is the single rule for
+    # count and a real 27–57 s to charge. `park_tool_word` is the single rule for
     # whether it is emitted, so the panel and the file cannot disagree about it.
     tool_changes = len(block_tools) + (
         1 if park_tool_word(config["advanced"], block_tools) else 0
@@ -301,13 +321,26 @@ def _compute_job_stats(state: Optional[dict] = None) -> dict:
     # Per-part runtimes deliberately exclude tool-change time (the generator
     # merges same-tool passes across parts, so a part's own change count means
     # nothing in a merged job). Charge it once per emitted block instead — per
-    # block, not per distinct tool, because the 30 s touch-off inside
-    # DEFAULT_TOOL_CHANGE_SECONDS is paid again every time a tool is called back
-    # (issue #6). The report runs the estimator over the actual merged G-code for
-    # the precise number; this is the live approximation.
+    # block, not per distinct tool, because with auto tool touch-off on the 30 s is
+    # paid again every time a tool is called back (issue #6); `_tool_change_seconds`
+    # is what prices the posture.
+    #
+    # **This is an approximation and the report is the number to quote.** The report
+    # runs the estimator over the actual merged G-code; this sums the parts as if each
+    # ran alone. The two disagree in both directions and acceleration widened the gap:
+    # the sum misses the long inter-part rapids that exist only in the master, but it
+    # also pays a fictional opening rapid *per part* (the estimator starts each walk at
+    # the origin — see `_scan_segments`), and with acceleration that rapid is no longer
+    # cheap. On the 9-part reference nest the sum lands ~20 s above the merged file.
+    # Spindle spin-up is charged the same way and for the same reason: the control
+    # holds ~5 s on every `S` word, the generator emits exactly one per tool block
+    # (`_dedup_spindle`), and a part's own count no more survives a merge than its
+    # change count does. Per **block**, not per change — the end-of-job change loads a
+    # tool and cuts nothing, so it starts no spindle.
     runtime_seconds = (
         sum(p.part.runtime_seconds for p in _placements.values())
-        + tool_changes * DEFAULT_TOOL_CHANGE_SECONDS
+        + tool_changes * _tool_change_seconds()
+        + len(block_tools) * SPINDLE_START_SECONDS
     )
 
     capacity = _tool_capacity()
@@ -493,6 +526,8 @@ def _setup_rows(state: dict) -> list:
 
 
 def _setup_sheet_text(job_name: str, state: dict, safe_z: dict,
+                      auto_tool_touch_off: bool = True,
+                      runtime: Optional[float] = None,
                       park_tool: Optional[str] = None) -> str:
     """The same sheet as plain text, written beside the `.nc`.
 
@@ -544,11 +579,23 @@ def _setup_sheet_text(job_name: str, state: dict, safe_z: dict,
         out.append(f"  Ends holding pocket {pocket}"
                    + (f" ({held})" if held else "")
                    + " in the spindle, ready for the next job.")
+    # Auto tool touch-off is a *control* setting, not something the app commands, and
+    # the runtime below is only true if the machine is on the posture the estimate
+    # assumed. The OFF form is a real instruction — the touch-off does not vanish when
+    # it is off, it moves to setup, and this sheet is where setup is written down.
+    if auto_tool_touch_off:
+        out.append("  Auto tool touch-off: ON at the control. The runtime below assumes it.")
+    else:
+        out.append("  Auto tool touch-off: OFF at the control — "
+                   "touch each tool off as you load it.")
+    if runtime is not None:
+        out.append(f"  Estimated cycle time: {format_duration(runtime)}")
     return "\n".join(out) + "\n"
 
 
 def _build_pdf_model(job_name: str, settings: dict, gcode: str = "",
-                     state: Optional[dict] = None) -> tuple:
+                     state: Optional[dict] = None,
+                     runtime: Optional[dict] = None) -> tuple:
     """Assemble (meta, parts, geom) for pdf_report.generate_layout_pdf.
 
     Parts are emitted in placement order with blanks and toolpaths already in
@@ -599,7 +646,14 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "",
             "color": pdf_palette_color(color_idx[fn]),
         })
 
-    runtime = estimate_lines_runtime(gcode.splitlines()) if gcode else None
+    # Passed in by `api_generate` so the setup sheet and the PDF quote one number;
+    # computed here only for the callers that build a model without generating.
+    if runtime is None and gcode:
+        runtime = estimate_lines_runtime(
+            gcode.splitlines(),
+            limits=_motion_limits(),
+            tool_change_seconds=_tool_change_seconds(),
+        )
     meta = {
         "job_name": job_name,
         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -706,6 +760,30 @@ def api_config_get():
     return jsonify(config)
 
 
+def _reprice_loaded_parts() -> None:
+    """Re-derive every cached per-part runtime under the current motion model.
+
+    `PlacedPart.part` is the *same object* as `_loaded[rel]` (see `api_place`), so one
+    pass over both fixes both. Without this, editing the acceleration leaves every
+    cached `runtime_seconds` computed under the old model while `_compute_job_stats`
+    adds a tool-change term from the new one — a job total built from two different
+    machines. No file is re-read: the passes are already in memory and only the
+    physics changed.
+    """
+    limits = _motion_limits()
+    unique = {}
+    for part in list(_loaded.values()) + [p.part for p in _placements.values()]:
+        unique[id(part)] = part
+    for part in unique.values():
+        part.runtime_seconds = estimate_passes_runtime(
+            part.passes, limits=limits,
+            # Zeroed to match `gcode_parser`, which is the other producer of this
+            # field — a part repriced on different terms than it was parsed on is a
+            # job total built from two machines.
+            tool_change_seconds=0.0, spindle_start_seconds=0.0,
+        )["seconds"]
+
+
 @app.route("/api/config", methods=["POST"])
 def api_config_post():
     global config
@@ -728,6 +806,28 @@ def api_config_post():
         # `rails` is nested, so a shallow update would drop the rail the caller
         # didn't send and silently wipe slot_dir/x_dir. Merge it per rail instead.
         rails_in = adv_in.pop("rails", None)
+        # The park is emitted as a `G53` move in absolute machine coordinates, so a
+        # bad number here drives the gantry rather than mis-cutting a part, and
+        # `gcode_generator`'s `float()` would only raise at Generate — a panel away
+        # from the field that caused it. Check it where it is typed instead.
+        #
+        # Deliberately *not* bounded against `advanced.machine_travel`: that box is
+        # the machinable *surface*, and travel runs outside it on both axes — the
+        # shipped park (X0 Y3048) already sits outboard of `x_min` 61.493, and the
+        # tool changer is past `y_max`. Travel limits are unmeasured, so there is no
+        # bound to check against; don't invent one from the surface extents.
+        for key, label in (("park_x", "Park X"), ("park_y", "Park Y")):
+            if key not in adv_in:
+                continue
+            try:
+                value = float(adv_in[key])
+            except (TypeError, ValueError):
+                value = float("nan")
+            if not isfinite(value):
+                return jsonify({
+                    "error": f"{label} must be a number, in machine millimetres."
+                }), 400
+            adv_in[key] = value
         config["advanced"].update(adv_in)
         if rails_in:
             current = config["advanced"].setdefault("rails", {})
@@ -736,6 +836,7 @@ def api_config_post():
                     continue
                 merged = {**rail_geom(rail, config["advanced"].get("rails")), **values}
                 current[rail] = merged
+        _reprice_loaded_parts()
     save_config(config)
     return jsonify(config)
 
@@ -1284,6 +1385,19 @@ def api_generate():
     except Exception as e:
         return jsonify({"error": f"Generation failed: {e}"}), 500
 
+    # One estimate for the whole job, taken here so the header, the setup sheet and
+    # the PDF cannot disagree about how long the same program takes. It is taken
+    # *before* validation because the line it adds becomes part of the file that gets
+    # validated and written — a file the operator runs should be the file the checker
+    # read, down to the line numbers in its findings.
+    auto_tool = bool(config["advanced"].get("auto_tool_touch_off", True))
+    runtime = estimate_lines_runtime(
+        gcode.splitlines(),
+        limits=_motion_limits(),
+        tool_change_seconds=_tool_change_seconds(),
+    )
+    gcode = with_runtime_header(gcode, runtime)
+
     # Validate before anything reaches the disk. The validator re-derives the
     # file's modal state from the emitted text rather than reusing the
     # generator's, so it can catch the generator being wrong. A file with a hard
@@ -1313,7 +1427,7 @@ def api_generate():
     setup_path = out / f"{job_name}_setup.txt"
     setup_path.write_text(
         _setup_sheet_text(
-            job_name, state, safe_z,
+            job_name, state, safe_z, auto_tool, runtime["seconds"],
             # Same rule the generator emitted from, over the same block sequence, so
             # the sheet cannot claim a tool the program does not leave in the spindle.
             park_tool_word(
@@ -1325,7 +1439,7 @@ def api_generate():
     )
 
     try:
-        meta, parts, geom = _build_pdf_model(job_name, settings, gcode, state)
+        meta, parts, geom = _build_pdf_model(job_name, settings, gcode, state, runtime)
         generate_layout_pdf(pdf_path, meta, parts, geom)
     except Exception as e:
         return jsonify({"error": f"PDF generation failed: {e}"}), 500

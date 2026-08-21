@@ -176,18 +176,38 @@ body.resizing-y{user-select:none;cursor:row-resize}
 /* ── tool library manager (issue #24) ── */
 #toollib-panel{display:none;position:fixed;inset:0;z-index:96;background:rgba(0,0,0,.55);align-items:center;justify-content:center}
 #toollib-panel.open{display:flex}
-.toollib-box{background:#2c2c2e;border:1px solid #444;border-radius:8px;padding:16px;width:92vw;max-width:980px;height:82vh;display:flex;flex-direction:column}
+.toollib-box{background:#2c2c2e;border:1px solid #444;border-radius:8px;padding:16px;width:92vw;max-width:1180px;height:82vh;display:flex;flex-direction:column}
 .toollib-head{display:flex;align-items:center;gap:12px;margin-bottom:10px}
 .toollib-head h3{font-size:14px}
 .toollib-body{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:14px;min-height:0}
-#toollib-list{overflow-y:auto;border:1px solid #333;border-radius:5px}
-.tl-row{display:grid;grid-template-columns:88px minmax(0,1fr) minmax(0,1.1fr) auto;gap:8px;align-items:center;padding:6px 9px;border-bottom:1px solid #2a2a2a;cursor:pointer;font-size:12px}
+#toollib-list{overflow:auto;border:1px solid #333;border-radius:5px}
+/* One table, so every column solves once for the whole list. Fixed layout with the
+   short columns sized explicitly: Name and Shape take what is left and ellipsize. */
+.tl-table{width:100%;min-width:760px;border-collapse:collapse;table-layout:fixed;font-size:12px}
+.tl-table th,.tl-table td{padding:6px 9px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tl-table thead th{position:sticky;top:0;z-index:1;background:#26262a;border-bottom:1px solid #3a3a3a;
+  font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#8a8a8f}
+.tl-table col.c-code{width:92px}
+.tl-table col.c-num{width:62px}
+.tl-table col.c-shape{width:118px}
+.tl-table col.c-flute{width:84px}
+.tl-table col.c-pocket{width:64px}
+.tl-table col.c-flags{width:128px}
+.tl-row{border-bottom:1px solid #2a2a2a;cursor:pointer}
 .tl-row:hover{background:#333}
 .tl-row.on{background:#1f3348}
 .tl-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--accent)}
-.tl-name{color:#ddd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tl-geo{color:#888;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tl-flags{display:flex;gap:3px}
+.tl-name{color:#ddd}
+.tl-geo{color:#888;font-size:11px}
+/* Specificity has to beat `.tl-table td` above, hence the element in each selector. */
+.tl-table th.tl-num,.tl-table td.tl-num,
+.tl-table th.tl-pocket,.tl-table td.tl-pocket,
+.tl-table th.tl-flags,.tl-table td.tl-flags{text-align:right}
+.tl-table td.tl-num,.tl-table td.tl-pocket{font-variant-numeric:tabular-nums;color:#c8c8cc;font-size:11.5px}
+.tl-staged{color:var(--warn);font-size:10.5px}
+.tl-blank{color:#5a5a5e}
+.tl-flags{white-space:nowrap}
+.tl-flags .chip+.chip{margin-left:4px}
 .tl-empty{padding:20px;text-align:center;color:#666}
 #toollib-form{overflow-y:auto;border:1px solid #333;border-radius:5px;padding:12px;display:flex;flex-direction:column;gap:9px}
 .tl-form-head{font-size:13px;font-weight:600;color:#ddd;margin-bottom:2px}
@@ -195,9 +215,11 @@ body.resizing-y{user-select:none;cursor:row-resize}
 .tl-field label{font-size:11px;color:#aaa}
 .tl-field label small{display:block;color:#777;font-size:10px;font-weight:400;line-height:1.35;margin-top:1px}
 .tl-field input,.tl-field select{background:#242426;border:1px solid #444;color:#e0e0e0;border-radius:4px;padding:4px 7px;font:inherit;font-size:12px;width:100%}
-.tl-row2{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.tl-row2{display:grid;grid-template-columns:1fr 1fr;gap:9px;align-items:end}
+.tl-row2 .tl-field{justify-content:flex-end;height:100%}
 .tl-descs{display:flex;flex-direction:column;gap:2px}
 .tl-descs code{font-size:11px;color:#cfd6dd;background:#242426;border-radius:3px;padding:1px 4px}
+.tl-hint{font-size:10px;color:#777;line-height:1.35;margin-top:-4px}
 .tl-inuse{font-size:11px;color:#888;border-top:1px solid #333;padding-top:7px}
 .tl-actions{display:flex;gap:8px;margin-top:6px}
 .tl-error{color:var(--bad);font-size:11.5px;min-height:14px}
@@ -228,6 +250,8 @@ body.resizing-y{user-select:none;cursor:row-resize}
 .settings-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #333;font-size:12px}
 .settings-row label{color:#aaa}
 .settings-row input{width:120px;text-align:right}
+/* First checkbox in the app; without this it inherits the 120px number width. */
+.settings-row input[type=checkbox]{width:auto;margin:0}
 .settings-row textarea{width:220px;font:inherit;font-size:11px;resize:vertical;white-space:pre;overflow-x:auto}
 .settings-row label small{color:#777;font-size:10px}
 .settings-sub{margin:14px 0 2px;color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
@@ -441,6 +465,13 @@ table.audit td.feed-varies{color:#ffd60a}
     <div class="settings-row"><label>B rail X<br/><small>rail corner</small></label><input type="text" id="cfg-rail-b-x"/></div>
     <div class="settings-row"><label>B slot 0 Y<br/><small>slot edge</small></label><input type="text" id="cfg-rail-b-y"/></div>
     <div class="settings-row"><label>Bed X / Y (mm)</label><span><input type="text" id="cfg-bed-x" style="width:56px"/> <input type="text" id="cfg-bed-y" style="width:56px"/></span></div>
+    <div class="settings-row"><label>Park X / Y (mm)<br/><small>where the head goes at the end of a job</small></label><span><input type="text" id="cfg-park-x" style="width:56px"/> <input type="text" id="cfg-park-y" style="width:56px"/></span></div>
+
+    <div class="settings-sub">Machine motion (runtime estimate)</div>
+    <div class="settings-row"><label>Auto tool touch-off<br/><small>the control measures at every tool call</small></label><input type="checkbox" id="cfg-auto-tool"/></div>
+    <div class="settings-row"><label>Rapid rate (in/min)</label><input type="text" id="cfg-rapid-ipm"/></div>
+    <div class="settings-row"><label>Acceleration (mm/s²)<br/><small>effective — fitted to timed jobs, not a machine parameter</small></label><input type="text" id="cfg-accel"/></div>
+    <div class="settings-row"><label>Junction deviation (mm)<br/><small>how much speed survives a corner</small></label><input type="text" id="cfg-jd"/></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
       <button id="cfg-cancel">Cancel</button>
       <button id="cfg-save" class="primary">Save</button>
