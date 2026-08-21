@@ -65,8 +65,6 @@
     "safe_z_clearance_mm": 29.971999999999998,
     "park_x": 830.0,
     "park_y": 3175.0,
-    "fence_offset_x_in": 0.0,
-    "fence_offset_y_in": 0.0,
     "slots": [
       0,
       13,

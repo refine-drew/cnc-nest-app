@@ -76,7 +76,6 @@ _IDENTITY = IdentityMap()
 # purpose.
 _NUM = r"[+-]?(?:\d+\.?\d*|\.\d+)"
 
-_IJ = re.compile(rf"([IJ])({_NUM})")
 _N_CODE = re.compile(r"^N\d+\s*")
 _TOOL_CMT = re.compile(r"\(\s*Tool:\s*(.+?)\)", re.IGNORECASE)
 _SPINDLE = re.compile(r"\bM03\b.*\bS(\d+)\b", re.IGNORECASE)
@@ -172,13 +171,6 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict,
     adv = settings["advanced"]
     rails = adv.get("rails")
     tool_capacity = int(adv.get("tool_capacity", 8))
-    # Fence-origin offset: the machine's fence 00 differs from its working-area 00.
-    # Shift every cut coordinate by this constant so cuts land in the right physical
-    # place. x_off_mm → machine X (across bed); y_off_mm → machine Y (along rail).
-    # NOT applied to the park move below: that is a G53 in absolute machine
-    # coordinates, which the work/fence origin does not affect.
-    x_off_mm = float(adv.get("fence_offset_x_in", 0.0)) * 25.4
-    y_off_mm = float(adv.get("fence_offset_y_in", 0.0)) * 25.4
     park_x = float(adv.get("park_x", 0.0))
     park_y = float(adv.get("park_y", 3048.0))
     job_name = settings.get("job_name", "master_job")
@@ -252,7 +244,7 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict,
     ]
 
     # ── tool blocks ───────────────────────────────────────────────────────────
-    blocks = _build_blocks(placements, rails, x_off_mm, y_off_mm, identity)
+    blocks = _build_blocks(placements, rails, identity)
 
     for block_num, block in enumerate(blocks, start=1):
         tool = block["tool"]
@@ -493,7 +485,6 @@ def block_tool_sequence(placements: List[PlacedPart],
 
 
 def _build_blocks(placements: List[PlacedPart], rails: Optional[dict] = None,
-                  x_off_mm: float = 0.0, y_off_mm: float = 0.0,
                   identity: Optional[IdentityMap] = None) -> list:
     """
     Produce an ordered list of tool blocks from all placements.
@@ -519,7 +510,7 @@ def _build_blocks(placements: List[PlacedPart], rails: Optional[dict] = None,
             if spd:
                 spindle_speed = spd
             body = _extract_body(raw_lines)
-            params = _transform_params(placed, rails, x_off_mm, y_off_mm)
+            params = _transform_params(placed, rails)
             seg = _transform_body(body, params)
             # The pass's first operation is named on the line above the tool
             # change, which puts it outside the body; later operations carry
@@ -616,8 +607,7 @@ def _extract_body(lines: List[str]) -> List[str]:
 
 # ── coordinate transformation ─────────────────────────────────────────────────
 
-def _transform_params(placed: PlacedPart, rails: Optional[dict] = None,
-                      x_off_mm: float = 0.0, y_off_mm: float = 0.0) -> dict:
+def _transform_params(placed: PlacedPart, rails: Optional[dict] = None) -> dict:
     """
     Pre-compute per-placement transform constants.
 
@@ -640,17 +630,18 @@ def _transform_params(placed: PlacedPart, rails: Optional[dict] = None,
     (slot_mark, machine Y) is emitted in the output Y word and the 'y' constant
     (rail, machine X) in the output X word.
 
-    x_off_mm / y_off_mm are the fence-origin offsets in machine X / machine Y.
-    y_off_mm therefore folds into the slot_mark constant ('x') and x_off_mm into
-    the rail constant ('y'), which lands each one in the matching output word.
-    _transform_line computes `const ± vcarve`, so adding to the constant shifts
-    that axis by a fixed amount on BOTH rails regardless of the mirror flag.
+    There is deliberately no fence-origin offset here. One existed until
+    2026-08-21 and was applied at this point only: `collision.check_envelope`,
+    `check_pins` and the canvas preview all worked from the unshifted position, so
+    a nonzero value moved the cut without moving the hard-stop check, the pin
+    check or the picture. Don't reintroduce it without threading it through all
+    four — see CLAUDE.md.
     """
     g = rail_geom(placed.rail, rails)
     slot_mark = slot_mark_y(placed.rail, placed.slot_inches, rails)
     return {
-        "b_x": float(g["slot_dir"]) < 0, "x": slot_mark + y_off_mm,
-        "b_y": float(g["x_dir"]) < 0,    "y": float(g["x_mm"]) + x_off_mm,
+        "b_x": float(g["slot_dir"]) < 0, "x": slot_mark,
+        "b_y": float(g["x_dir"]) < 0,    "y": float(g["x_mm"]),
     }
 
 
