@@ -53,7 +53,21 @@ _IDENTITY = IdentityMap()
 
 # ── compiled patterns ─────────────────────────────────────────────────────────
 
-_IJ = re.compile(r"([IJ])([+-]?\d*\.?\d+)")
+# A G-code number, **including a trailing decimal point**. Fusion writes whole
+# numbers that way — `X307.`, `Z24.`, `F7620.` — and the obvious
+# `[+-]?\d*\.?\d+` cannot match one: it must end on a digit, so it takes `307`
+# and leaves the `.` behind. For a pattern that only *reads* a value that costs
+# nothing (`float("307") == float("307.")`), but every substitution below
+# **rewrites** what it matched, and the stranded `.` lands after the new value:
+# `X307.` on A slot 0 emitted `Y2727.7000.`, two decimal points in one word,
+# which the control alarms on. Four of the six Fusion files in the library carry
+# such a word inside a pass body, so this is the normal case, not an edge one.
+# `_NUM` is the one shape they all use. The parsers keep their own patterns —
+# they only read, and `gcode_validator` shares no scanner with this module on
+# purpose.
+_NUM = r"[+-]?(?:\d+\.?\d*|\.\d+)"
+
+_IJ = re.compile(rf"([IJ])({_NUM})")
 _N_CODE = re.compile(r"^N\d+\s*")
 _TOOL_CMT = re.compile(r"\(\s*Tool:\s*(.+?)\)", re.IGNORECASE)
 _SPINDLE = re.compile(r"\bM03\b.*\bS(\d+)\b", re.IGNORECASE)
@@ -61,7 +75,7 @@ _S_WORD = re.compile(r"\bS(\d+(?:\.\d+)?)\b", re.IGNORECASE)
 _MOTION_WORD = re.compile(r"[XYZIJKR]", re.IGNORECASE)
 _PLANE = re.compile(r"\bG1([789])\b", re.IGNORECASE)
 _G43_LINE = re.compile(r"\bG43\b", re.IGNORECASE)
-_Z_RETRACT = re.compile(r"^G0?0\s+Z[+-]?\d*\.?\d+\s*$", re.IGNORECASE)
+_Z_RETRACT = re.compile(rf"^G0?0\s+Z{_NUM}\s*$", re.IGNORECASE)
 
 
 # ── comments ──────────────────────────────────────────────────────────────────
@@ -659,20 +673,20 @@ def _transform_line(line: str, p: dict, plane: str = "G17") -> str:
     # Arc offsets: file I (VCarve-X direction) → machine-Y → output J (negate if x_mirror)
     #              file J (VCarve-Y direction) → machine-X → output I (negate if y_mirror)
     # Use placeholders to avoid cross-contamination between the two substitutions.
-    result = re.sub(r"I([+-]?\d*\.?\d+)",
+    result = re.sub(rf"I({_NUM})",
                     lambda m: f"__J__{-float(m.group(1)):.4f}" if x_mirror
                     else f"__J__{float(m.group(1)):.4f}", result)
-    result = re.sub(r"J([+-]?\d*\.?\d+)",
+    result = re.sub(rf"J({_NUM})",
                     lambda m: f"__I__{-float(m.group(1)):.4f}" if y_mirror
                     else f"__I__{float(m.group(1)):.4f}", result)
     result = result.replace("__J__", "J").replace("__I__", "I")
 
     # Coordinates: file X (VCarve X) → machine Y → output Y word
     #              file Y (VCarve Y) → machine X → output X word
-    result = re.sub(r"X([+-]?\d*\.?\d+)",
+    result = re.sub(rf"X({_NUM})",
                     lambda m: f"__Y__{p['x'] - float(m.group(1)):.4f}" if x_mirror
                     else f"__Y__{float(m.group(1)) + p['x']:.4f}", result)
-    result = re.sub(r"Y([+-]?\d*\.?\d+)",
+    result = re.sub(rf"Y({_NUM})",
                     lambda m: f"__X__{p['y'] - float(m.group(1)):.4f}" if y_mirror
                     else f"__X__{float(m.group(1)) + p['y']:.4f}", result)
     result = result.replace("__Y__", "Y").replace("__X__", "X")
@@ -689,7 +703,7 @@ def _first_xy(lines: List[str]) -> Tuple[float, float]:
         # otherwise read as an X word and anchor the sort at the wrong point.
         if line.lstrip().startswith("("):
             continue
-        for axis, val in re.findall(r"([XY])([+-]?\d*\.?\d+)", line):
+        for axis, val in re.findall(rf"([XY])({_NUM})", line):
             if axis == "X" and x is None:
                 x = float(val)
             elif axis == "Y" and y is None:

@@ -281,6 +281,34 @@ def test_transform_b_rail_negates_ij():
     assert "I5.0000" in result    # file J-5, y_mirror → output I=5
 
 
+def test_transform_consumes_a_trailing_decimal_point():
+    # Fusion writes a whole number as `X307.`. A number pattern that must end on
+    # a digit takes `307` and strands the `.`, which then lands after the new
+    # value: `Y2727.7000.`, two decimal points in one word, and the control
+    # alarms on the block. Real case: 18G.nc line 136 on A slot 0, 2026-08-21.
+    params = {"b_x": True, "x": LINE_Y_CONST, "b_y": False, "y": LINE_X_CONST}
+    result = _transform_line("X307. Y448.716", params)
+    assert result == "Y1750.4000 X531.2660"
+    assert ".." not in result and not re.search(r"\d\.\d*\.", result)
+
+
+def test_transform_consumes_a_trailing_decimal_point_on_arc_offsets():
+    # Same failure one word over: `J-41.` would emit `I41.0000.`.
+    params = {"b_x": False, "x": LINE_Y_CONST, "b_y": True, "y": LINE_FAR_X}
+    result = _transform_line("G02 X305. Y35.329 I2. J-41.", params)
+    assert not re.search(r"\d\.\d*\.", result)
+    assert "J2.0000" in result
+    assert "I41.0000" in result
+
+
+def test_transform_keeps_a_leading_decimal_point():
+    # `.5` is legal and must not lose its leading point either.
+    params = {"b_x": False, "x": 0.0, "b_y": False, "y": 0.0}
+    result = _transform_line("G01 X.5 Y.25", params)
+    assert "Y0.5000" in result
+    assert "X0.2500" in result
+
+
 def test_transform_comment_unchanged():
     params = {"b_x": False, "x": LINE_X_CONST, "b_y": False, "y": 2000.0}
     line = "(Tool: End Mill {0.5 inches})"

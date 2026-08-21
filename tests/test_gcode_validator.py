@@ -94,6 +94,31 @@ def test_two_comments_on_one_line_are_fine():
     assert "comment-syntax" not in checks(CLEAN.replace("(TEST)", "(A) (B)"))
 
 
+def test_a_stranded_decimal_point_is_an_error():
+    # `Y2727.7000.` — the 2026-08-21 output. A substitution rewrote the number
+    # in front of a trailing decimal point the pattern never matched, leaving
+    # two points in one word. The control alarms on the block, mid-cut.
+    assert "word-syntax" in checks(
+        CLEAN.replace("Y100.0000 F2540.", "Y100.0000. F2540."), ERROR)
+
+
+def test_a_trailing_decimal_point_is_legal_on_its_own():
+    # `Z24.` and `F1270.` are how Fusion writes whole numbers; CLEAN already
+    # carries `F1270.` and `I0.`. Flagging those would fire on every job.
+    assert "word-syntax" not in checks(CLEAN)
+    assert "word-syntax" not in checks(
+        CLEAN.replace("G01 Z-1.0000 F1270.", "G01 Z-1. F1270."))
+    assert "word-syntax" not in checks(
+        CLEAN.replace("X100.0000 Y100.0000", "X.5 Y-.25"))
+
+
+def test_a_broken_comment_is_reported_once_as_a_comment():
+    # Stripping comments from `(TEST` leaves `(TEST` as code, which the word
+    # tokeniser also cannot read. One defect, one report — the comment check
+    # names the actual problem, so word-syntax stays quiet.
+    assert "word-syntax" not in checks(CLEAN.replace("(TEST)", "(TEST"))
+
+
 def test_lone_tape_mark_is_an_error():
     assert "tape-marks" in checks(CLEAN[1:], ERROR)      # trailing % only
     assert "tape-marks" in checks(CLEAN[:-2], ERROR)     # leading % only

@@ -194,6 +194,33 @@ out of a source file are the one thing `comment()` never composes, so `_transfor
 passes them through byte-for-byte unless `comment_is_wellformed` says the control
 cannot read them, and re-wraps only then; `(A) (B)` is two comments and is fine.
 
+**A G-code number can end in a decimal point, and `gcode_generator._NUM` is the one
+pattern that knows it** (2026-08-21). Fusion writes whole numbers as `X307.` / `Z24.` /
+`F7620.`, and the obvious `[+-]?\d*\.?\d+` **cannot match one** — it has to end on a
+digit, so it takes `307` and leaves the `.` where it sits. For a pattern that only reads
+a value that is free (`float("307") == float("307.")`), which is why the parsers, the
+validator's read patterns and the estimator were never affected and keep their own
+patterns. The generator is the only module that **rewrites** what it matched, and there
+the stranded point lands after the new value: `18G.nc`'s `X307.` on A slot 0 emitted
+`Y2727.7000.`, two decimal points in one word, and the control alarms on the block
+mid-cut. Four of the six Fusion files in the library carry such a word inside a pass
+body (`18G`/`18GH` line 136, two arcs in `24GH`), so this was the ordinary case rather
+than an edge one — and it is invisible in review, one character in a 400-line file of
+coordinates. `_NUM` is `[+-]?(?:\d+\.?\d*|\.\d+)`, which also keeps a leading point
+(`X.5`); every `X`/`Y`/`I`/`J` substitution and `_Z_RETRACT` share it. The trailing-dot
+lines Fusion writes as `G28 G91 X0. Y0.` never reached the transform — they sit in the
+footer, outside every pass body — which is why the bug surfaced only on the one part
+whose *toolpath* landed on a whole millimetre.
+
+**`gcode_validator._check_word_syntax` is the gate that should have caught it**, and it
+is the independent half of that rule the same way `_check_comment_syntax` is for
+`comment()` — the generator forms the words, and this says whether they are readable. A
+block outside a comment is `letter` + optional signed number, repeated; anything the
+tokeniser cannot consume is something the control cannot read, so it is an **ERROR**
+under every reading and the file is never written. It stays quiet on a block whose
+stripped form still holds a paren: that is a broken comment, and the comment check names
+the real problem rather than reporting the same defect twice.
+
 **Every job ends by loading pocket 2, and that `T#` is a pocket rather than an
 identity** (2026-08-20). The shop starts almost every job with the ½" end mill and keeps
 it in pocket 2, so the job that just finished is the cheap place to load it — the bed is

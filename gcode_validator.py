@@ -69,6 +69,12 @@ _F_WORD = re.compile(r"\bF\s*([+-]?\d*\.?\d+)", re.IGNORECASE)
 _T_WORD = re.compile(r"\bT(\d+)\b", re.IGNORECASE)
 _H_WORD = re.compile(r"\bH(\d+)\b", re.IGNORECASE)
 
+# One address word, or a tape/block-delete mark, or run of whitespace. A number
+# may carry a trailing decimal point (`Z24.`) or lead with one (`X.5`) — both are
+# legal and Fusion writes the first. What it must not do is carry two, which is
+# what `_check_word_syntax` exists to catch.
+_BLOCK_TOKEN = re.compile(r"[A-Za-z][+-]?(?:\d+\.?\d*|\.\d+)?|[%/]|\s+")
+
 # Offset words each plane accepts. An offset outside its plane either alarms or
 # produces a degenerate arc — both failure modes appeared in the 2026-08-14 file.
 PLANE_OFFSETS = {17: ("I", "J"), 18: ("I", "K"), 19: ("J", "K")}
@@ -101,6 +107,7 @@ def validate_gcode(text: str, advanced: Optional[dict] = None) -> List[Finding]:
     lines = text.splitlines()
 
     findings += _check_comment_syntax(lines)
+    findings += _check_word_syntax(lines)
     findings += _check_tape_marks(lines)
     findings += _walk(lines, advanced or {})
     findings.sort(key=lambda f: (f.line_no, f.check))
@@ -166,6 +173,42 @@ def _check_comment_syntax(lines: List[str]) -> List[Finding]:
             out.append(Finding(
                 ERROR, "comment-syntax", n, raw.strip(),
                 f"Malformed comment: {problem}.",
+            ))
+    return out
+
+
+def _check_word_syntax(lines: List[str]) -> List[Finding]:
+    """Every block is a sequence of address words and nothing else.
+
+    A block outside a comment is `letter` + optional signed number, repeated.
+    Anything the tokeniser cannot consume is something the control cannot read
+    either, so this is an ERROR under every reading — the same standard as
+    `_check_comment_syntax`, and for the same reason: the alarm arrives at
+    whatever line the bad block sits on, which is mid-cut.
+
+    What it was written for: `Y2727.7000.` — a stranded decimal point left
+    behind when a substitution rewrote the number in front of it. Like the
+    comment check, this shares no scanner with `gcode_generator`; the generator
+    forms the words, and this is what says whether they are readable.
+    """
+    out: List[Finding] = []
+    for i, raw in enumerate(lines, start=1):
+        code = _strip(raw)
+        if not code.strip():
+            continue
+        if "(" in code or ")" in code:
+            continue  # a broken comment; _check_comment_syntax owns that report
+        pos = 0
+        while pos < len(code):
+            m = _BLOCK_TOKEN.match(code, pos)
+            if not m:
+                break
+            pos = m.end()
+        if pos < len(code):
+            out.append(Finding(
+                ERROR, "word-syntax", i, raw.strip(),
+                f"Unreadable block: {code[pos:].strip()!r} is not an address "
+                f"word. The control alarms on the block.",
             ))
     return out
 
