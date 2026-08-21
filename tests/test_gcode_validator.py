@@ -88,6 +88,32 @@ def test_unclosed_comment_is_an_error():
     assert "comment-syntax" in checks(CLEAN.replace("(TEST)", "(TEST"), ERROR)
 
 
+def test_a_non_printable_inside_a_comment_is_an_error():
+    """The other half of `gcode_generator.comment`'s contract.
+
+    `comment()` turns anything outside printable ASCII into a space; until this
+    check existed, only the generator's own `comment_is_wellformed` verified that
+    — the generator vouching for its own output. The `.nc` is UTF-8, so an em dash
+    reaches the Syntec as three bytes it cannot map.
+    """
+    assert "comment-syntax" in checks(CLEAN.replace("(TEST)", "(A \u2014 B)"), ERROR)
+
+
+def test_a_tab_inside_a_comment_is_an_error():
+    """`comment()` substitutes it, so emitting one means something bypassed it."""
+    assert "comment-syntax" in checks(CLEAN.replace("(TEST)", "(A\tB)"), ERROR)
+
+
+def test_a_non_printable_outside_a_comment_is_left_to_the_word_check():
+    """One defect, one finding — the same division as a broken comment."""
+    fired = checks(CLEAN.replace("N20 G54", "N20 G54 \u2014"), ERROR)
+    assert "word-syntax" in fired and "comment-syntax" not in fired
+
+
+def test_an_ordinary_comment_is_not_flagged():
+    assert "comment-syntax" not in checks(CLEAN.replace("(TEST)", '(SAFE Z 2.250 IN)'))
+
+
 def test_two_comments_on_one_line_are_fine():
     # Balanced and sequential, not nested — the control reads two comments and no
     # code. Flagging this would fire on ordinary posted output.
@@ -311,24 +337,22 @@ def test_machine_frame_moves_are_exempt_from_the_envelope():
 # Every defect below was found by hand, reading these three files line by line
 # on 2026-08-15. The validator has to find each one on its own.
 
-REVIEWED = pathlib.Path.home() / "Downloads"
+# They live in `tests/fixtures/` rather than `~/Downloads`, where they sat until
+# 2026-08-21: a file the suite asserts against cannot be untracked, and that
+# folder is also the app's own `output_path`, so the corpus was one tidy-up away
+# from taking eleven tests with it — silently, because the guard was a skip.
+REVIEWED = pathlib.Path(__file__).parent / "fixtures"
 FILES = {
     "2026-08-14": REVIEWED / "nest_20260814_090009.nc",
     "103400": REVIEWED / "nest_20260815_103400.nc",
     "105420": REVIEWED / "nest_20260815_105420.nc",
 }
 
-missing = pytest.mark.skipif(
-    not all(p.exists() for p in FILES.values()),
-    reason="reviewed output files not present in ~/Downloads",
-)
-
 
 def _checks(key):
     return checks(FILES[key].read_text(errors="replace"))
 
 
-@missing
 def test_reviewed_file_g19_plane_bug_is_caught():
     # N186510: "G19 G03 X1539.8750 Z0. I-1.2700" — an I offset in a YZ plane,
     # next to a swapped X word. This is the block that alarmed the control.
@@ -337,28 +361,24 @@ def test_reviewed_file_g19_plane_bug_is_caught():
     assert "arc-radius" in found
 
 
-@missing
 @pytest.mark.parametrize("key", list(FILES))
 def test_reviewed_files_all_have_the_g49_park_move(key):
     # N186630 / N41160 / N186630 — "G00 Z<safeZ>" in G54 with G49 active.
     assert "g49-z-move" in _checks(key)
 
 
-@missing
 def test_reviewed_file_tool_change_inherits_g01():
     # N40980 and N41010 in the two-tool job: neither the G53 retract nor the
     # next G43 approach asserts G00.
     assert "modal-hygiene" in _checks("103400")
 
 
-@missing
 @pytest.mark.parametrize("key", list(FILES))
 def test_every_reviewed_file_would_have_been_blocked(key):
     fs = validate_gcode(FILES[key].read_text(errors="replace"), ADVANCED)
     assert has_errors(fs), f"{key} produced no hard finding"
 
 
-@missing
 @pytest.mark.parametrize("key", list(FILES))
 def test_reviewed_files_clear_the_measured_envelope(key):
     # The 2026-08-15 review flagged 3044.023 and 3041.365 as crowding the end of
@@ -379,3 +399,63 @@ def test_format_findings_reports_counts():
 
 def test_format_findings_on_a_clean_file():
     assert format_findings([]) == "G-code validation: no findings."
+
+
+# ── the timed fixtures, as a regression corpus ───────────────────────────────
+#
+# `t24-test.nc` and `18g-test.nc` are kept for the runtime fit, but they are also
+# the *pre-fix output of two bugs this app shipped* — the last two the generator
+# had. They ran on the machine in that state, so they are the real thing rather
+# than a constructed case, and pinning them here is what stops either bug coming
+# back by a route a hand-written snippet would miss.
+#
+#   ebc7629  a trailing decimal point stranded after a rewritten coordinate.
+#            Fusion writes whole numbers as `X307.`; the old `_NUM` could not
+#            match the dot, so it substituted the value and left the point
+#            behind — `Y2727.7000.`, two decimal points in one word.
+#   ac7b391  a paren inside a comment ends it early. `(Job: (9) 18G Test)` ends
+#            after `(9`, and the rest of the block is read as code.
+#
+# The counts are exact on purpose. A weaker `>= 1` would still pass if a fix
+# regressed on eight of nine occurrences.
+
+FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+
+
+def _findings(name, check):
+    fs = validate_gcode((FIXTURES / name).read_text(), ADVANCED)
+    return [f for f in fs if f.check == check]
+
+
+def test_t24_fixture_still_carries_its_five_malformed_words():
+    """Five doubled decimal points, e.g. `X134.6280.` and `Y1899.1000.`."""
+    found = _findings("t24-test.nc", "word-syntax")
+    assert len(found) == 5
+    assert all(f.severity == ERROR for f in found)
+
+
+def test_18g_fixture_still_carries_its_nine_malformed_words():
+    """One per instance: nine copies of `18G.nc`, each with one `Y…000.`."""
+    found = _findings("18g-test.nc", "word-syntax")
+    assert len(found) == 9
+    assert all(f.severity == ERROR for f in found)
+
+
+def test_18g_fixture_carries_both_broken_header_comments():
+    """The job name and the safe-Z driver, which is the one that mattered.
+
+    The operator typed the parens in `(9) 18G Test`, but `_compute_job_safe_z`
+    writes `18G.nc (retract)` itself — so every master the app produced after #22
+    carried a broken header no matter what the job was called.
+    """
+    found = _findings("18g-test.nc", "comment-syntax")
+    assert len(found) == 2
+    assert all(f.severity == ERROR for f in found)
+    lines = " ".join(f.line for f in found)
+    assert "18G Test" in lines and "retract" in lines
+
+
+@pytest.mark.parametrize("name", ["t24-test.nc", "18g-test.nc"])
+def test_neither_fixture_would_be_written_today(name):
+    """Both are ERROR-bearing, so `/api/generate` would refuse to write them."""
+    assert has_errors(validate_gcode((FIXTURES / name).read_text(), ADVANCED))

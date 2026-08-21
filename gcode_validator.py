@@ -143,6 +143,15 @@ def _check_comment_syntax(lines: List[str]) -> List[Finding]:
     ERROR, not WARNING: the block is unreadable under every interpretation, and
     what the control does with the remainder is undefined.
 
+    **Both of `comment()`'s rules are checked here, not just the paren one.** The
+    second is that anything outside printable ASCII becomes a space: the `.nc` is
+    written as UTF-8, so one em dash reaches the Syntec as three bytes it has no
+    code page for, and a stray newline would split a comment across two blocks.
+    Outside a comment such a byte is caught by `_check_word_syntax` (the tokeniser
+    cannot consume it); inside one, nothing looked at it until 2026-08-21, which
+    left half of the seal resting on the generator's own `comment_is_wellformed`
+    — the generator vouching for itself.
+
     This reads the emitted characters and shares no scanner with
     `gcode_generator.comment`, which is the point — the generator sanitises every
     string it interpolates, and this is what says whether it did. The one thing
@@ -155,6 +164,11 @@ def _check_comment_syntax(lines: List[str]) -> List[Finding]:
         depth = 0
         problem = None
         for ch in raw:
+            if depth and not (" " <= ch <= "~"):
+                problem = (f"the non-printable character {ch!r} inside a comment — "
+                           "the file is UTF-8 and the control has no code page for "
+                           "it")
+                break
             if ch == "(":
                 if depth:
                     problem = ("a '(' inside a comment that is already open — the "
