@@ -100,6 +100,27 @@ var BedCanvas = (() => {
     return key == null ? "unknown" : (key / 64).toFixed(2) + '"';
   }
 
+  /**
+   * The board the operator has to load: along-rail x across-bed x thick, in inches.
+   *
+   * This is the number that decides whether the right stock is on the rail, so it is
+   * lettered on the blank rather than left to the tray — at the machine, the canvas is
+   * what is being looked at. Dimension order matches the library tree and the tray on
+   * purpose: one board quoted two ways is a board someone loads the wrong way round.
+   *
+   * Length and width are one decimal, which is the resolution a tape gives. Thickness
+   * keeps `stockLabel`'s 64th-binned nominal instead, because one decimal turns 3/4
+   * stock into 0.8" and reading the thickness right is the whole point of issue #28.
+   */
+  function sizeLabel(p) {
+    const inches = mm => (mm / 25.4).toFixed(1);
+    if (!p.vcarve_x_span || !p.vcarve_y_span) return "no stock size in file";
+    const thick = p.material_thickness == null
+      ? "?"
+      : stockLabel(stockKey(p.material_thickness)).replace(/"$/, "");
+    return `${inches(p.vcarve_x_span)} × ${inches(p.vcarve_y_span)} × ${thick}"`;
+  }
+
   /** Distinct stock present in this job, thinnest first — the legend's order. */
   function stockBands() {
     const counts = new Map();
@@ -502,11 +523,10 @@ var BedCanvas = (() => {
       const label = p.filename.replace(/\.[^.]+$/, "") + " · " + p.slot;
       ctx.fillText(label, tl.x + 3, tl.y + fontSize + 2);
 
-      // Stock size lettered on the blank. The mode is for the glance test; this is
-      // what makes it verifiable, and it works for a colour-blind operator too.
-      const stock = unknownStock
-        ? "no stock size in file"
-        : stockLabel(stockKey(p.material_thickness)) + " stock";
+      // Stock size lettered on the blank — the material the operator has to load.
+      // It doubles as what makes the thickness mode verifiable rather than a colour
+      // to be trusted, which also serves a colour-blind operator.
+      const stock = sizeLabel(p);
       ctx.font = `${Math.max(8, fontSize - 1)}px system-ui`;
       ctx.fillStyle = unknownStock ? UNKNOWN_STOCK : color;
       ctx.fillText(stock, tl.x + 3, tl.y + fontSize * 2 + 4);
