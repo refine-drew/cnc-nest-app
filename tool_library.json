@@ -30,13 +30,44 @@
       "product_link": ""
     },
     {
+      "code": "BN-0750",
+      "name": "3/4 Ball Nose",
+      "diameter_inches": 0.75,
+      "geometry_class": "Flat End Mill",
+      "flute_direction": "straight",
+      "cutting_length_in": null,
+      "cam_descriptions": [
+        "34 BALL NOSE BIT"
+      ],
+      "default_slot": null,
+      "vendor": "",
+      "product_link": ""
+    },
+    {
+      "code": "CB-0375",
+      "name": "SPETOOL W02002 SC COMPRESSION SPIRAL 38 DIA X 12 SHANK X 1-14 CUT",
+      "diameter_inches": 0.375,
+      "geometry_class": "Flat End Mill",
+      "flute_direction": "up",
+      "cutting_length_in": null,
+      "cam_descriptions": [
+        "SPETOOL W02002 SC COMPRESSION SPIRAL 38 DIA X 12 SHANK X 1-14 CUT",
+        "SPETOOL W02002 SC COMPRESSION SPIRAL 38 DIA X 12 SHANK X 1-14 CUTT"
+      ],
+      "default_slot": 4,
+      "vendor": "",
+      "product_link": ""
+    },
+    {
       "code": "CF-1500",
       "name": "Side Handle Bit",
       "diameter_inches": 1.5,
       "geometry_class": "Custom Form",
       "flute_direction": "straight",
       "cutting_length_in": null,
-      "cam_descriptions": [],
+      "cam_descriptions": [
+        "ROCKLER HANDLE BIT"
+      ],
       "default_slot": 7,
       "vendor": "Rockler",
       "product_link": ""
@@ -74,8 +105,10 @@
       "geometry_class": "Flat End Mill",
       "flute_direction": "down",
       "cutting_length_in": 2.0,
-      "cam_descriptions": [],
-      "default_slot": 2,
+      "cam_descriptions": [
+        "12 FLAT ENDMILL"
+      ],
+      "default_slot": 6,
       "vendor": "",
       "product_link": ""
     },
@@ -86,7 +119,9 @@
       "geometry_class": "Flat End Mill",
       "flute_direction": "down",
       "cutting_length_in": null,
-      "cam_descriptions": [],
+      "cam_descriptions": [
+        "34 FLAT ENDMILL"
+      ],
       "default_slot": 3,
       "vendor": "",
       "product_link": ""

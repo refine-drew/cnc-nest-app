@@ -88,14 +88,21 @@ var Placement = (() => {
    * Confirmed first, because there is no undo and no saved job to fall back on — a
    * nest is rebuilt by hand or not at all. The tray keeps its files, so rebuilding is
    * dragging from the tray rather than hunting the library again.
+   *
+   * The job name goes back to auto, because a typed name belongs to the nest that was
+   * on the bed and not to the next one. A name left in the field is used verbatim —
+   * `_unique_job_name` guards only the auto name — so the nest built after a clear
+   * would otherwise overwrite the program the cleared nest posted, under a name that
+   * no longer describes it.
    */
   async function clearAll() {
     const n = App.placements.length;
     if (!n) return;
     if (!confirm(`Take all ${n} part${n === 1 ? "" : "s"} off the bed?\n\n` +
                  "The parts tray, the tool changer pockets and any tools you " +
-                 "identified by hand are kept.")) return;
+                 "identified by hand are kept. The job name goes back to auto.")) return;
     await fetch("/api/placements", { method: "DELETE" });
+    document.getElementById("job-name-input").value = "";
     await refresh();
   }
 
@@ -105,6 +112,8 @@ var Placement = (() => {
     App.changer           = r.changer || {};
     App.jobSafeZ          = r.job_safe_z || {};
     App.toolSequence      = r.tool_sequence || [];
+    App.blockSequence     = r.block_sequence || [];
+    App.parkTool          = r.park_tool || null;
     App.toolChanges       = r.tool_changes ?? 0;
     App.utilization       = r.utilization ?? 0;
     App.runtimeSeconds    = r.runtime_seconds ?? 0;

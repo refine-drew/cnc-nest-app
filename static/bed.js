@@ -1,5 +1,5 @@
 /**
- * bed.js — CNC Nest Tool canvas renderer
+ * bed.js — Refine SS2 Layout Tool canvas renderer
  *
  * Coordinate system (from spec):
  *   canvas_x = (BED_Y_MM - machine_y) * scale   ← Y=0 (operator) at right

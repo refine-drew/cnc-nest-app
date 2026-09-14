@@ -695,6 +695,34 @@ def test_tool_changes_matches_the_emitted_file(client, tmp_path, monkeypatch):
     assert len(re.findall(r"^N\d+\s+T\d+ M06\b", emitted, re.MULTILINE)) == expected
 
 
+def test_block_sequence_is_the_order_the_file_calls_its_pockets(
+        client, tmp_path, monkeypatch):
+    """The panel's tool order must be the file's, block for block.
+
+    `tool_sequence` cannot serve: it is the distinct *file* `T#` set, so it reads
+    ``T1, T2`` for a job the machine runs as ``T1, T3, T1, T3`` — wrong numbers, wrong
+    length, and no order at all. The panel used to build its own from the changer's
+    tools sorted by pocket, which erased the change-back and disagreed with the
+    "Tool changes" figure beside it.
+    """
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2, "ba.nc": _T2_THEN_T1})
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+    client.post("/api/place", json={"path": "ba.nc", "rail": "A", "slot_inches": 26})
+
+    info = client.get("/api/placements").get_json()
+    assert info["block_sequence"] == ["T1", "T3", "T1", "T3"]
+    assert info["park_tool"] == "T2"
+    # The park load cuts nothing but is a real `T# M06`, so it is one of the changes.
+    assert len(info["block_sequence"]) + 1 == info["tool_changes"]
+
+    r = client.post("/api/generate", json={"job_name": "order"})
+    assert r.status_code == 200
+    emitted = Path(r.get_json()["nc_path"]).read_text()
+    called = re.findall(r"^N\d+\s+(T\d+) M06\b", emitted, re.MULTILINE)
+    assert called == info["block_sequence"] + [info["park_tool"]]
+
+
 def test_job_runtime_charges_every_tool_change(client, tmp_path, monkeypatch):
     """
     Per-part runtimes exclude tool-change time; the job total adds it back once
@@ -832,6 +860,25 @@ def test_the_pdf_carries_the_same_setup_rows(client, tmp_path, monkeypatch):
     # And the placement table shows the file's number beside the pocket it runs from.
     tools = {t["tool_number"]: t["pocket"] for p in parts for t in p["tools"]}
     assert tools == {"T2": 2, "T4": 7}
+
+
+def test_the_pdf_footer_quotes_the_same_run_order_as_the_panel(
+        client, tmp_path, monkeypatch):
+    """One sequence across the panel, the sheet the operator carries, and the file.
+
+    The PDF footer was built from its own accumulator — the distinct *file* `T#` in
+    placement order — so it printed `T1 → T2` for a job the machine runs as
+    `T1, T3, T1, T3, T2`. Both surfaces now come off `block_tool_sequence`.
+    """
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2, "ba.nc": _T2_THEN_T1})
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+    client.post("/api/place", json={"path": "ba.nc", "rail": "A", "slot_inches": 26})
+
+    panel = client.get("/api/placements").get_json()
+    meta, _parts, _geom = app_module._build_pdf_model("x", app_module.config, "")
+    assert meta["block_sequence"] == panel["block_sequence"] == ["T1", "T3", "T1", "T3"]
+    assert meta["park_tool"] == panel["park_tool"] == "T2"
 
 
 def test_generation_is_not_gated_on_confirming_the_changer_is_loaded(

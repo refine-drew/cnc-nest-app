@@ -274,7 +274,10 @@ def _compute_job_stats(state: Optional[dict] = None) -> dict:
     bed_x = float(config["advanced"]["bed_x_mm"])
     bed_y = float(config["advanced"]["bed_y_mm"])
 
-    # Execution-ordered unique tool list (mirrors _build_blocks pass-index walk)
+    # The distinct **file** tool numbers, for the capacity advisory and nothing else.
+    # It is NOT the order anything runs in, and must not be shown as one: the numbers
+    # are each file's own `T#` rather than pockets, and a tool the pass-index walk
+    # returns to appears once. `block_sequence` below is the run order.
     max_passes = max((len(p.part.passes) for p in _placements.values()), default=0)
     ordered_tools: list = []
     seen_tools: set = set()
@@ -314,9 +317,8 @@ def _compute_job_stats(state: Optional[dict] = None) -> dict:
     # The end-of-job change is a real `T# M06` in the file, so it is a real change to
     # count and a real 27–57 s to charge. `park_tool_word` is the single rule for
     # whether it is emitted, so the panel and the file cannot disagree about it.
-    tool_changes = len(block_tools) + (
-        1 if park_tool_word(config["advanced"], block_tools) else 0
-    )
+    park_tool = park_tool_word(config["advanced"], block_tools)
+    tool_changes = len(block_tools) + (1 if park_tool else 0)
 
     # Per-part runtimes deliberately exclude tool-change time (the generator
     # merges same-tool passes across parts, so a part's own change count means
@@ -346,6 +348,16 @@ def _compute_job_stats(state: Optional[dict] = None) -> dict:
     capacity = _tool_capacity()
     return {
         "tool_sequence": ordered_tools,
+        # The run order the operator reads: one entry per emitted block, in the order
+        # the blocks are written, numbered by the **pocket** each will run from. Kept
+        # separate from `tool_sequence` because they answer different questions — how
+        # many pockets the changer needs, versus what the machine does in what order —
+        # and the panel showed the first while labelling it the second.
+        "block_sequence": block_tools,
+        # Emitted last and cuts nothing, so the panel can say so rather than leaving a
+        # trailing tool that looks like one more operation. Counted in `tool_changes`,
+        # because it is a real `T# M06`.
+        "park_tool": park_tool,
         "tool_changes": tool_changes,
         "tool_count": len(ordered_tools),
         "tool_capacity": capacity,
@@ -614,14 +626,11 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "",
     color_idx: Dict[str, int] = {}
 
     parts = []
-    tools_seen: Dict[str, bool] = {}
     for i, placed in enumerate(_placements.values(), start=1):
         fn = placed.part.filename
         if fn not in color_idx:
             color_idx[fn] = len(color_idx)
         br = blank_rect(placed, rails)
-        for num in (gp.tool_number for gp in placed.part.passes):
-            tools_seen[num] = True
         parts.append({
             "index": i,
             "label": slot_label(placed.rail, placed.slot_inches),
@@ -644,6 +653,14 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "",
             "color": pdf_palette_color(color_idx[fn]),
         })
 
+    # Derived from the changer state rather than passed in, the same way
+    # `_compute_job_stats` does it: `_identity_map` is a pure function of the state, so
+    # a second call cannot disagree with the first, and the PDF, the panel and the file
+    # all end up quoting one sequence.
+    identity = _identity_map(state)
+    block_tools = block_tool_sequence(list(_placements.values()), identity)
+    park_tool = park_tool_word(config["advanced"], block_tools)
+
     # Passed in by `api_generate` so the setup sheet and the PDF quote one number;
     # computed here only for the callers that build a model without generating.
     if runtime is None and gcode:
@@ -658,7 +675,13 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "",
         "bed_x_mm": float(settings["advanced"]["bed_x_mm"]),
         "bed_y_mm": float(settings["advanced"]["bed_y_mm"]),
         "safe_z": settings.get("job_safe_z", {}),
-        "tool_sequence": list(tools_seen.keys()),
+        # The run order, block for block, numbered by pocket — the same list the Job
+        # Info panel shows and the same walk the generator emits from. It was the
+        # distinct *file* `T#` in placement order: wrong numbers (the sheet is read
+        # beside a machine calling pockets), wrong length (a change-back appeared
+        # once), and no order at all (placement order is not run order).
+        "block_sequence": block_tools,
+        "park_tool": park_tool,
         # Counted off the emitted file's own T# M06 lines rather than derived
         # from the tool list — the file is the thing the machine runs, and a
         # recurring tool is a real change back (issue #7).
@@ -1497,7 +1520,7 @@ def api_audit():
 
 if __name__ == "__main__":
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
-    # Loopback only. CNC Nest is a single-user desktop tool whose whole state is
+    # Loopback only. The Refine SS2 Layout Tool is a single-user desktop tool whose whole state is
     # per-process in-memory globals; it has no reason to accept a connection from
     # another machine, and binding wide is what raised the Windows Firewall prompt
     # the operator was being trained to click through (issue #2).

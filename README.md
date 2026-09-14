@@ -1,4 +1,4 @@
-# CNC Nest Tool
+# Refine SS2 Layout Tool
 
 Nest CNC parts on the shop's 5×10 dual-rail bed and post one merged program for the
 whole sheet.

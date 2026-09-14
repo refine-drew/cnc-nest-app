@@ -3093,8 +3093,8 @@ properties.writeTools = {
   scope      : "post"
 };
 properties.writeToolIdentity = {
-  title      : "Write tool identity (CNC Nest)",
-  description: "Output a TOOLID comment per tool, naming vendor and the shop tool code taken from the tool's Product ID field. CNC Nest matches the code against its tool library to tell two cutters apart when both post the same description. Product ID must hold the shop code and nothing else -- not the manufacturer's part number.",
+  title      : "Write tool identity (Refine SS2 Layout Tool)",
+  description: "Output a TOOLID comment per tool, naming vendor and the shop tool code taken from the tool's Product ID field. The Refine SS2 Layout Tool matches the code against its tool library to tell two cutters apart when both post the same description. Product ID must hold the shop code and nothing else -- not the manufacturer's part number.",
   group      : "formats",
   type       : "boolean",
   value      : true,
@@ -3117,7 +3117,7 @@ properties.writeToolIdentity = {
 
   So (c) is settled by decree instead: **Product ID holds the shop code and nothing
   else.** The manufacturer's part number is not tracked in Fusion at all -- the shop's
-  own tool sheet has no column for it, and CNC Nest's tool_library.json already carries
+  own tool sheet has no column for it, and the Refine SS2 Layout Tool's tool_library.json already carries
   `vendor` and `product_link` per tool for reorder info. That decree is load-bearing: a
   leftover catalogue part number in this field posts as a code, and two cutters ground
   from one catalogue item then share it and merge into a single block.
@@ -3185,7 +3185,7 @@ function getToolCode(tool) {
       localize("Tool") + " " + tool.number + ": " +
       localize("the Product ID field must hold the shop tool code and nothing else.") + " \"" + code + "\" " +
       localize("cannot be written to a comment unchanged (letters, digits and . , = _ - only).") + " " +
-      localize("Type the shop code into Product ID; a part number or product page belongs in CNC Nest's tool library.")
+      localize("Type the shop code into Product ID; a part number or product page belongs in the Refine SS2 Layout Tool's tool library.")
     );
     return "";
   }
@@ -3201,7 +3201,7 @@ function getToolCode(tool) {
 }
 
 /**
-  Emit a stable per-tool identity token for CNC Nest's tool library.
+  Emit a stable per-tool identity token for the Refine SS2 Layout Tool's tool library.
 
   The problem this solves: the tool list line above carries geometry but no
   identity. An upcut, a downcut and a compression spiral of the same diameter all

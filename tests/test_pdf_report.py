@@ -20,8 +20,9 @@ META = {
     "bed_x_mm": 1524.0,
     "bed_y_mm": 3048.0,
     "safe_z": {"value": 49.0, "driven_by": "panel.nc"},
-    "tool_sequence": ["T1", "T2"],
-    "tool_changes": 1,
+    "block_sequence": ["T1", "T2", "T1"],
+    "park_tool": "T2",
+    "tool_changes": 4,
     "parts_count": 2,
     "runtime": "12m 30s",
 }
@@ -110,3 +111,60 @@ def test_distinct_stock_stays_distinct():
     assert stock_label(19.05) != stock_label(50.8)
     # 1/64" apart is a real difference and must not be collapsed.
     assert stock_label(19.05) != stock_label(19.05 + 25.4 / 64)
+
+
+# ── the footer's run order (_wrap_sequence) ──────────────────────────────────
+#
+# The sequence is the one footer field whose length is unbounded: a nest whose parts
+# disagree about tool order revisits tools, so the list is as long as the job's
+# tool-change count rather than its tool count. It is measured against the canvas's
+# own metrics, and three widths have to be reserved before a word is accepted — the
+# continuation arrow, the indent, and the park note. Each was an overflow first.
+
+from reportlab.pdfgen import canvas as pdfcanvas
+
+from pdf_report import MARGIN, PAGE, _SEQ_FONT, _SEQ_INDENT, _wrap_sequence
+
+
+def _seq_canvas(tmp_path):
+    return pdfcanvas.Canvas(str(tmp_path / "seq.pdf"), pagesize=PAGE)
+
+
+def _avail():
+    return PAGE[0] - 2 * MARGIN
+
+
+def test_wrap_sequence_keeps_the_run_order_and_names_the_park_load(tmp_path):
+    c = _seq_canvas(tmp_path)
+    lines = _wrap_sequence(c, ["T1", "T3", "T1", "T3"], "T2", _avail())
+    assert lines == [
+        "Tool sequence: T1 → T3 → T1 → T3 → T2 (loaded for the next job, cuts nothing)"
+    ]
+
+
+def test_wrap_sequence_says_so_when_there_is_nothing_placed(tmp_path):
+    assert _wrap_sequence(_seq_canvas(tmp_path), [], None, _avail()) == \
+        ["Tool sequence: —"]
+
+
+@pytest.mark.parametrize("blocks", [1, 2, 19, 20, 21, 30, 33, 60, 200])
+@pytest.mark.parametrize("park", ["T2", None])
+def test_no_wrapped_line_runs_off_the_page(tmp_path, blocks, park):
+    """Including the indent every continuation line is drawn with."""
+    c = _seq_canvas(tmp_path)
+    seq = [f"T{1 + i % 7}" for i in range(blocks)]
+    for i, line in enumerate(_wrap_sequence(c, seq, park, _avail())):
+        drawn = c.stringWidth(line, *_SEQ_FONT) + (_SEQ_INDENT if i else 0)
+        assert drawn <= _avail(), f"line {i} is {drawn:.1f}pt wide: {line}"
+
+
+def test_a_wrapped_line_ends_on_an_arrow_so_the_order_reads_across_the_break(tmp_path):
+    c = _seq_canvas(tmp_path)
+    lines = _wrap_sequence(c, [f"T{1 + i % 7}" for i in range(60)], "T2", _avail())
+    assert len(lines) > 1
+    for line in lines[:-1]:
+        assert line.endswith("→")
+    # Every pocket survives the break, in order.
+    flat = " ".join(lines).replace("Tool sequence: ", "")
+    assert [w for w in flat.split() if w.startswith("T")][:60] == \
+        [f"T{1 + i % 7}" for i in range(60)]

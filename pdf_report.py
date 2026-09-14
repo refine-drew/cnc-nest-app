@@ -87,7 +87,9 @@ def generate_layout_pdf(out_path, meta: dict, parts: list, geom: dict) -> None:
     """Render the layout PDF to out_path.
 
     meta:  job_name, date, bed_x_mm, bed_y_mm, safe_z {value, driven_by},
-           rail_note, tool_sequence (list), tool_changes, parts_count, runtime (str|None),
+           rail_note, block_sequence (list of pocket words, in the order the blocks
+           run), park_tool (the end-of-job load, or None), tool_changes, parts_count,
+           runtime (str|None),
            setup (list) — the operator setup sheet, one entry per loaded pocket:
            {pocket, code, name, diameter_inches, geometry_class, flute_display,
             default_slot, off_home, parts:[filename]}
@@ -455,6 +457,64 @@ def stock_label(thickness_mm) -> str:
     return f"{round(thickness_mm / 25.4 * 64) / 64:.2f}\""
 
 
+_SEQ_LABEL = "Tool sequence: "
+_SEQ_ARROW = " \u2192 "
+_SEQ_FONT = ("Helvetica-Oblique", 8)
+_SEQ_INDENT = 8            # continuation lines, matching _draw_table's drawString
+
+
+def _wrap_sequence(c, block_sequence: list, park_tool, avail: float) -> list:
+    """The run order as one or more lines, each measured to fit `avail` points.
+
+    `block_sequence` is one entry per emitted tool block, in the order the machine
+    calls them, numbered by **pocket** — so a tool the job returns to appears again,
+    and the list is as long as the job's tool-change count. Breaking is measured with
+    the canvas's own metrics rather than a character count, because the label, the
+    arrows and the park note are all much wider than the digit they sit next to.
+
+    Three widths have to be reserved *before* a word is accepted, and each one was an
+    overflow when it was not: the trailing arrow a broken line ends with, the indent a
+    continuation line starts with, and the park note, which lands on whatever line the
+    last pocket happens to reach.
+
+    `park_tool` is named rather than merely appended: it is the last `T# M06` in the
+    file and so is counted in "Tool changes", but it cuts nothing, and a bare trailing
+    pocket at the end of a run order reads as one more operation.
+    """
+    if not block_sequence:
+        return [_SEQ_LABEL + "\u2014"]
+
+    def w(text: str) -> float:
+        return c.stringWidth(text, *_SEQ_FONT)
+
+    words = list(block_sequence)
+    tail = (f"{_SEQ_ARROW}{park_tool} (loaded for the next job, cuts nothing)"
+            if park_tool else "")
+    cont = _SEQ_ARROW.rstrip()          # what a broken line ends with
+
+    lines: list = []
+    line = _SEQ_LABEL + words[0]
+    for i, word in enumerate(words[1:], start=1):
+        last = i == len(words) - 1
+        # Reserve the park note on the last word, and the continuation arrow on every
+        # other, since any line but the final one may turn out to be a broken one.
+        candidate = line + _SEQ_ARROW + word
+        budget = avail - (0 if not lines else _SEQ_INDENT)
+        if w(candidate + (tail if last else cont)) <= budget:
+            line = candidate
+        else:
+            lines.append(line + cont)
+            line = word
+    budget = avail - (0 if not lines else _SEQ_INDENT)
+    if tail and w(line + tail) > budget:
+        lines.append(line + cont)
+        line = park_tool + " (loaded for the next job, cuts nothing)"
+    else:
+        line += tail
+    lines.append(line)
+    return lines
+
+
 def _table_header(c, x, y, pw) -> float:
     if _LOGO_PATH.exists():
         logo_h = 20
@@ -512,15 +572,35 @@ def _draw_table(c, meta, parts, pw, ph, top_y) -> None:
             cx += width
         y -= _ROW_H
 
-    # Summary footer
-    y -= 8
-    seq = " → ".join(meta.get("tool_sequence") or []) or "—"
-    c.setFont("Helvetica-Oblique", 8)
-    c.setFillColor(HexColor("#333333"))
+    # ── Summary footer ──
+    #
+    # The sequence gets its own line, and wraps. It is the one field here whose length
+    # is unbounded — a nest whose parts disagree about tool order revisits tools, so a
+    # 9-part job can call twenty blocks — and a single `drawString` would have run it
+    # off the page edge silently. The counts, which are always short, share the line
+    # below it.
+    lines = _wrap_sequence(
+        c, meta.get("block_sequence") or [], meta.get("park_tool"),
+        pw - MARGIN - x,
+    )
     summary = (
-        f"Tool sequence: {seq}    Tool changes: {meta.get('tool_changes', 0)}"
+        f"Tool changes: {meta.get('tool_changes', 0)}"
         f"    Parts placed: {meta.get('parts_count', 0)}"
     )
     if meta.get("runtime"):
         summary += f"    Estimated runtime: {meta['runtime']}"
+
+    # The row loop leaves just enough room for one line, which is what the footer used
+    # to be. Measure the whole block instead: a wrapped sequence on a table that ends
+    # near the bottom margin would otherwise print past the page edge.
+    y -= 8
+    if y - (len(lines) + 1) * (_ROW_H - 3) < MARGIN:
+        c.showPage()
+        y = _table_header(c, x, ph - MARGIN, pw)
+
+    c.setFont("Helvetica-Oblique", 8)
+    c.setFillColor(HexColor("#333333"))
+    for i, line in enumerate(lines):
+        c.drawString(x if i == 0 else x + _SEQ_INDENT, y, line)
+        y -= _ROW_H - 3
     c.drawString(x, y, summary)

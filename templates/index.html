@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>CNC Nest Tool</title>
+<title>Refine SS2 Layout Tool</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;font-size:13px;background:#1c1c1e;color:#e0e0e0}
@@ -285,7 +285,7 @@ table.audit td.feed-varies{color:#ffd60a}
 
 <!-- ── top bar ── -->
 <div id="topbar">
-  <span class="title">CNC Nest Tool</span>
+  <span class="title">Refine SS2 Layout Tool</span>
   <div style="flex:1"></div>
   <label style="font-size:11px;color:#888;margin-right:2px">Job:</label>
   <input type="text" id="job-name-input" placeholder="auto" style="width:160px"/>
@@ -504,7 +504,9 @@ var App = {
   slots: [],            // from /api/slots, assigned by bed.js on init
   changer: {},          // tool-changer map + validity gate, from /api/changer
   jobSafeZ: {},         // {value, driven_by}
-  toolSequence: [],     // ordered tool list for the full job
+  toolSequence: [],     // distinct file tool numbers — a capacity figure, not an order
+  blockSequence: [],    // pocket word per emitted block, in the order they run
+  parkTool: null,       // the end-of-job load, which cuts nothing
   toolChanges: 0,
   utilization: 0,       // % of bed area covered by placed blanks
   runtimeSeconds: 0,    // estimated total cut time
@@ -530,11 +532,20 @@ function _updateStatusBar() {
   const slots = App.slots.length;
   const usedSlots = new Set(App.placements.map(p => p.slot)).size;
   const emptySlots = Math.max(0, slots * 2 - usedSlots);
-  // The pockets the job will actually call, in emitted order — what the operator reads
-  // off the setup sheet. Falls back to the file's own numbers before anything resolves.
-  const pocketSeq = ((App.changer && App.changer.tools) || [])
-    .filter(t => t.pocket).sort((a, b) => a.pocket - b.pocket).map(t => "T" + t.pocket);
-  const seq = (pocketSeq.length ? pocketSeq : (App.toolSequence || [])).join(" → ") || "—";
+  // The order the job actually calls its pockets. This used to be the changer's tools
+  // sorted by pocket number, which is a *set* wearing an order's clothes: it read
+  // "T1 → T3" for a job that runs T1, T3, T1, T3 — the ascending sort erased the one
+  // thing the line is for, and dropping the change-back made it contradict the
+  // "Tool changes" figure directly below it. `block_sequence` is the generator's own
+  // block list, so what is on screen is what the file will do. Falls back to the
+  // file's own `T#` before anything resolves, when there are no blocks to list yet.
+  const seq = (App.blockSequence || []).length
+    ? App.blockSequence.join(" → ")
+    : ((App.toolSequence || []).join(" → ") || "—");
+  // The park load is charged in "Tool changes" but cuts nothing, so it is named
+  // rather than left looking like one more operation.
+  const park = (App.blockSequence || []).length && App.parkTool
+    ? ` → ${App.parkTool} (loaded for next job)` : "";
   const util = App.utilization ?? 0;
 
   _set("sb-placed", n);
@@ -542,7 +553,7 @@ function _updateStatusBar() {
   _set("sb-tools", seq);
   _set("sb-util", util + "%");
   _set("stat-placed", n);
-  _set("stat-seq", seq);
+  _set("stat-seq", seq + park);
   _set("stat-util", util + "%");
   _set("stat-changes", App.toolChanges ?? 0);
   _set("stat-runtime", n ? formatDuration(App.runtimeSeconds || 0) : "—");

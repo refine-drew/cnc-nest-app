@@ -456,6 +456,21 @@ walk the same `_iter_pass_groups`, and
 / `tool_count` stay **distinct** — those drive `tool_capacity` and the
 compatibility matrix, which are about how many pockets the changer needs.
 
+**`tool_sequence` is therefore not a sequence, and nothing may display it as one**
+(2026-08-26). It is the distinct *file* `T#` set — wrong numbers for a reader (the
+machine calls pockets), wrong length (a change-back appears once), and no order
+(it is a set). Both surfaces that showed a run order had built their own instead, and
+both were wrong in a different way: the Job Info panel sorted the changer's occupied
+pockets **ascending**, and the PDF footer took the distinct file `T#` in **placement**
+order. A job the machine runs as `T1, T3, T1, T3, T2` read `T1 → T3` on screen, beside
+a "Tool changes: 5" it flatly contradicted. `_compute_job_stats` and `_build_pdf_model`
+now both publish `block_sequence` + `park_tool` off `block_tool_sequence`, so the panel,
+the footer and the file quote one order;
+`test_block_sequence_is_the_order_the_file_calls_its_pockets` pins it against the
+emitted `T# M06` lines. The park load is **named** on both ("loaded for the next job"),
+because it is counted in the change total and cuts nothing. Anything that wants a run
+order calls `block_tool_sequence` — deriving one from a tool list is what this was.
+
 Per-part `GcodePart.runtime_seconds` **excludes both event costs**
 (`tool_change_seconds=0.0` and `spindle_start_seconds=0.0` at the parse call). A
 part's own change count means nothing once the generator merges same-tool passes
