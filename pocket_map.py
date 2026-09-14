@@ -312,6 +312,13 @@ def _messages(staged, doubled, unresolved, duplicate_codes, seal_prompts,
             f"{n} tool{'s' if n > 1 else ''} {'have' if n > 1 else 'has'} no home and "
             f"the changer is full — take a part off the bed.")})
 
+    # The dock is on screen with an empty bed now rather than hiding until the first
+    # part lands, so this is the line an operator reads before placing anything.
+    # "0 tools in 0 pockets" is arithmetic about nothing; name the state instead.
+    if not out and not tool_count:
+        return [{"level": "ok",
+                 "text": "No parts on the bed — pockets fill in as you place them."}]
+
     if not out:
         out.append({"level": "ok", "text": (
             f"{tool_count} tool{'s' if tool_count != 1 else ''} in "

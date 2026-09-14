@@ -15,6 +15,12 @@
  *     always has a visible reason on screen.
  *   - **A drag is job-scoped.** It never writes back to the library, so the declared
  *     pocket is re-proposed on the next job. That nag is deliberate.
+ *   - **The dock is always on screen, empty bed included.** It used to hide itself
+ *     until the first part was placed, which made the changer look like a thing that
+ *     appears rather than a fixture of the machine — and left the eight pockets, the
+ *     one row that says what the carousel holds, unreadable at exactly the moment an
+ *     operator is deciding what to nest. An empty bed is a state to *show*, not a
+ *     reason to vanish; `pocket_map._messages` words it.
  */
 
 var Changer = (() => {
@@ -33,8 +39,6 @@ var Changer = (() => {
     const st = state();
     const dock = document.getElementById("dock");
     if (!dock) return;
-    if (!App.placements.length) { dock.style.display = "none"; return; }
-    dock.style.display = "";
 
     _renderVerdict(st);
     _renderPockets(st);

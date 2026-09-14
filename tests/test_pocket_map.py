@@ -217,6 +217,18 @@ def test_the_message_changes_when_dragging_can_no_longer_help():
     assert cramped["messages"][0]["level"] == "error"
 
 
+def test_an_empty_bed_reads_as_a_state_rather_than_as_zero_of_something():
+    """The dock is on screen before the first part lands, so an empty bed is a line an
+    operator actually reads. "0 tools in 0 pockets" is arithmetic about nothing."""
+    st = _state(ToolLibrary([]), [])
+    assert st["valid"] is True
+    assert len(st["messages"]) == 1
+    assert st["messages"][0]["level"] == "ok"
+    assert "0 tool" not in st["messages"][0]["text"]
+    assert "No parts on the bed" in st["messages"][0]["text"]
+    assert [p["codes"] for p in st["pockets"]] == [[]] * 8   # eight, still drawn
+
+
 def test_the_doubled_pocket_message_stops_saying_drag_when_nothing_is_free():
     lib = ToolLibrary([make_tool("EM-0512", default_slot=1),
                        make_tool("EM-0520", default_slot=1)])
