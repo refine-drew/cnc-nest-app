@@ -17,14 +17,28 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
+# Run from the project's own virtual environment. A Homebrew python3 refuses
+# pip installs (PEP 668), and which python3 is first on PATH can change.
+PYTHON=".venv/bin/python3"
+if [ ! -x "$PYTHON" ]; then
+    echo "Creating virtual environment..."
+    python3 -m venv .venv
+    if [ $? -ne 0 ]; then
+        echo ""
+        echo "ERROR: Failed to create the virtual environment."
+        read -p "Press Enter to exit..."
+        exit 1
+    fi
+fi
+
 # Check / install dependencies (Flask, reportlab, etc.)
-if ! python3 -c "import flask, reportlab" &>/dev/null; then
+if ! "$PYTHON" -c "import flask, reportlab" &>/dev/null; then
     echo "Dependencies not found. Installing..."
-    pip3 install -r requirements.txt
+    "$PYTHON" -m pip install -r requirements.txt
     if [ $? -ne 0 ]; then
         echo ""
         echo "ERROR: Failed to install dependencies."
-        echo "Try running: pip3 install -r requirements.txt"
+        echo "Try running: .venv/bin/python3 -m pip install -r requirements.txt"
         read -p "Press Enter to exit..."
         exit 1
     fi
@@ -40,7 +54,7 @@ if [ -n "$EXISTING_PID" ]; then
 fi
 
 echo "Starting server..."
-python3 app.py &
+"$PYTHON" app.py &
 SERVER_PID=$!
 
 # Wait up to 10 seconds for server to respond

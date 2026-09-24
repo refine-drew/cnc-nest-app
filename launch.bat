@@ -19,15 +19,29 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Run from the project's own virtual environment, so the app never depends
+REM on which Python is first on PATH or on installing into it.
+set "PYTHON=.venv\Scripts\python.exe"
+if not exist "%PYTHON%" (
+    echo Creating virtual environment...
+    python -m venv .venv
+    if errorlevel 1 (
+        echo.
+        echo ERROR: Failed to create the virtual environment.
+        pause
+        exit /b 1
+    )
+)
+
 REM Check / install dependencies (Flask, reportlab, etc.)
-python -c "import flask, reportlab" >nul 2>&1
+"%PYTHON%" -c "import flask, reportlab" >nul 2>&1
 if errorlevel 1 (
     echo Dependencies not found. Installing...
-    python -m pip install -r requirements.txt
+    "%PYTHON%" -m pip install -r requirements.txt
     if errorlevel 1 (
         echo.
         echo ERROR: Failed to install dependencies.
-        echo Try running: pip install -r requirements.txt
+        echo Try running: .venv\Scripts\python.exe -m pip install -r requirements.txt
         pause
         exit /b 1
     )
@@ -43,7 +57,7 @@ echo CNC Nest Tool is running at http://localhost:5001
 echo Close this window to stop the server.
 echo.
 
-python app.py
+"%PYTHON%" app.py
 if errorlevel 1 (
     echo.
     echo ERROR: Server stopped unexpectedly. Check the output above for details.
