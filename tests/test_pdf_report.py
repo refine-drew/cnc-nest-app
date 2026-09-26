@@ -168,3 +168,61 @@ def test_a_wrapped_line_ends_on_an_arrow_so_the_order_reads_across_the_break(tmp
     flat = " ".join(lines).replace("Tool sequence: ", "")
     assert [w for w in flat.split() if w.startswith("T")][:60] == \
         [f"T{1 + i % 7}" for i in range(60)]
+
+
+# ── the monitor page (page 1) ────────────────────────────────────────────────
+#
+# Page 1 is read off a 32" 16:9 monitor from about 20 ft; pages 2+ stay letter for the
+# ATC graphic and the placement table.
+
+import re
+
+from pdf_report import MONITOR_PAGE, _BOARD_LEAD, _BOARD_LINES, _BOARD_PAD, \
+    _board_lines, fit_board_lines
+
+
+def test_page_one_is_the_monitor_and_the_rest_are_letter(tmp_path):
+    out = tmp_path / "layout.pdf"
+    generate_layout_pdf(out, META, _parts(), GEOM)
+    boxes = [tuple(float(v) for v in m.groups()) for m in re.finditer(
+        rb"/MediaBox \[ 0 0 ([\d.]+) ([\d.]+) \]", out.read_bytes())]
+    assert len(boxes) >= 2
+    w, h = boxes[0]
+    assert w / h == pytest.approx(16 / 9, rel=1e-3)
+    assert boxes[0] == pytest.approx(MONITOR_PAGE, abs=0.01)
+    assert all(b == pytest.approx(PAGE, abs=0.01) for b in boxes[1:])
+
+
+def _board(length_in, width_in, name="602443-1.nc", thick=19.05):
+    return {"size_mm": (length_in * 25.4, width_in * 25.4), "label": "A26",
+            "material_thickness": thick, "name": name}
+
+
+@pytest.mark.parametrize("length_in,width_in,name", [
+    (18, 18, "602837-1.nc"), (22.8, 16.8, "602443-1.nc"), (18, 24, "24GH.nc"),
+    (12, 6, "s.nc"), (4, 3, "a-very-long-part-file-name.nc"), (96, 48, "TwinBed.nc"),
+])
+def test_board_lettering_fits_its_board(tmp_path, length_in, width_in, name):
+    c = _seq_canvas(tmp_path)
+    s = 15.0                                   # pt per bed inch, about the monitor's
+    w, h = length_in * s, width_in * s
+    lines = _board_lines(_board(length_in, width_in, name))
+    sizes = fit_board_lines(c, lines, w, h)
+    assert len(sizes) == 3
+    for text, size, (font, base) in zip(lines, sizes, _BOARD_LINES):
+        assert size <= base
+        assert c.stringWidth(text, font, size) <= w - 2 * _BOARD_PAD + 1e-6
+    assert sum(sizes) * _BOARD_LEAD <= h - 2 * _BOARD_PAD + 1e-6
+    # The part name is for checking up close: it never outgrows the size or the slot.
+    assert sizes[2] <= min(sizes[:2]) + 1e-9
+
+
+def test_board_lettering_reads_size_then_slot_and_thickness_then_name():
+    assert _board_lines(_board(22.8, 16.8)) == ["22.8 × 16.8", 'A26 · 0.75"', "602443-1"]
+    assert _board_lines(_board(18, 18, thick=None))[1] == "A26 · ? thick"
+    assert _board_lines({**_board(18, 18), "size_mm": (0, 0)})[0] == \
+        "no stock size in file"
+
+
+def test_a_board_with_no_room_gets_no_lettering(tmp_path):
+    assert fit_board_lines(_seq_canvas(tmp_path), ["x", "y", "z"], 10, 10) == []

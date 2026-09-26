@@ -1,10 +1,12 @@
 """Operator layout PDF.
 
-Replaces the old plain-text sidecar report. The centerpiece is a scale,
-top-down picture of the CNC bed showing every placed part as a labeled,
-color-coded blank at its exact location (with a faint toolpath preview inside
-each blank to confirm orientation). A placement table + job summary carry over
-every field the old .txt report contained.
+Replaces the old plain-text sidecar report. Page 1 is a scale, top-down picture
+of the CNC bed sized for a 32" monitor beside the machine: every placed part is a
+color-coded blank at its exact location, lettered with its board size, slot,
+thickness and name large enough to read from about 20 ft (with a faint toolpath
+preview inside each blank to confirm orientation). Page 2 onward is letter size:
+the ATC setup graphic, then a placement table + job summary carrying every field
+the old .txt report contained.
 
 Orientation matches the on-screen canvas (static/bed.js): the operator stands at
 the right (machine Y = 0), the A rail runs along the bottom (machine X = 0), the
@@ -28,6 +30,29 @@ from reportlab.pdfgen import canvas as pdfcanvas
 
 PAGE = landscape(letter)          # (792, 612) pt
 MARGIN = 36                       # 0.5"
+
+# Page 1 is read off a 32" 16:9 monitor beside the machine, from about 20 ft. The page
+# is the screen's own size, so a point on the page is a point on the glass and the
+# sizes below are physical: 96 pt Helvetica has ~0.96" capitals.
+MONITOR_PAGE = (27.9 * 72, 27.9 * 72 * 9 / 16)
+MONITOR_MARGIN = 18
+_JOB_FONT = 56
+_RULER_FONT = 22
+_RULER_ROOM = 32            # above and below the bed, for the two slot rulers
+_BOARD_PAD = 8
+# Strip left of the bed for the tool changer graphic. The bed is height-limited on this
+# page, so the strip comes out of spare width and costs the bed no scale.
+_CHANGER_W = 96
+_CHANGER_POCKETS = 8
+_BOARD_LEAD = 1.1
+# Board lettering at its largest, in priority order. Each line shrinks to fit its
+# board: the size and slot are what the operator reads from across the shop, the name
+# is what they check up close.
+_BOARD_LINES = (
+    ("Helvetica-Bold", 96),     # 24.0 × 12.0
+    ("Helvetica-Bold", 72),     # A13 · 0.75"
+    ("Helvetica", 40),          # part name
+)
 
 _LOGO_PATH = Path(__file__).parent / "static" / "logo.png"
 _LOGO_H = 32    # pt
@@ -99,25 +124,19 @@ def generate_layout_pdf(out_path, meta: dict, parts: list, geom: dict) -> None:
             tools:[{tool_number,description,diameter_inches}], color}
     geom:  bed_x_mm, bed_y_mm, slots (inches), rails {A,B: x_mm/slot0_y_mm/slot_dir/x_dir}
     """
-    c = pdfcanvas.Canvas(str(out_path), pagesize=PAGE)
-    pw, ph = PAGE
+    c = pdfcanvas.Canvas(str(out_path), pagesize=MONITOR_PAGE)
 
-    # ── Page 1: condensed header + maximised bed diagram + ATC graphic ──────
-    header_bottom = _draw_header(c, meta, pw, ph)
+    # ── Page 1: the bed, lettered for the monitor ───────────────────────────
+    _draw_monitor_page(c, meta, parts, geom)
 
-    atc_h = _atc_section_height()
-    diagram_bottom = MARGIN + atc_h + 6       # 6 pt gap between diagram and ATC
-
-    _draw_diagram(
-        c, MARGIN, diagram_bottom,
-        pw - 2 * MARGIN, header_bottom - diagram_bottom - 8,
-        parts, geom,
-    )
-    _draw_atc(c, meta.get("setup") or [], pw, MARGIN + atc_h)
-
-    # ── Page 2: full placement table ────────────────────────────────────────
+    # ── Page 2+: header, ATC graphic, placement table ───────────────────────
     c.showPage()
-    _draw_table(c, meta, parts, pw, ph, ph - MARGIN)
+    c.setPageSize(PAGE)
+    pw, ph = PAGE
+    header_bottom = _draw_header(c, meta, pw, ph)
+    atc_h = _atc_section_height()
+    _draw_atc(c, meta.get("setup") or [], pw, header_bottom)
+    _draw_table(c, meta, parts, pw, ph, header_bottom - atc_h - 16, logo=False)
     c.save()
 
 
@@ -159,9 +178,59 @@ def _draw_header(c, meta: dict, pw: float, ph: float) -> float:
     return y - 8
 
 
-# ── bed diagram ───────────────────────────────────────────────────────────────
+# ── monitor page: bed diagram ─────────────────────────────────────────────────
 
-def _draw_diagram(c, x0, y0, w, h, parts, geom) -> None:
+def _draw_monitor_page(c, meta: dict, parts: list, geom: dict) -> None:
+    pw, ph = MONITOR_PAGE
+    top = ph - MONITOR_MARGIN
+    baseline = top - _JOB_FONT * 0.75
+    c.setFillColor(black)
+    c.setFont("Helvetica-Bold", _JOB_FONT)
+    c.drawString(MONITOR_MARGIN, baseline, meta["job_name"])
+
+    right = f'{meta.get("parts_count", 0)} parts'
+    if meta.get("runtime"):
+        right += f'   ·   {meta["runtime"]}'
+    c.setFont("Helvetica", 36)
+    c.drawRightString(pw - MONITOR_MARGIN, baseline, right)
+
+    header_bottom = top - _JOB_FONT - 4
+    x0 = MONITOR_MARGIN + _CHANGER_W
+    ox, oy, draw_h = _draw_diagram(
+        c, x0, MONITOR_MARGIN,
+        pw - MONITOR_MARGIN - x0, header_bottom - MONITOR_MARGIN,
+        parts, geom,
+    )
+    _draw_changer(c, ox, oy, draw_h)
+
+
+def _draw_changer(c, bed_left, bed_bottom, bed_h) -> None:
+    """The tool changer rack, drawn left of the bed so the operator can tell the ends
+    apart at a glance.
+
+    The rack sits past the table's far end at machine Y max, which this page draws on
+    the left (operator at Y 0 on the right). A symbol, not a measured position: nothing
+    here knows where along X the rack actually runs, so it is centred on the bed.
+    """
+    rack_x = bed_left - 34
+    rack_h = bed_h * 0.6
+    rack_bottom = bed_bottom + (bed_h - rack_h) / 2
+
+    c.setFillColor(HexColor("#6b6b6b"))
+    c.roundRect(rack_x - 12, rack_bottom, 24, rack_h, 4, fill=1, stroke=0)
+    step = rack_h / _CHANGER_POCKETS
+    c.setStrokeColor(HexColor("#1e1e1e"))
+    c.setLineWidth(1.5)
+    for i in range(_CHANGER_POCKETS):
+        cy = rack_bottom + step * (i + 0.5)
+        c.setFillColor(HexColor("#ffffff"))
+        c.roundRect(rack_x - 6, cy - 12, 28, 24, 5, fill=1, stroke=1)   # fork
+        c.setFillColor(black)
+        c.circle(rack_x + 9, cy, 8, fill=1, stroke=0)                    # holder
+
+
+def _draw_diagram(c, x0, y0, w, h, parts, geom) -> tuple:
+    """Draw the bed in the w × h box; returns its drawn (left, bottom, height)."""
     BED_Y = float(geom["bed_y_mm"])
     BED_X = float(geom["bed_x_mm"])
     rails = geom.get("rails") or {}
@@ -171,59 +240,101 @@ def _draw_diagram(c, x0, y0, w, h, parts, geom) -> None:
     rail_a_w = abs(float(geom_a.get("x_mm", 0.0)))
     rail_b_w = abs(BED_X - float(geom_b.get("x_mm", BED_X)))
 
-    ruler_room = 30
-    s = min(w / BED_Y, (h - ruler_room) / BED_X)
+    s = min(w / BED_Y, (h - 2 * _RULER_ROOM) / BED_X)
     draw_w, draw_h = BED_Y * s, BED_X * s
     ox = x0 + (w - draw_w) / 2
-    oy = y0 + ruler_room + ((h - ruler_room) - draw_h) / 2
+    oy = y0 + _RULER_ROOM + ((h - 2 * _RULER_ROOM) - draw_h) / 2
 
     def P(mach_x, mach_y):
         return (ox + (BED_Y - mach_y) * s, oy + mach_x * s)
 
-    # Rail zones.
-    c.saveState()
-    c.setFillColor(HexColor("#1e50b4"))
-    c.setFillAlpha(0.16)
-    c.rect(ox, oy, draw_w, rail_a_w * s, fill=1, stroke=0)
-    c.setFillColor(HexColor("#1ea03c"))
-    c.setFillAlpha(0.15)
-    c.rect(ox, oy + draw_h - rail_b_w * s, draw_w, rail_b_w * s, fill=1, stroke=0)
-    c.restoreState()
-
-    c.setFillColor(HexColor("#1e50b4"))
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(ox + 3, oy + 3, "A")
-    c.setFillColor(HexColor("#1ea03c"))
-    c.drawString(ox + 3, oy + draw_h - 13, "B")
+    # Rail zones, each named inside its own band. No blank reaches into a band: every
+    # blank registers against the rail corner and runs inboard.
+    bands = (
+        ("A RAIL", "#1e50b4", 0.16, oy, rail_a_w * s),
+        ("B RAIL", "#1ea03c", 0.15, oy + draw_h - rail_b_w * s, rail_b_w * s),
+    )
+    for name, colour, alpha, by, bh in bands:
+        c.saveState()
+        c.setFillColor(HexColor(colour))
+        c.setFillAlpha(alpha)
+        c.rect(ox, by, draw_w, bh, fill=1, stroke=0)
+        c.restoreState()
+        size = min(56, bh * 0.7 / 0.718)
+        if size >= 6:
+            c.setFillColor(HexColor(colour))
+            c.setFont("Helvetica-Bold", size)
+            c.drawString(ox + 10, by + (bh - size * 0.718) / 2, name)
 
     c.setStrokeColor(black)
-    c.setLineWidth(1.0)
+    c.setLineWidth(2.0)
     c.rect(ox, oy, draw_w, draw_h, fill=0, stroke=1)
 
     # Slot rulers — one per rail. The rails run in OPPOSITE directions, so a slot
     # number sits at a different machine Y on each and needs its own scale:
     # A below the diagram, B above it.
-    c.setFont("Helvetica", 6)
-    c.setStrokeColor(HexColor("#888888"))
-    c.setLineWidth(0.4)
-    c.setFillColor(HexColor("#555555"))
-    for slot in geom.get("slots", []):
-        slot = float(slot)
-        px = ox + (BED_Y - slot_mark_y("A", slot, rails)) * s
-        c.line(px, oy - 3, px, oy - 9)
-        c.drawCentredString(px, oy - 17, f"{slot:g}")
-    c.drawRightString(ox + draw_w, oy - 26, "A rail slot inches")
-
+    c.setFont("Helvetica-Bold", _RULER_FONT)
+    c.setStrokeColor(HexColor("#666666"))
+    c.setLineWidth(1.5)
+    c.setFillColor(HexColor("#444444"))
+    tick = 8
     top = oy + draw_h
     for slot in geom.get("slots", []):
         slot = float(slot)
+        px = ox + (BED_Y - slot_mark_y("A", slot, rails)) * s
+        c.line(px, oy - 2, px, oy - 2 - tick)
+        c.drawCentredString(px, oy - 4 - tick - _RULER_FONT * 0.75, f"{slot:g}")
         px = ox + (BED_Y - slot_mark_y("B", slot, rails)) * s
-        c.line(px, top + 3, px, top + 9)
-        c.drawCentredString(px, top + 12, f"{slot:g}")
-    c.drawRightString(ox + draw_w, top + 21, "B rail slot inches")
+        c.line(px, top + 2, px, top + 2 + tick)
+        c.drawCentredString(px, top + 4 + tick, f"{slot:g}")
 
     for part in parts:
         _draw_part(c, P, part)
+    return ox, oy, draw_h
+
+
+def board_size_label(part: dict) -> str:
+    """`24.0 × 12.0` — along-rail × across-bed, in the order and rounding of bed.js
+    `sizeLabel`, because one board quoted two ways is a board someone loads rotated.
+
+    Thickness is left off and lettered on the slot line instead: appended here it makes
+    the widest line on the board ~40% longer, and that line sets the size of the one
+    number the monitor page exists to show.
+    """
+    sx, sy = part.get("size_mm") or (0, 0)
+    if not sx or not sy:
+        return "no stock size in file"
+    return f"{sx / 25.4:.1f} × {sy / 25.4:.1f}"
+
+
+def _board_lines(part: dict) -> list:
+    thick = stock_label(part.get("material_thickness"))
+    return [
+        board_size_label(part),
+        f'{part["label"]} · {thick if thick != "—" else "? thick"}',
+        _strip_ext(part["name"]),
+    ]
+
+
+def fit_board_lines(c, lines: list, w: float, h: float) -> list:
+    """Font size for each of `lines` inside a w × h board, largest first.
+
+    Each line takes its `_BOARD_LINES` size unless its own width forces it smaller, so
+    a long part name shrinks alone rather than taking the size line down with it. If
+    the stack is then too tall, every line scales down together, keeping the order of
+    importance. Returns an empty list when the board has no room at all.
+    """
+    avail_w, avail_h = w - 2 * _BOARD_PAD, h - 2 * _BOARD_PAD
+    if avail_w <= 0 or avail_h <= 0:
+        return []
+    sizes = []
+    for text, (font, base) in zip(lines, _BOARD_LINES):
+        per_pt = c.stringWidth(text, font, 1)
+        sizes.append(min(base, avail_w / per_pt) if per_pt else base)
+    # A short name on a narrow board would otherwise outgrow the size it sits under.
+    sizes[-1] = min(sizes)
+    k =min(1.0, avail_h / (sum(sizes) * _BOARD_LEAD))
+    return [size * k for size in sizes]
 
 
 def _draw_part(c, P, part) -> None:
@@ -237,17 +348,19 @@ def _draw_part(c, P, part) -> None:
 
     c.saveState()
     c.setFillColor(color)
-    c.setFillAlpha(0.18)
+    c.setFillAlpha(0.22)
     c.rect(rx, ry, rw, rh, fill=1, stroke=0)
     c.restoreState()
     c.setStrokeColor(color)
-    c.setLineWidth(1.2)
+    c.setLineWidth(3)
     c.rect(rx, ry, rw, rh, fill=0, stroke=1)
 
+    # Faint toolpath, to confirm orientation. Kept light so it does not fight the
+    # lettering drawn over it.
     c.saveState()
     c.setStrokeColor(color)
-    c.setStrokeAlpha(0.5)
-    c.setLineWidth(0.4)
+    c.setStrokeAlpha(0.35)
+    c.setLineWidth(0.8)
     path = c.beginPath()
     for seg in part.get("segments", []):
         if not seg.get("cutting"):
@@ -259,19 +372,17 @@ def _draw_part(c, P, part) -> None:
     c.drawPath(path, stroke=1, fill=0)
     c.restoreState()
 
-    cx_p, cy_p = rx + rw / 2, ry + rh / 2
-    r = 7
-    c.setFillColor(color)
-    c.circle(cx_p, cy_p, r, fill=1, stroke=0)
+    lines = _board_lines(part)
+    sizes = fit_board_lines(c, lines, rw, rh)
+    if not sizes:
+        return
     c.setFillColor(black)
-    c.setFont("Helvetica-Bold", 8)
-    c.drawCentredString(cx_p, cy_p - 3, str(part["index"]))
-
-    if rw > 36:
-        c.setFillColor(black)
-        c.setFont("Helvetica", 6.5)
-        label = f'{_strip_ext(part["name"])} · {part["label"]}'
-        c.drawString(rx + 2, ry + rh - 8, label[:int(rw / 3.4)])
+    cx = rx + rw / 2
+    y = ry + rh / 2 + sum(sizes) * _BOARD_LEAD / 2
+    for text, size, (font, _) in zip(lines, sizes, _BOARD_LINES):
+        c.setFont(font, size)
+        c.drawCentredString(cx, y - size * 0.85, text)
+        y -= size * _BOARD_LEAD
 
 
 # ── ATC tool holder graphic ───────────────────────────────────────────────────
@@ -515,8 +626,8 @@ def _wrap_sequence(c, block_sequence: list, park_tool, avail: float) -> list:
     return lines
 
 
-def _table_header(c, x, y, pw) -> float:
-    if _LOGO_PATH.exists():
+def _table_header(c, x, y, pw, logo=True) -> float:
+    if logo and _LOGO_PATH.exists():
         logo_h = 20
         logo_w = logo_h * 2.49
         c.drawImage(ImageReader(str(_LOGO_PATH)),
@@ -539,9 +650,9 @@ def _table_header(c, x, y, pw) -> float:
     return y - _ROW_H + 4
 
 
-def _draw_table(c, meta, parts, pw, ph, top_y) -> None:
+def _draw_table(c, meta, parts, pw, ph, top_y, logo=True) -> None:
     x = MARGIN
-    y = _table_header(c, x, top_y, pw)
+    y = _table_header(c, x, top_y, pw, logo)
 
     for part in parts:
         if y < MARGIN + 40:
