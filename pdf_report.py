@@ -45,13 +45,13 @@ _BOARD_PAD = 8
 _CHANGER_W = 96
 _CHANGER_POCKETS = 8
 _BOARD_LEAD = 1.1
-# Board lettering at its largest, in priority order. Each line shrinks to fit its
-# board: the size and slot are what the operator reads from across the shop, the name
-# is what they check up close.
+# Board lettering at its largest, top to bottom from the blank's top-left corner. Each
+# line shrinks to fit its board: the slot and the size are what the operator reads from
+# across the shop, the part number is what they check up close.
 _BOARD_LINES = (
-    ("Helvetica-Bold", 96),     # 24.0 × 12.0
-    ("Helvetica-Bold", 72),     # A13 · 0.75"
-    ("Helvetica", 40),          # part name
+    ("Helvetica-Bold", 96),     # A13
+    ("Helvetica", 56),          # 204101-1
+    ("Helvetica-Bold", 80),     # 18x12x.75
 )
 
 _LOGO_PATH = Path(__file__).parent / "static" / "logo.png"
@@ -293,34 +293,38 @@ def _draw_diagram(c, x0, y0, w, h, parts, geom) -> tuple:
     return ox, oy, draw_h
 
 
-def board_size_label(part: dict) -> str:
-    """`24.0 × 12.0` — along-rail × across-bed, in the order and rounding of bed.js
-    `sizeLabel`, because one board quoted two ways is a board someone loads rotated.
+def _trim(value: float, places: int) -> str:
+    """`18.0` → `18`, `22.80` → `22.8`, `0.75` → `.75`: no zero that carries nothing."""
+    text = f"{value:.{places}f}".rstrip("0").rstrip(".")
+    return text[1:] if text.startswith("0.") else text
 
-    Thickness is left off and lettered on the slot line instead: appended here it makes
-    the widest line on the board ~40% longer, and that line sets the size of the one
-    number the monitor page exists to show.
+
+def board_size_label(part: dict) -> str:
+    """`18x12x.75` — along-rail × across-bed × thick, in inches, in bed.js `sizeLabel`'s
+    order, because one board quoted two ways is a board someone loads rotated.
+
+    Length and width keep one decimal where they need it (a tape's resolution).
+    Thickness is `stock_label`'s 64th-snapped nominal, since one decimal would read 3/4
+    stock as .8. Every zero that carries nothing is dropped: the monitor page letters
+    this to fit the board's width, so each character costs the whole line size.
     """
     sx, sy = part.get("size_mm") or (0, 0)
     if not sx or not sy:
         return "no stock size in file"
-    return f"{sx / 25.4:.1f} × {sy / 25.4:.1f}"
+    t = part.get("material_thickness")
+    thick = "?" if t is None else _trim(round(t / 25.4 * 64) / 64, 2)
+    return f"{_trim(sx / 25.4, 1)}x{_trim(sy / 25.4, 1)}x{thick}"
 
 
 def _board_lines(part: dict) -> list:
-    thick = stock_label(part.get("material_thickness"))
-    return [
-        board_size_label(part),
-        f'{part["label"]} · {thick if thick != "—" else "? thick"}',
-        _strip_ext(part["name"]),
-    ]
+    return [part["label"], _strip_ext(part["name"]), board_size_label(part)]
 
 
 def fit_board_lines(c, lines: list, w: float, h: float) -> list:
     """Font size for each of `lines` inside a w × h board, largest first.
 
     Each line takes its `_BOARD_LINES` size unless its own width forces it smaller, so
-    a long part name shrinks alone rather than taking the size line down with it. If
+    a long part number shrinks alone rather than taking the size line down with it. If
     the stack is then too tall, every line scales down together, keeping the order of
     importance. Returns an empty list when the board has no room at all.
     """
@@ -331,9 +335,9 @@ def fit_board_lines(c, lines: list, w: float, h: float) -> list:
     for text, (font, base) in zip(lines, _BOARD_LINES):
         per_pt = c.stringWidth(text, font, 1)
         sizes.append(min(base, avail_w / per_pt) if per_pt else base)
-    # A short name on a narrow board would otherwise outgrow the size it sits under.
-    sizes[-1] = min(sizes)
-    k =min(1.0, avail_h / (sum(sizes) * _BOARD_LEAD))
+    # A short part number on a narrow board would otherwise outgrow the slot and size.
+    sizes[1] = min(sizes)
+    k = min(1.0, avail_h / (sum(sizes) * _BOARD_LEAD))
     return [size * k for size in sizes]
 
 
@@ -376,12 +380,13 @@ def _draw_part(c, P, part) -> None:
     sizes = fit_board_lines(c, lines, rw, rh)
     if not sizes:
         return
+    # Anchored at the blank's top-left corner, so the slot is the first thing read.
     c.setFillColor(black)
-    cx = rx + rw / 2
-    y = ry + rh / 2 + sum(sizes) * _BOARD_LEAD / 2
+    x = rx + _BOARD_PAD
+    y = ry + rh - _BOARD_PAD
     for text, size, (font, _) in zip(lines, sizes, _BOARD_LINES):
         c.setFont(font, size)
-        c.drawCentredString(cx, y - size * 0.85, text)
+        c.drawString(x, y - size * 0.8, text)
         y -= size * _BOARD_LEAD
 
 

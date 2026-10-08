@@ -213,14 +213,32 @@ def test_board_lettering_fits_its_board(tmp_path, length_in, width_in, name):
         assert size <= base
         assert c.stringWidth(text, font, size) <= w - 2 * _BOARD_PAD + 1e-6
     assert sum(sizes) * _BOARD_LEAD <= h - 2 * _BOARD_PAD + 1e-6
-    # The part name is for checking up close: it never outgrows the size or the slot.
-    assert sizes[2] <= min(sizes[:2]) + 1e-9
+    # The part number is for checking up close: it never outgrows the slot or the size.
+    assert sizes[1] <= min(sizes[0], sizes[2]) + 1e-9
 
 
-def test_board_lettering_reads_size_then_slot_and_thickness_then_name():
-    assert _board_lines(_board(22.8, 16.8)) == ["22.8 × 16.8", 'A26 · 0.75"', "602443-1"]
-    assert _board_lines(_board(18, 18, thick=None))[1] == "A26 · ? thick"
-    assert _board_lines({**_board(18, 18), "size_mm": (0, 0)})[0] == \
+def test_board_lettering_reads_slot_then_part_number_then_size():
+    assert _board_lines(_board(22.8, 16.8)) == ["A26", "602443-1", "22.8x16.8x.75"]
+
+
+@pytest.mark.parametrize("length_in,width_in,thick_mm,label", [
+    (18, 12, 19.05, "18x12x.75"),        # trailing zeros dropped, leading zero too
+    (22.8, 16.8, 19.05, "22.8x16.8x.75"),  # a tenth is kept where it carries
+    (18, 24, 31.75, "18x24x1.25"),
+    (18, 18, 12.7, "18x18x.5"),
+    (18, 18, 50.8, "18x18x2"),
+    (18, 18, 18.9, "18x18x.75"),         # planed stock snaps to its nominal
+    (18, 18, None, "18x18x?"),
+])
+def test_board_size_label_drops_zeros_that_carry_nothing(length_in, width_in,
+                                                         thick_mm, label):
+    from pdf_report import board_size_label
+    assert board_size_label(_board(length_in, width_in, thick=thick_mm)) == label
+
+
+def test_board_size_label_says_so_when_the_file_has_no_stock_size():
+    from pdf_report import board_size_label
+    assert board_size_label({**_board(18, 18), "size_mm": (0, 0)}) == \
         "no stock size in file"
 
 
