@@ -585,6 +585,15 @@ this caught two cutters posting one description; under codes it catches a **dupl
 code within one file**. Deliberately **per file only**: two *different* files' `T4`
 resolving to one library tool is the feature working as intended.
 
+**Guard (a) has a mirror: one `T#` declared as two tools (2026-10-08).** Fusion lets
+two library tools share a tool number, and the post writes one header triple per tool,
+so the file carries two `(T5 …)`/`(TOOLID T5 …)` pairs while its body only says
+`T5 M06`. The parser used to key on the number and keep whichever triple came last,
+which merged two cutters into one pocket. It is now a **hard stop at placement**
+(`tool_number_reused`) and at post time: nothing in the file says which pass belongs to
+which header, so there is no reading that picks correctly. The fix is renumbering in
+CAM and posting again.
+
 **Guard (b) is retired.** It refused a manual bind when the file's parsed diameter
 disagreed with the library's. Two decisions removed its footing: the library is now
 the sole diameter authority and files are no longer parsed for diameter as a source of

@@ -453,3 +453,89 @@ def test_editing_a_tool_does_not_let_the_form_rewrite_the_seal(client, isolated_
         "cam_descriptions": ["SOMETHING ELSE"],
     })
     assert isolated_library.get("EM-0500").cam_descriptions == ["KNOWN"]
+
+
+# ── one tool number on two cutters: the mirror of guard (a) ───────────────────
+
+def test_one_number_declared_as_two_cutters_is_a_hard_stop():
+    """The body only ever says `T5`, so nothing can tell which cutter each pass loads.
+    Refuse rather than pick — picking is what the old key-by-T# parse did silently."""
+    lib = _lib(make_tool("RO-0125"), make_tool("RO-0250"))
+    part = _make_part({"T5": {"code": "RO-0125"}}, ["T5", "T5"])
+    part.tool_conflicts = {"T5": [
+        {"code": "RO-0125", "cam_description": "18 ROUNDOVER"},
+        {"code": "RO-0250", "cam_description": "14 ROUNDOVER"},
+    ]}
+    res = resolve_part(lib, part)
+    assert res.redeclared == [("T5", part.tool_conflicts["T5"])]
+    assert res.blocked
+
+
+def test_a_file_without_conflicts_has_nothing_redeclared():
+    lib = _lib(make_tool("EM-0512"))
+    res = resolve_part(lib, _make_part({"T2": {"code": "EM-0512"}}, ["T2"]))
+    assert res.redeclared == []
+    assert not res.blocked
+
+
+def test_declaration_label_prefers_the_code_and_falls_back_to_the_name():
+    from tool_library import declaration_label
+    assert declaration_label({"code": "ro-0125", "cam_description": "18 ROUNDOVER"}) == "RO-0125 (18 ROUNDOVER)"
+    assert declaration_label({"code": "", "description": "RADIUS MILL D=6.731 CR=3.175"}) == "RADIUS MILL D=6.731 CR=3.175"
+    assert declaration_label({}) == "an unnamed tool"
+
+
+# ── the live library is a shared file, and the app follows it ────────────────
+
+def test_open_seeds_a_folder_that_has_never_held_a_library(tmp_path):
+    seed = tmp_path / "seed.json"
+    ToolLibrary([make_tool("EM-0512")]).save(seed)
+    live = tmp_path / "shared" / "tool_library.json"
+    live.parent.mkdir()
+    lib = ToolLibrary.open(live, seed=seed)
+    assert live.exists()
+    assert "EM-0512" in lib
+    assert lib.path == live
+
+
+def test_open_does_not_overwrite_an_existing_library_with_the_seed(tmp_path):
+    seed = tmp_path / "seed.json"
+    ToolLibrary([make_tool("EM-0512")]).save(seed)
+    live = tmp_path / "tool_library.json"
+    ToolLibrary([make_tool("RO-0250")]).save(live)
+    lib = ToolLibrary.open(live, seed=seed)
+    assert "RO-0250" in lib and "EM-0512" not in lib
+
+
+def test_save_writes_back_to_the_path_the_library_was_loaded_from(tmp_path):
+    live = tmp_path / "tool_library.json"
+    ToolLibrary([make_tool("EM-0512")]).save(live)
+    lib = ToolLibrary.load(live)
+    lib.upsert(make_tool("RO-0250"))
+    lib.save()
+    assert "RO-0250" in ToolLibrary.load(live)
+
+
+def test_reload_picks_up_another_machines_write(tmp_path):
+    import os
+    live = tmp_path / "tool_library.json"
+    ToolLibrary([make_tool("EM-0512")]).save(live)
+    lib = ToolLibrary.load(live)
+    # "Another machine": a fresh write with a visibly later timestamp.
+    ToolLibrary([make_tool("EM-0512"), make_tool("RO-0250")]).save(live)
+    os.utime(live, ns=(live.stat().st_atime_ns, live.stat().st_mtime_ns + 10**9))
+    assert lib.reload_if_changed() is True
+    assert "RO-0250" in lib
+    assert lib.reload_if_changed() is False
+
+
+def test_an_in_memory_library_never_reloads_or_writes_anywhere(tmp_path):
+    lib = ToolLibrary([make_tool("EM-0512")])
+    assert lib.path is None
+    assert lib.reload_if_changed() is False
+
+
+def test_live_library_path_is_beside_the_part_files_or_the_seed_when_no_folder(tmp_path):
+    from tool_library import default_library_path, live_library_path
+    assert live_library_path(tmp_path) == tmp_path / "tool_library.json"
+    assert live_library_path(tmp_path / "missing") == default_library_path()

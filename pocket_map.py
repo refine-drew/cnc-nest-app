@@ -26,7 +26,7 @@ output depend on an assignment that depends on the output.
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from tool_library import LibraryTool, ToolLibrary, flute_display
+from tool_library import LibraryTool, ToolLibrary, declaration_label, flute_display
 
 # Not a pocket. A tool parked here has nowhere to go yet, which is a legitimate state
 # to *be in* and an invalid state to *generate from*.
@@ -91,6 +91,7 @@ def build_changer_state(
     job_tools: Dict[str, JobTool] = {}
     unresolved: List[dict] = []
     duplicate_codes: List[dict] = []
+    redeclared: List[dict] = []
     seal_prompts: List[dict] = []
 
     for placed in placements:
@@ -131,6 +132,13 @@ def build_changer_state(
                 "filename": placed["filename"],
                 "library_code": code,
                 "tool_numbers": numbers,
+            })
+        for tn, decls in res.redeclared:
+            redeclared.append({
+                "instance_id": placed["instance_id"],
+                "filename": placed["filename"],
+                "tool_number": tn,
+                "labels": [declaration_label(d) for d in decls],
             })
         for prompt in res.seal_prompts:
             seal_prompts.append({
@@ -183,6 +191,7 @@ def build_changer_state(
     valid = (
         not unresolved
         and not duplicate_codes
+        and not redeclared
         and not seal_prompts
         and not staged
         and not doubled
@@ -231,6 +240,7 @@ def build_changer_state(
         "staged": staged,
         "unresolved": unresolved,
         "duplicate_codes": duplicate_codes,
+        "redeclared": redeclared,
         "seal_prompts": seal_prompts,
         "doubled": doubled,
         "free": free,
@@ -239,7 +249,7 @@ def build_changer_state(
         "frees_by_instance": frees_by_instance,
         "removal_advice": _removal_advice(frees_by_instance, placements),
         "messages": _messages(staged, doubled, unresolved, duplicate_codes,
-                              seal_prompts, free, len(job_tools)),
+                              seal_prompts, free, len(job_tools), redeclared),
     }
 
 
@@ -266,7 +276,7 @@ def _removal_advice(frees_by_instance: Dict[str, int], placements: List[dict]) -
 
 
 def _messages(staged, doubled, unresolved, duplicate_codes, seal_prompts,
-              free, tool_count) -> List[dict]:
+              free, tool_count, redeclared=()) -> List[dict]:
     """Two messages off one state (§3.4.1).
 
     "3 tools have no home" is a to-do when free pockets exist and a *stop* when the
@@ -291,6 +301,13 @@ def _messages(staged, doubled, unresolved, duplicate_codes, seal_prompts,
                 f"tool code ({d['library_code']}). The CAM file says they are different "
                 f"cutters, so this has to be fixed there — the nest tool will not merge "
                 f"them.")})
+
+    for r in redeclared:
+        out.append({"level": "error", "text": (
+            f"{r['filename']} gives tool number {r['tool_number']} to two different "
+            f"cutters ({' and '.join(r['labels'])}). Give each its own number in "
+            f"Fusion or VCarve and post the file again — the nest tool cannot tell "
+            f"which one each {r['tool_number']} pass uses.")})
 
     if seal_prompts:
         for s in seal_prompts:

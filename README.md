@@ -46,13 +46,30 @@ isolated, see **Working on it** below and run `app.py` yourself.
 
 ## Updating
 
-- **Mac:** double-click `update.command`
-- **Windows:** double-click `update.bat`
+**Launching updates.** `launch.bat` / `launch.command` pull the latest version from
+GitHub before starting the server, so a PC that is launched each morning is up to date
+each morning. Offline, or with no git installed, the launcher says so and starts the
+version it has. `update.bat` / `update.command` still exist and do the same pull, for a
+machine that has been running for days and needs the new version now.
 
-The updater pulls from GitHub and relaunches. **The launchers do not update anything** —
-running `launch` again just starts the version you already have.
+## The shared library
 
----
+One Google Drive **shared drive, `SS2 Library`**, holds everything the four machines
+share: the posted `.nc` part files in whatever folders you like, and `tool_library.json`
+at its root. Install Google Drive for desktop on each machine, sign in to the business
+account, and mark the shared drive *Available offline* so the files are real files
+rather than placeholders.
+
+`config.json` lists the path the shared drive mounts at on each kind of machine, and
+each machine uses the first one that exists. Drive maps shared drives to
+`G:\Shared drives\…` on Windows by default; if a PC gets a different letter, add that
+path to the list on your Mac and push it rather than editing `config.json` on the PC,
+because a PC-side edit collides with the next pull.
+
+The tool library is read from that folder and re-read whenever Drive delivers another
+machine's edit, so a tool added on AJ's PC is on the shop PCs within a minute. The
+`tool_library.json` in this repo is only the seed copied into a library folder that has
+never held one.
 
 ## What you get out of a job
 
@@ -120,7 +137,7 @@ static/                 browser JavaScript (CSS is inline in index.html)
 tests/                  pytest suite
 docs/                   the tool-changer / pocket-management spec
 launch.command  launch.bat     start the app
-update.command  update.bat     pull the latest version and restart
+update.command  update.bat     pull the latest version now and restart
 ```
 
 ---

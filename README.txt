@@ -42,13 +42,22 @@ MAC SETUP
 
 UPDATING
 ========
-Windows:  double-click update.bat
-Mac:      double-click update.command
+Launching updates. launch.bat / launch.command pull the latest version from
+GitHub before starting, so a PC launched each morning is up to date each
+morning. Offline, the launcher says so and starts the version it has.
 
-Do NOT expect launch.bat or launch.command to update anything. They only start
-the version you already have. Updating is update.bat / update.command, and
-nothing else.
+update.bat / update.command do the same pull right now, for a machine that
+has been running for days.
 
+
+THE SHARED LIBRARY
+==================
+Part files and the tool library live on the Google Drive shared drive
+"SS2 Library". Install Google Drive for desktop, sign in to the business
+account, and mark the shared drive "Available offline".
+
+Do not change Settings on a shop PC. Path changes go in config.json on the
+Mac and are pushed, or the next update refuses to pull.
 
 WHAT A JOB WRITES
 =================

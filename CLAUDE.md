@@ -558,6 +558,19 @@ the sole diameter authority. Built 2026-08-17 (issues #9, #24); data lives in
 `tool_library.json`, which is operator data with its own lifecycle and deliberately
 **not** inside `config.json`.
 
+**The live `tool_library.json` is in the shared library folder, not beside the app**
+(2026-10-08). Four machines run this — two shop PCs, AJ's PC, the Mac — off one Google
+Drive shared drive (`SS2 Library`) that holds the part files and, at its root, the tool
+library. `live_library_path(root)` is the rule; the repo's own `tool_library.json` is
+only a **seed**, copied into a library folder that has never held one, and must not be
+read as the live file by anything. `ToolLibrary.reload_if_changed` runs before every
+request so a server up all day sees another machine's edit, and `save()` writes back to
+the path it loaded from. A library built in memory has `path None` and both are no-ops,
+which is how the tests' double stays inert. `config.json` stays in git and identical on
+every machine — the library path is a list and each machine takes the first that
+exists — so Settings must not be saved on a shop PC, or the next launch-time pull
+refuses. Launchers pull at launch (D2).
+
 **Identity is matched exactly or not at all, and no string is ever compared.**
 `code_in_file_tool` looks in two places, because there are two CAM apps: Fusion's
 `CODE=` from the `TOOLID` comment (sourced from the tool's Product ID field), and —
@@ -578,6 +591,17 @@ Three rules in that module are load-bearing:
   `.nc` must never resolve to one library tool — CAM already asserted they differ by
   giving them different pockets. Hard stop, never a merge. Per file only: two
   *different* files' `T4` resolving to one tool is the feature working.
+- **The mirror of guard (a): one `T#` declared as two tools is a hard stop too**
+  (2026-10-08). Fusion lets two library tools share a number and the post writes one
+  header triple per *tool*, so the file carries two `(T5 …)`/`(TOOLID T5 …)` pairs
+  while its body only ever says `T5 M06`. `extract_tools` keyed on the `T#` and let the
+  second overwrite the first, so both passes resolved to one cutter and the dock showed
+  one tool. `gcode_parser.extract_tool_declarations` now records the distinct
+  declarations in `GcodePart.tool_conflicts`, `resolve_part` carries them as
+  `redeclared`, and `/api/place` refuses with `tool_number_reused`. Nothing can be
+  repaired by reading harder — the file does not say which pass is which — so do not
+  add a pick rule. The post refuses the same thing at post time
+  (`validateToolNumbersAreUnique`), which is where the fix is made.
 - **The description seal (`cam_descriptions[]`) stores a set, never a single value.**
   Replace-on-confirm thrashes forever after a rename — new files carry the new string,
   old files still carry the old one — which trains click-through and destroys the only

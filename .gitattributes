@@ -1,2 +1,4 @@
 # Ensure Mac launcher scripts use LF line endings
 *.command text eol=lf
+# And the Windows ones use CRLF, whatever the checkout machine's autocrlf says
+*.bat text eol=crlf

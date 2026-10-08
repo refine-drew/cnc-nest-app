@@ -149,12 +149,16 @@ class GcodePart:
     passes: List[GcodePass] = field(default_factory=list)
     segments: List[dict] = field(default_factory=list)
     runtime_seconds: float = 0.0
+    # `T#` → the distinct tools the header declares under that one number, in file
+    # order, whenever there is more than one. A file like that cannot say which cutter
+    # each `T# M06` loads, so it is refused at placement (`tool_library.resolve_part`).
+    tool_conflicts: Dict[str, List[dict]] = field(default_factory=dict)
 
 
 def parse_vcarve_text(text: str, filename: str = "", limits=None) -> GcodePart:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     vcarve_x_span, vcarve_y_span, material_thickness = extract_blank_and_material(lines)
-    tools = extract_tools(lines)
+    tools, tool_conflicts = extract_tool_declarations(lines)
     min_vx, max_vx, min_vy, max_vy = scan_coordinates(lines)
     min_z, max_z, safe_z = scan_z_values(lines)
     passes = extract_passes(lines)
@@ -207,6 +211,7 @@ def parse_vcarve_text(text: str, filename: str = "", limits=None) -> GcodePart:
         passes=passes,
         segments=segments,
         runtime_seconds=runtime_seconds,
+        tool_conflicts=tool_conflicts,
     )
 
 
@@ -326,9 +331,54 @@ def _toolid_fields(body: str) -> Dict[str, object]:
     return fields
 
 
+# The fields that say *which cutter* a declaration names. Two header lines for one
+# `T#` that disagree on any of these are two tools; `vendor` and `flutes` are for a
+# human reading the file and are deliberately not in the set.
+_IDENTITY_KEYS = ("code", "description", "cam_description", "diameter_inches")
+
+
 def extract_tools(lines: List[str]) -> Dict[str, Dict[str, Optional[float]]]:
-    tools: Dict[str, Dict[str, Optional[float]]] = {}
+    return extract_tool_declarations(lines)[0]
+
+
+def extract_tool_declarations(
+    lines: List[str],
+) -> Tuple[Dict[str, Dict[str, Optional[float]]], Dict[str, List[dict]]]:
+    """Read the tool header into `T#` → fields, and report any `T#` declared twice.
+
+    Returns `(tools, conflicts)`. `tools` is what every caller has always read, one
+    entry per `T#`. `conflicts` is `T#` → the distinct declarations found under that
+    number, present only when there is more than one.
+
+    **A `T#` used to be a dict key, and a second declaration silently overwrote the
+    first** (2026-10-08). Fusion lets two library tools carry one tool number, and the
+    REFINE post writes one header triple per *tool*, so such a file carries
+    `(T5 D=…)` / `(TOOLID T5 CODE=RO-0125 …)` and then, a few lines down,
+    `(T5 D=…)` / `(TOOLID T5 CODE=RO-0250 …)`. `setdefault` + `update` merged them into
+    one entry holding the last code, both `T5 M06` passes resolved to that one cutter,
+    the changer dock showed one tool, and the generator would have run the first
+    cutter's passes with the second cutter. Nothing in the file says which pass belongs
+    to which header — the body only ever says `T5` — so this cannot be repaired by
+    reading harder. It is recorded here and refused at placement.
+
+    A line *starts* a new declaration only when the current one already holds a
+    different value for an identity field. A repeated identical line (VCarve can list
+    a tool more than once) updates in place and is not a conflict.
+    """
+    declarations: Dict[str, List[Dict[str, object]]] = {}
     to_inches = 1.0 if file_is_inch(lines) else 1.0 / 25.4
+
+    def declare(tool_number: str, fields: Dict[str, object]) -> None:
+        decls = declarations.setdefault(tool_number, [])
+        current = decls[-1] if decls else None
+        clashes = current is not None and any(
+            key in current and current[key] != value
+            for key, value in fields.items() if key in _IDENTITY_KEYS
+        )
+        if current is None or clashes:
+            decls.append(dict(fields))
+        else:
+            current.update(fields)
 
     for line in lines:
         # Checked before the VCarve patterns, and `continue`s on a hit: a Fusion
@@ -336,29 +386,30 @@ def extract_tools(lines: List[str]) -> Dict[str, Dict[str, Optional[float]]]:
         # would read the millimetre `12.7` in `D=12.7` as 12.7 inches.
         fusion_match = FUSION_TOOL_HEADER_PATTERN.search(line)
         if fusion_match:
-            entry = tools.setdefault(fusion_match.group(1).upper(), {})
-            entry.update(_fusion_tool_entry(fusion_match, to_inches))
+            declare(fusion_match.group(1).upper(), _fusion_tool_entry(fusion_match, to_inches))
             continue
 
         toolid_match = TOOLID_PATTERN.search(line)
         if toolid_match:
-            entry = tools.setdefault(toolid_match.group(1).upper(), {})
-            entry.update(_toolid_fields(toolid_match.group(2)))
+            declare(toolid_match.group(1).upper(), _toolid_fields(toolid_match.group(2)))
             continue
 
         tooldesc_match = TOOLDESC_PATTERN.search(line)
         if tooldesc_match:
-            entry = tools.setdefault(tooldesc_match.group(1).upper(), {})
-            entry["cam_description"] = tooldesc_match.group(2).strip()
+            declare(tooldesc_match.group(1).upper(),
+                    {"cam_description": tooldesc_match.group(2).strip()})
             continue
 
         header_match = TOOL_HEADER_PATTERN.search(line)
         if header_match:
-            tool_number = header_match.group(1).upper()
             description = header_match.group(2).strip()
-            tools[tool_number] = {"description": description, "diameter_inches": _extract_diameter(description)}
+            declare(header_match.group(1).upper(),
+                    {"description": description, "diameter_inches": _extract_diameter(description)})
             continue
 
+        # VCarve's per-toolpath `(Tool: …)` line names the tool a second time in a
+        # different shape, so it is not a declaration: it fills in the entry it finds
+        # and is never read as a conflict.
         inline_match = INLINE_TOOL_PATTERN.search(line)
         if inline_match:
             description = inline_match.group(1).strip()
@@ -366,10 +417,13 @@ def extract_tools(lines: List[str]) -> Dict[str, Dict[str, Optional[float]]]:
             maybe_tool = extract_tool_number_from_line(line)
             if maybe_tool:
                 tool_number = maybe_tool.upper()
-                tools.setdefault(tool_number, {})
-                tools[tool_number].update({"description": description, "diameter_inches": diameter})
+                decls = declarations.setdefault(tool_number, [{}])
+                decls[0].update({"description": description, "diameter_inches": diameter})
 
-    return tools
+    # The first declaration is the entry, as it was when a file could only carry one.
+    tools = {tn: decls[0] for tn, decls in declarations.items()}
+    conflicts = {tn: decls for tn, decls in declarations.items() if len(decls) > 1}
+    return tools, conflicts
 
 
 def motion_mode(line: str, current: Optional[int]) -> Optional[int]:

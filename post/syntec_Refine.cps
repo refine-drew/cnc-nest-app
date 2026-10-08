@@ -1076,8 +1076,53 @@ function getFeed(f) {
   return feedOutput.format(f); // use feed value
 }
 
+/**
+  Refuse to post when one tool number names two different cutters.
+
+  Fusion lets two library tools share a number, and the header this post writes has one
+  triple per tool, so such a program carries two (T5 ...) / (TOOLID T5 ...) pairs while
+  its body only ever says T5 M06. Nothing downstream can tell which cutter a pass loads:
+  the Refine SS2 Layout Tool refuses the file at placement (gcode_parser
+  extract_tool_declarations), and this is the same stop one step earlier, where the fix
+  is made. Two sections on one tool entry, or on two identical entries, are fine.
+*/
+function validateToolNumbersAreUnique() {
+  var seen = {};
+  for (var i = 0; i < getNumberOfSections(); ++i) {
+    var section = getSection(i);
+    var tool = section.getTool();
+    var name = section.getParameter("operation-comment", "");
+    var entry = {
+      code       : (tool.productId == undefined) ? "" : String(tool.productId).trim().toUpperCase(),
+      description: tool.description ? String(tool.description) : "",
+      diameter   : tool.diameter,
+      cornerRadius: tool.cornerRadius,
+      operation  : name
+    };
+    var prior = seen[tool.number];
+    if (prior == undefined) {
+      seen[tool.number] = entry;
+      continue;
+    }
+    if (prior.code != entry.code ||
+        prior.description != entry.description ||
+        xyzFormat.areDifferent(prior.diameter, entry.diameter) ||
+        xyzFormat.areDifferent(prior.cornerRadius, entry.cornerRadius)) {
+      error(
+        localize("Tool") + " " + tool.number + " " +
+        localize("is used for two different cutters") + ": \"" +
+        (prior.code || prior.description) + "\" (" + prior.operation + ") " +
+        localize("and") + " \"" + (entry.code || entry.description) + "\" (" + entry.operation + "). " +
+        localize("Give each cutter its own tool number and post again.")
+      );
+      return;
+    }
+  }
+}
+
 function validateCommonParameters() {
   validateToolData();
+  validateToolNumbersAreUnique();
   for (var i = 0; i < getNumberOfSections(); ++i) {
     var section = getSection(i);
     if (getSection(0).workOffset == 0 && section.workOffset > 0) {

@@ -6,6 +6,25 @@ echo "  CNC Nest Tool"
 echo "==================================="
 echo ""
 
+# Update first, so a daily launch is a daily update (decided 2026-10-08). Offline,
+# git missing, or a local edit in the way: say so and start the version that is here.
+export GIT_TERMINAL_PROMPT=0
+BEFORE=""; AFTER=""
+if ! command -v git &>/dev/null; then
+    echo "Git is not installed, so updates cannot be fetched. Starting the version you have."
+    echo ""
+else
+    BEFORE=$(git rev-parse HEAD 2>/dev/null)
+    echo "Checking for updates..."
+    if ! git pull --ff-only; then
+        echo ""
+        echo "Could not update (offline, or a file here was changed by hand)."
+        echo "Starting the version you have."
+        echo ""
+    fi
+    AFTER=$(git rev-parse HEAD 2>/dev/null)
+fi
+
 # Check Python 3
 if ! command -v python3 &>/dev/null; then
     echo "ERROR: Python 3 is not installed."
@@ -31,8 +50,9 @@ if [ ! -x "$PYTHON" ]; then
     fi
 fi
 
-# Check / install dependencies (Flask, reportlab, etc.)
-if ! "$PYTHON" -c "import flask, reportlab" &>/dev/null; then
+# Check / install dependencies (Flask, reportlab, etc.). Also re-run after an
+# update, in case requirements.txt changed.
+if ! "$PYTHON" -c "import flask, reportlab" &>/dev/null || [ -n "$BEFORE" ] && [ "$BEFORE" != "$AFTER" ]; then
     echo "Dependencies not found. Installing..."
     "$PYTHON" -m pip install -r requirements.txt
     if [ $? -ne 0 ]; then

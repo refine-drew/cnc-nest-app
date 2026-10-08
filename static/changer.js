@@ -141,6 +141,17 @@ var Changer = (() => {
       wrap.appendChild(bar);
     }
 
+    for (const r of st.redeclared || []) {
+      const bar = document.createElement("div");
+      bar.className = "dock-advice";
+      bar.innerHTML =
+        `<span class="sym">✕</span> ${_esc(r.filename)} gives tool number ` +
+        `<b>${_esc(r.tool_number)}</b> to two different cutters ` +
+        `(${_esc(r.labels.join(" and "))}). Give each its own number in Fusion or ` +
+        `VCarve and post again — the file cannot say which one each pass uses.`;
+      wrap.appendChild(bar);
+    }
+
     for (const seal of st.seal_prompts || []) {
       const bar = document.createElement("div");
       bar.className = "dock-advice";

@@ -35,7 +35,10 @@ var Placement = (() => {
       return;
     }
 
-    if (r.status === 422 && data.error === "duplicate_tool_code") {
+    if (r.status === 422 && (data.error === "duplicate_tool_code" ||
+                             data.error === "tool_number_reused")) {
+      // Both are CAM numbering defects: two numbers on one cutter, or one number on
+      // two cutters. Neither can be fixed here, so the message says where to go.
       App.setMessage(data.message, true);
       return;
     }

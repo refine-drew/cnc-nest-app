@@ -22,6 +22,7 @@ Three rules run through everything below and are easy to undo by accident:
 
 import json
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -165,6 +166,11 @@ class ToolLibrary:
         self.tools: Dict[str, LibraryTool] = {}
         for tool in tools or []:
             self.tools[tool.code] = tool
+        # Where this library was read from, and the file's modification time when it
+        # was. None for a library built in memory, which `reload_if_changed` and `save`
+        # both treat as "not backed by a file".
+        self.path: Optional[Path] = None
+        self._mtime_ns: Optional[int] = None
 
     # ── persistence ──
     @classmethod
@@ -193,12 +199,59 @@ class ToolLibrary:
     def load(cls, path: Optional[Path] = None) -> "ToolLibrary":
         p = Path(path) if path else default_library_path()
         if not p.exists():
-            return cls()
-        return cls.from_dict(json.loads(p.read_text(encoding="utf-8")))
+            lib = cls()
+            lib.path = p
+            return lib
+        lib = cls.from_dict(json.loads(p.read_text(encoding="utf-8")))
+        lib.path = p
+        lib._mtime_ns = p.stat().st_mtime_ns
+        return lib
+
+    @classmethod
+    def open(cls, path: Path, seed: Optional[Path] = None) -> "ToolLibrary":
+        """Load the library at `path`, creating it from `seed` if it is not there yet.
+
+        The live library sits in the shared part-library folder (`live_library_path`),
+        so four machines read and write one file. A folder that has never held one is
+        seeded from the copy shipped with the app rather than started empty: an empty
+        library loads fine and then orphans every tool in every file, which is the
+        failure that is hardest to notice.
+        """
+        p = Path(path)
+        if not p.exists() and seed is not None:
+            seed = Path(seed)
+            if seed.exists() and seed.resolve() != p.resolve():
+                shutil.copyfile(seed, p)
+        return cls.load(p)
 
     def save(self, path: Optional[Path] = None) -> None:
-        p = Path(path) if path else default_library_path()
+        p = Path(path) if path else (self.path or default_library_path())
         p.write_text(json.dumps(self.to_dict(), indent=2) + "\n", encoding="utf-8")
+        if self.path is None:
+            self.path = p
+        if p == self.path:
+            self._mtime_ns = p.stat().st_mtime_ns
+
+    def reload_if_changed(self) -> bool:
+        """Re-read the file if another machine has written it since we last did.
+
+        Drive sync delivers a colleague's edit as a new file with a new timestamp, and
+        this is the whole of how it reaches a server that has been up all day. Called
+        before every request. In-place, so every reference to this object sees the
+        new tools; nothing is cached off it between requests.
+        """
+        if self.path is None:
+            return False
+        try:
+            mtime_ns = self.path.stat().st_mtime_ns
+        except FileNotFoundError:
+            return False
+        if mtime_ns == self._mtime_ns:
+            return False
+        fresh = ToolLibrary.load(self.path)
+        self.tools = fresh.tools
+        self._mtime_ns = mtime_ns
+        return True
 
     # ── reads ──
     def sorted_tools(self) -> List[LibraryTool]:
@@ -272,7 +325,21 @@ class ToolLibrary:
 
 
 def default_library_path() -> Path:
+    """The copy shipped with the app. The **seed**, not the live file (2026-10-08)."""
     return Path(__file__).parent / LIBRARY_FILE
+
+
+def live_library_path(library_root: Path) -> Path:
+    """Where the library the app reads and writes actually lives.
+
+    Beside the part files, in the shared library folder — one folder on Drive holds
+    everything four machines share, and the tool library is operator data exactly like
+    the `.nc` files beside it. The app-local copy is only a seed for a folder that has
+    never held one. When no library folder exists yet (a fresh machine before Drive is
+    set up), the app-local copy is used directly so the app still starts.
+    """
+    root = Path(library_root)
+    return root / LIBRARY_FILE if root.is_dir() else default_library_path()
 
 
 # ── reading identity out of a parsed file ─────────────────────────────────────
@@ -329,6 +396,16 @@ def posted_diameter_of(info: dict) -> Optional[float]:
     return float(value) if value else None
 
 
+def declaration_label(decl: dict) -> str:
+    """How an operator-facing message names one header declaration: the shop code when
+    it carries one, otherwise what CAM called the tool."""
+    code = (decl.get("code") or "").strip()
+    text = str(decl.get("cam_description") or decl.get("description") or "").strip()
+    if code and text:
+        return f"{normalize_code(code)} ({text})"
+    return normalize_code(code) if code else (text or "an unnamed tool")
+
+
 # ── resolution ────────────────────────────────────────────────────────────────
 
 # One binding per `T#` in one file.
@@ -383,6 +460,11 @@ class PartResolution:
     # requiring manual disambiguation, NEVER a merge. Per file only — two *different*
     # files' T4 resolving to one tool is the feature working (§3.5.3).
     duplicate_codes: List[Tuple[str, List[str]]] = field(default_factory=list)
+    # The mirror of guard (a): one T# declared as two different tools. The file's body
+    # only ever says `T5`, so nothing can tell which cutter each `T5 M06` loads — it
+    # is a CAM numbering defect and a hard stop, never a guess (`gcode_parser`
+    # `extract_tool_declarations`). Each entry is `(T#, [declaration, ...])`.
+    redeclared: List[Tuple[str, List[dict]]] = field(default_factory=list)
     seal_prompts: List[SealPrompt] = field(default_factory=list)
     # Descriptions safe to adopt without asking: a code whose set is empty has nothing
     # to disagree with, so the first string it posts is learned rather than prompted.
@@ -394,7 +476,8 @@ class PartResolution:
 
     @property
     def blocked(self) -> bool:
-        return bool(self.unresolved or self.duplicate_codes or self.seal_prompts)
+        return bool(self.unresolved or self.duplicate_codes or self.redeclared
+                    or self.seal_prompts)
 
     def diameters_by_tool_number(self, library: ToolLibrary) -> Dict[str, float]:
         """`T#` → declared diameter, for the collision and envelope checks."""
@@ -458,6 +541,14 @@ def resolve_part(
         # self-identifying and an override would be a silent re-bind of an exact match.
 
         result.bindings[tn] = binding
+
+    # One number, two tools — the parser found a second header under a T# that
+    # disagreed with the first on an identity field. Recorded before guard (a) so the
+    # operator is told about the numbering, not about whatever the first declaration
+    # happened to resolve to.
+    for tn, decls in (getattr(part, "tool_conflicts", None) or {}).items():
+        result.redeclared.append((tn.upper(), [dict(d) for d in decls]))
+    result.redeclared.sort()
 
     # Guard (a) — injective within this one file.
     by_code: Dict[str, List[str]] = {}

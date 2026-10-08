@@ -1064,3 +1064,59 @@ def test_changing_the_motion_model_reprices_loaded_parts(client, tmp_path, monke
 
     assert placed.part.runtime_seconds > per_part_before
     assert client.get("/api/placements").get_json()["runtime_seconds"] > before
+
+
+def test_place_refuses_a_file_that_gives_one_tool_number_to_two_cutters(client, tmp_path, monkeypatch):
+    """The 2026-10-07 case: two Fusion tools numbered T5, two header triples, and the
+    old parse merged them into one entry so both passes resolved to one cutter."""
+    two = (
+        "( Material Size)\n( X= 100.0, Y= 100.0, Z= 19.05)\n"
+        "(T5 D=6.731 CR=3.175 - ZMIN=16.383 - RADIUS MILL)\n"
+        "(TOOLID T5 CODE=RO-0125 VENDOR= FLUTES=2)\n"
+        "(TOOLDESC T5 18 ROUNDOVER)\n"
+        "(T5 D=16.256 CR=6.35 - ZMIN=7.493 - RADIUS MILL)\n"
+        "(TOOLID T5 CODE=RO-0250 VENDOR= FLUTES=4)\n"
+        "(TOOLDESC T5 14 ROUNDOVER)\n"
+        "T5 M06\nG43 Z44.4754 H05\nG01 X50 Y50 Z16.383\n"
+        "T5 M06\nG43 Z44.4754 H05\nG01 X60 Y60 Z7.493\nM30\n"
+    )
+    _seed_library(tmp_path, monkeypatch, {"two.nc": two})
+    r = client.post("/api/place", json={"path": "two.nc", "rail": "A", "slot_inches": 39})
+    assert r.status_code == 422
+    data = r.get_json()
+    assert data["error"] == "tool_number_reused"
+    assert data["tool_number"] == "T5"
+    assert data["labels"] == ["RO-0125 (18 ROUNDOVER)", "RO-0250 (14 ROUNDOVER)"]
+    assert "two.nc gives tool number T5 to two different cutters" in data["message"]
+    assert "post the file again" in data["message"]
+    assert app_module._placements == {}
+
+
+# ── job names are file names on Windows too ───────────────────────────────────
+
+def test_a_typed_job_name_is_cleaned_of_what_windows_refuses():
+    # macOS refuses only `/`, so these reached `write_text` unchecked until the shop
+    # PCs. The cleaned string is the file name *and* the program's first line.
+    assert app_module._job_name({"job_name": '3/4" board: test?'}) == "3-4 board- test"
+    assert app_module._job_name({"job_name": "trailing. "}) == "trailing"
+    assert app_module._job_name({"job_name": "(9) 18G Test"}) == "(9) 18G Test"
+
+
+def test_a_name_that_cleans_to_nothing_falls_back_to_the_auto_name(tmp_path, monkeypatch):
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    name = app_module._job_name({"job_name": '"?"'})
+    assert re.fullmatch(r"\d{4}-\d{4}[a-z]?", name)
+
+
+def test_a_request_sees_a_tool_library_another_machine_just_wrote(client, tmp_path, monkeypatch):
+    from tool_library import ToolLibrary
+    from tests.conftest import make_tool
+    live = tmp_path / "tool_library.json"
+    ToolLibrary([make_tool("EM-0512")]).save(live)
+    monkeypatch.setattr(app_module, "tool_library", ToolLibrary.load(live))
+    assert [t["code"] for t in client.get("/api/tool-library").get_json()["tools"]] == ["EM-0512"]
+
+    ToolLibrary([make_tool("EM-0512"), make_tool("RO-0250")]).save(live)
+    os.utime(live, ns=(live.stat().st_atime_ns, live.stat().st_mtime_ns + 10**9))
+    codes = [t["code"] for t in client.get("/api/tool-library").get_json()["tools"]]
+    assert codes == ["EM-0512", "RO-0250"]

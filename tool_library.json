@@ -59,6 +59,20 @@
       "product_link": ""
     },
     {
+      "code": "CD-0125",
+      "name": "1/8 CENTER DRILL",
+      "diameter_inches": 0.125,
+      "geometry_class": "Center Drill",
+      "flute_direction": "up",
+      "cutting_length_in": null,
+      "cam_descriptions": [
+        "18 CENTER DRILL"
+      ],
+      "default_slot": null,
+      "vendor": "",
+      "product_link": ""
+    },
+    {
       "code": "CF-1500",
       "name": "Side Handle Bit",
       "diameter_inches": 1.5,
@@ -176,6 +190,21 @@
       "cam_descriptions": [],
       "default_slot": 5,
       "vendor": "",
+      "product_link": ""
+    },
+    {
+      "code": "RO-0250",
+      "name": "1/4 ROUNDOVER (-185\" Z)",
+      "diameter_inches": 1.125,
+      "geometry_class": "Roundover",
+      "flute_direction": "straight",
+      "cutting_length_in": null,
+      "cam_descriptions": [
+        "14 ROUNDOVER",
+        "14 ROUNDOVER -.185 Z"
+      ],
+      "default_slot": null,
+      "vendor": "Freud",
       "product_link": ""
     }
   ]

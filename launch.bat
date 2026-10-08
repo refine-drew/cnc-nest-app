@@ -1,10 +1,34 @@
 @echo off
-title CNC Nest Tool
+title Refine SS2 Layout Tool
 cd /d "%~dp0"
 echo ===================================
-echo   CNC Nest Tool
+echo   Refine SS2 Layout Tool
 echo ===================================
 echo.
+
+REM Update first, so a daily launch is a daily update (decided 2026-10-08). Offline,
+REM git missing, or a local edit in the way: say so and start the version that is here.
+REM GIT_TERMINAL_PROMPT=0 makes a credential prompt fail instead of hang; the repo is
+REM public, so none is expected.
+set GIT_TERMINAL_PROMPT=0
+set "BEFORE="
+set "AFTER="
+git --version >nul 2>&1
+if errorlevel 1 (
+    echo Git is not installed, so updates cannot be fetched. Starting the version you have.
+    echo.
+) else (
+    for /f %%i in ('git rev-parse HEAD 2^>nul') do set "BEFORE=%%i"
+    echo Checking for updates...
+    git pull --ff-only
+    if errorlevel 1 (
+        echo.
+        echo Could not update ^(offline, or a file here was changed by hand^).
+        echo Starting the version you have.
+        echo.
+    )
+    for /f %%i in ('git rev-parse HEAD 2^>nul') do set "AFTER=%%i"
+)
 
 REM Check Python is installed
 python --version >nul 2>&1
@@ -33,10 +57,14 @@ if not exist "%PYTHON%" (
     )
 )
 
-REM Check / install dependencies (Flask, reportlab, etc.)
+REM Check / install dependencies (Flask, reportlab, etc.). Also re-run after an
+REM update, in case requirements.txt changed.
+set "NEED_PIP="
 "%PYTHON%" -c "import flask, reportlab" >nul 2>&1
-if errorlevel 1 (
-    echo Dependencies not found. Installing...
+if errorlevel 1 set "NEED_PIP=1"
+if defined BEFORE if defined AFTER if not "%BEFORE%"=="%AFTER%" set "NEED_PIP=1"
+if defined NEED_PIP (
+    echo Installing dependencies...
     "%PYTHON%" -m pip install -r requirements.txt
     if errorlevel 1 (
         echo.
@@ -53,7 +81,7 @@ start /b cmd /c "timeout /t 3 /nobreak >nul && start http://localhost:5001"
 
 echo Starting server...
 echo.
-echo CNC Nest Tool is running at http://localhost:5001
+echo Refine SS2 Layout Tool is running at http://localhost:5001
 echo Close this window to stop the server.
 echo.
 

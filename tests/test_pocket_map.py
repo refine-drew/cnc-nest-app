@@ -304,3 +304,24 @@ def test_generate_is_blocked_while_the_map_is_invalid(client, tmp_path, monkeypa
     client.post("/api/changer/assign", json={"code": "SB-0500", "pocket": 8})
     ok = client.post("/api/generate", json={"job_name": "j"})
     assert ok.status_code == 200
+
+
+# ── one tool number on two cutters ────────────────────────────────────────────
+
+def test_a_reused_tool_number_invalidates_the_map_and_names_both_cutters():
+    lib = ToolLibrary([make_tool("RO-0125", default_slot=5), make_tool("RO-0250", default_slot=6)])
+    part = _part({"T5": {"code": "RO-0125"}}, ["T5", "T5"], "paddle.nc")
+    part.tool_conflicts = {"T5": [
+        {"code": "RO-0125", "cam_description": "18 ROUNDOVER"},
+        {"code": "RO-0250", "cam_description": "14 ROUNDOVER"},
+    ]}
+    entry = {"instance_id": "paddle_1", "filename": "paddle.nc", "slot": "A39",
+             "resolution": resolve_part(lib, part)}
+    st = _state(lib, [entry])
+    assert st["valid"] is False
+    assert st["redeclared"] == [{
+        "instance_id": "paddle_1", "filename": "paddle.nc", "tool_number": "T5",
+        "labels": ["RO-0125 (18 ROUNDOVER)", "RO-0250 (14 ROUNDOVER)"],
+    }]
+    errors = [m["text"] for m in st["messages"] if m["level"] == "error"]
+    assert any("paddle.nc gives tool number T5 to two different cutters" in t for t in errors)

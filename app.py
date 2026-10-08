@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 from math import isfinite
 from itertools import count
@@ -38,7 +39,8 @@ from runtime_estimator import (
 )
 from tool_library import (
     FLUTE_DIRECTIONS, GEOMETRY_CLASSES, LibraryTool, ToolLibrary, ToolLibraryError,
-    normalize_code, resolve_part,
+    declaration_label, default_library_path, live_library_path, normalize_code,
+    resolve_part,
 )
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -47,7 +49,33 @@ config = load_config()
 
 # Operator data with its own lifecycle — kept out of config.json deliberately, so a
 # growing library never lands in the file the settings panel writes (spec §3.5).
-tool_library = ToolLibrary.load()
+#
+# It lives **in the shared library folder**, beside the part files, not beside the
+# app (2026-10-08). Four machines run this — two shop PCs, AJ's PC and the Mac — and
+# the library is the sole diameter authority, so four copies would be four opinions
+# about where a cutting edge is. Drive syncs the folder; `_refresh_tool_library`
+# picks up another machine's edit before each request. The repo's own
+# `tool_library.json` is only the seed for a folder that has never held one.
+tool_library = ToolLibrary.open(
+    live_library_path(resolve_library_root(config["library_path"])),
+    seed=default_library_path(),
+)
+
+
+@app.before_request
+def _refresh_tool_library() -> None:
+    tool_library.reload_if_changed()
+
+
+def _reopen_tool_library() -> None:
+    """Follow the library folder when Settings moves it. A library with no `path` is
+    an in-memory one (the tests' double), and is left alone."""
+    global tool_library
+    if tool_library.path is None:
+        return
+    path = live_library_path(resolve_library_root(config["library_path"]))
+    if path != tool_library.path:
+        tool_library = ToolLibrary.open(path, seed=default_library_path())
 
 # In-memory session state — single user, local app
 _loaded: Dict[str, GcodePart] = {}      # library-relative path → GcodePart
@@ -444,6 +472,23 @@ def _resolution_block(rel: str, res) -> Optional[tuple]:
     has no radius, the library is its only source, and the app must not invent one.
     Resolve or do not place.
     """
+    if res.redeclared:
+        tn, decls = res.redeclared[0]
+        labels = " and ".join(declaration_label(d) for d in decls)
+        return ({
+            "ok": False,
+            "error": "tool_number_reused",
+            "message": (
+                f"{res.filename} gives tool number {tn} to two different cutters "
+                f"({labels}). The file cannot say which one each {tn} pass uses, so "
+                "the nest tool will not load it. Give each cutter its own tool number "
+                "in Fusion or VCarve and post the file again."
+            ),
+            "path": rel,
+            "tool_number": tn,
+            "labels": [declaration_label(d) for d in decls],
+        }, 422)
+
     if res.duplicate_codes:
         pairs = "; ".join(
             f"{' and '.join(nums)} both resolve to {code}"
@@ -749,8 +794,23 @@ def _unique_job_name(base: str) -> str:
     raise AssertionError("unreachable: count() is unbounded")
 
 
+# What Windows refuses in a file name, plus control characters. macOS refuses only
+# `/`, which is why a typed name reached `write_text` unchecked until the shop PCs
+# arrived (2026-10-08). The same string is the file name *and* the program's first
+# line, so it is cleaned once, here, before either is formed.
+_UNSAFE_NAME_CHARS = re.compile(r'[<>:/\\|?*\x00-\x1f]')
+
+
+def _safe_job_name(name: str) -> str:
+    cleaned = _UNSAFE_NAME_CHARS.sub("-", name.replace('"', ""))
+    # Windows also drops trailing dots and spaces from a name, silently. A name with
+    # nothing readable left in it is no name, and gets the auto one.
+    cleaned = cleaned.strip(" .-")
+    return cleaned if re.search(r"[A-Za-z0-9]", cleaned) else ""
+
+
 def _job_name(data: dict) -> str:
-    explicit = data.get("job_name")
+    explicit = _safe_job_name(str(data.get("job_name") or ""))
     if explicit:
         return explicit
     return _unique_job_name(
@@ -824,6 +884,7 @@ def api_config_post():
         return jsonify({"error": "Empty body"}), 400
     if "library_path" in data:
         config["library_path"] = normalize_library_paths(data["library_path"])
+        _reopen_tool_library()
     if "output_path" in data:
         config["output_path"] = _sanitize_path_str(data["output_path"])
     if "job_name_format" in data:

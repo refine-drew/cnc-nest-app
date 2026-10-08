@@ -824,3 +824,92 @@ def test_library_form_mill_diameter_is_read_from_a_posted_file():
     part = parse_vcarve_text(_FORM_MILL_FILE.read_text(errors="replace"), "39x35.nc")
     assert part.tools["T4"]["diameter_inches"] == pytest.approx(2.3515, abs=1e-4)
     assert part.tools["T4"]["tool_type"] == "FORM MILL"
+
+
+# ── one tool number declared as two tools ─────────────────────────────────────
+#
+# Fusion lets two library tools share a tool number, and the REFINE post writes one
+# header triple per *tool*, so a file can carry two `(T5 …)` / `(TOOLID T5 …)` pairs
+# that name different cutters. The body only ever says `T5 M06`, so nothing can tell
+# which cutter a pass loads. The parser used to key on the `T#` and let the second
+# declaration overwrite the first (2026-10-07, a roundover job: both passes resolved
+# to one code and the changer dock showed one tool). It is recorded now, and refused
+# at placement.
+
+_TWO_TOOLS_ONE_NUMBER = (
+    "( Material Size)\n( X=100, Y=50, Z=19)\n"
+    "(T5 D=6.731 CR=3.175 - ZMIN=16.383 - RADIUS MILL)\n"
+    "(TOOLID T5 CODE=RO-0125 VENDOR= FLUTES=2)\n"
+    "(TOOLDESC T5 18 ROUNDOVER)\n"
+    "(T5 D=16.256 CR=6.35 - ZMIN=7.493 - RADIUS MILL)\n"
+    "(TOOLID T5 CODE=RO-0250 VENDOR= FLUTES=4)\n"
+    "(TOOLDESC T5 14 ROUNDOVER)\n"
+    "N15 G71\nT5 M06\nG01 X1 Y1\nT5 M06\nG01 X2 Y2\nM30\n"
+)
+
+
+def test_a_tool_number_declared_as_two_cutters_is_recorded_as_a_conflict():
+    part = parse_vcarve_text(_TWO_TOOLS_ONE_NUMBER)
+    assert list(part.tool_conflicts) == ["T5"]
+    codes = [d["code"] for d in part.tool_conflicts["T5"]]
+    assert codes == ["RO-0125", "RO-0250"]
+    # The entry every other reader sees is the *first* declaration, not a merge of
+    # the two — the old behaviour handed back RO-0250 with RO-0125's geometry.
+    assert part.tools["T5"]["code"] == "RO-0125"
+    assert part.tools["T5"]["diameter_inches"] == pytest.approx(6.731 / 25.4)
+    assert part.tools["T5"]["cam_description"] == "18 ROUNDOVER"
+
+
+def test_two_cutters_on_one_number_with_blank_codes_still_conflict():
+    # Both Product IDs empty, so the code cannot tell them apart; the geometry and the
+    # description can, and either is enough.
+    text = _TWO_TOOLS_ONE_NUMBER.replace("CODE=RO-0125", "CODE=").replace("CODE=RO-0250", "CODE=")
+    part = parse_vcarve_text(text)
+    assert list(part.tool_conflicts) == ["T5"]
+
+
+def test_a_repeated_identical_declaration_is_not_a_conflict():
+    text = (
+        "( Material Size)\n( X=100, Y=50, Z=19)\n"
+        "(T2 D=12.7 CR=0. - FLAT END MILL)\n"
+        "(TOOLID T2 CODE=EM-0512 VENDOR= FLUTES=2)\n"
+        "(T2 D=12.7 CR=0. - FLAT END MILL)\n"
+        "(TOOLID T2 CODE=EM-0512 VENDOR= FLUTES=2)\n"
+        "N15 G71\nT2 M06\nM30\n"
+    )
+    part = parse_vcarve_text(text)
+    assert part.tool_conflicts == {}
+    assert part.tools["T2"]["code"] == "EM-0512"
+
+
+def test_a_vcarve_header_naming_one_number_twice_is_a_conflict():
+    text = (
+        "( Material Size)\n( X=100, Y=50, Z=19)\n"
+        "(T2 = EM-0512 End Mill {0.5 inches})\n"
+        "(T2 = EM-0250 End Mill {0.25 inches})\n"
+        "T2 M06\nM30\n"
+    )
+    part = parse_vcarve_text(text)
+    assert list(part.tool_conflicts) == ["T2"]
+    assert [d["description"] for d in part.tool_conflicts["T2"]] == [
+        "EM-0512 End Mill {0.5 inches}", "EM-0250 End Mill {0.25 inches}",
+    ]
+
+
+def test_a_vcarve_inline_tool_line_is_not_a_second_declaration():
+    # VCarve names the tool again at each toolpath in a different shape. That line
+    # fills in the header entry and must not read as a second cutter.
+    text = (
+        "( Material Size)\n( X=100, Y=50, Z=19)\n"
+        "(T2 = EM-0512 End Mill {0.5 inches})\n"
+        "T2 M06\n(Tool: EM-0512 End Mill {0.5 inches})\nG01 X1\nM30\n"
+    )
+    part = parse_vcarve_text(text)
+    assert part.tool_conflicts == {}
+
+
+@pytest.mark.parametrize("name", ["18g-test.nc", "t24-test.nc", "form-mill-header.nc"])
+def test_library_shaped_fixtures_declare_each_number_once(name):
+    from pathlib import Path
+    text = (Path(__file__).parent / "fixtures" / name).read_text(errors="replace")
+    assert parse_vcarve_text(text, name).tool_conflicts == {}
