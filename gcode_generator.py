@@ -308,7 +308,8 @@ def generate_master_gcode(placements: List[PlacedPart], settings: Dict,
     # stopped by the last block's M05, Z retracted to machine 0 by the line above — and
     # no G43 follows, because nothing after this cuts. See `park_tool_word` for why this
     # one `T#` names a pocket rather than an identity.
-    park_tool = park_tool_word(adv, [b["tool"] for b in blocks])
+    park_tool = park_tool_word(adv, [b["tool"] for b in blocks],
+                               settings.get("end_of_job_choice"))
     if park_tool:
         out += [
             comment(f" ---- {park_tool} loaded ready for the next job ---- "),
@@ -385,13 +386,66 @@ def with_runtime_header(gcode: str, runtime: Dict) -> str:
 
 # ── the tool the job ends holding ─────────────────────────────────────────────
 
-def park_tool_word(advanced: Dict, tool_sequence: List[str]) -> Optional[str]:
+END_NO_CHANGE = 0   # the operator's "leave whatever is up" choice; `None` is auto
+
+
+def end_of_job_pocket(advanced: Dict, tool_sequence: List[str],
+                      choice: Optional[int] = None) -> Tuple[Optional[int], str]:
+    """The pocket the job should end holding, and where that answer came from.
+
+    `choice` is the operator's per-job pick from the main screen: `None` is **auto**,
+    `END_NO_CHANGE` (0) is "no end-of-job change", and 1..capacity is a pocket. Auto
+    resolves in two steps, and the order matters:
+
+    1. **A job that runs one tool ends holding it.** `advanced.end_of_job_pocket` names
+       the pocket the ½" mill lives in because almost every job *starts* there, but a
+       one-tool job that never touched pocket 2 would otherwise cycle the carousel to
+       load a cutter nobody asked for. Decided from the block list, not the file: two
+       files whose `T4` is one cutter are one tool here.
+    2. Otherwise the shop default, `advanced.end_of_job_pocket`; absent or `null` means
+       no end-of-job change, which is what every job did before this existed.
+
+    Returns `(pocket, source)` with `source` one of `operator`, `none`, `only_tool`,
+    `default`. The frontend labels its Auto option off the same call, so what the
+    operator reads as "Auto · pocket 5" is what the file will do.
+    """
+    adv = advanced or {}
+    capacity = int(adv.get("tool_capacity", 8))
+
+    def _pocket(raw, what: str) -> int:
+        try:
+            pocket = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"{what} must be a pocket number or null, not {raw!r}.")
+        if not 1 <= pocket <= capacity:
+            raise ValueError(
+                f"{what} is {pocket}, which is not a pocket in a {capacity}-pocket changer."
+            )
+        return pocket
+
+    if choice is not None and choice != "":
+        if int(choice) == END_NO_CHANGE:
+            return None, "none"
+        return _pocket(choice, "The end-of-job pocket"), "operator"
+
+    distinct = set(tool_sequence or [])
+    if len(distinct) == 1:
+        return int(next(iter(distinct)).lstrip("Tt")), "only_tool"
+
+    raw = adv.get("end_of_job_pocket")
+    if raw is None or raw == "":
+        return None, "none"
+    return _pocket(raw, "advanced.end_of_job_pocket"), "default"
+
+
+def park_tool_word(advanced: Dict, tool_sequence: List[str],
+                   choice: Optional[int] = None) -> Optional[str]:
     """The tool word of the end-of-job change, or `None` if none is emitted.
 
     The shop starts almost every job with the ½" end mill and keeps it in pocket 2, so
-    a job that ends holding it saves the first change of the next job. `advanced.
-    end_of_job_pocket` names that pocket; absent or `null` means no end-of-job change,
-    which is what every job did before this existed.
+    a job that ends holding it saves the first change of the next job. Which pocket
+    that is for *this* job is `end_of_job_pocket`'s answer — the operator's pick, the
+    job's only tool, or the shop default, in that order.
 
     **It is a pocket, not an identity, and that is the one place in the app where the
     pocket is the right half of the split.** Everywhere else a `T#` is rewritten from
@@ -408,24 +462,12 @@ def park_tool_word(advanced: Dict, tool_sequence: List[str]) -> Optional[str]:
     **Skipped when the last block already ran from that pocket** — the tool is in the
     spindle, so the change is a carousel cycle and a touch-off (27–57 s, issue #6) that
     buys nothing. The machine state after the program is identical either way, which is
-    what makes the skip free rather than a shortcut.
+    what makes the skip free rather than a shortcut. The single-tool default always
+    lands here: the job's only tool is by definition the last one up.
     """
-    adv = advanced or {}
-    raw = adv.get("end_of_job_pocket")
-    if raw is None or raw == "":
+    pocket, _source = end_of_job_pocket(advanced, tool_sequence, choice)
+    if pocket is None:
         return None
-    try:
-        pocket = int(raw)
-    except (TypeError, ValueError):
-        raise ValueError(
-            f"advanced.end_of_job_pocket must be a pocket number or null, not {raw!r}."
-        )
-    capacity = int(adv.get("tool_capacity", 8))
-    if not 1 <= pocket <= capacity:
-        raise ValueError(
-            f"advanced.end_of_job_pocket is {pocket}, which is not a pocket in a "
-            f"{capacity}-pocket changer."
-        )
     word = f"T{pocket}"
     if tool_sequence and tool_sequence[-1] == word:
         return None

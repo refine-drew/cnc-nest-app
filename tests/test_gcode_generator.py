@@ -17,6 +17,8 @@ from gcode_generator import (
     with_runtime_header,
     comment_is_wellformed,
     generate_master_gcode,
+    end_of_job_pocket,
+    IdentityMap,
     block_tool_sequence,
     _build_blocks,
     _dedup_spindle,
@@ -1156,18 +1158,90 @@ def test_generated_output_passes_the_validator_comment_check():
 END_ON_2 = {**SETTINGS, "advanced": {**SETTINGS["advanced"], "end_of_job_pocket": 2}}
 
 
+TWO_TOOL_T4_T6 = _nc([("T4", "Table Stiff", 0.75), ("T6", "V Bit", 0.5)])
+
+
+def _m06_words(text: str) -> list:
+    return re.findall(r"\bT(\d+) M06\b", text)
+
+
 def test_the_program_ends_by_loading_the_configured_pocket():
-    p = _placed(_nc([("T4", "Table Stiff", 0.75)]), "A", 39)
+    """A multi-tool job in Auto ends on the shop default."""
+    p = _placed(TWO_TOOL_T4_T6, "A", 39)
     park = _park_block(generate_master_gcode([p], END_ON_2))
     changes = [l for l in park if re.search(r"\bT\d+ M06\b", l)]
     assert len(changes) == 1 and re.search(r"\bT2 M06\b", changes[0])
+
+
+def test_a_single_tool_job_ends_holding_its_own_tool_in_auto():
+    """The config pocket is where the ½" mill lives because most jobs *start* there. A
+    one-tool job that never touched pocket 2 would otherwise cycle the carousel to load
+    a cutter nobody asked for, so Auto resolves to the job's only tool — which is the
+    last one up, so no end-of-job change is emitted at all."""
+    p = _placed(_nc([("T4", "Table Stiff", 0.75)]), "A", 39)
+    result = generate_master_gcode([p], END_ON_2)
+    assert _m06_words(result) == ["4"]
+    assert not any(re.search(r"\bM06\b", l) for l in _park_block(result))
+
+
+def test_the_single_tool_default_counts_identities_not_file_numbers():
+    """Two files calling one cutter T2 and T4 are one tool in the block list, so the
+    merged job is a one-tool job and ends holding it."""
+    a = _placed(SINGLE_T2, "A", 39, instance_id="a")
+    b = _placed(_nc([("T4", "End Mill", 0.5)]), "A", 26, instance_id="b")
+    identity = IdentityMap(codes={"a": {"T2": "EM"}, "b": {"T4": "EM"}},
+                           pockets={"EM": 5})
+    result = generate_master_gcode([a, b], END_ON_2, identity)
+    assert _m06_words(result) == ["5"]
+
+
+def test_an_operator_choice_overrides_the_single_tool_default():
+    p = _placed(_nc([("T4", "Table Stiff", 0.75)]), "A", 39)
+    result = generate_master_gcode([p], {**END_ON_2, "end_of_job_choice": 2})
+    assert _m06_words(result) == ["4", "2"]
+
+
+def test_an_operator_choice_overrides_the_shop_default():
+    p = _placed(TWO_TOOL_T4_T6, "A", 39)
+    result = generate_master_gcode([p], {**END_ON_2, "end_of_job_choice": 7})
+    assert _m06_words(result) == ["4", "6", "7"]
+
+
+def test_choosing_no_change_ends_on_the_last_tool():
+    p = _placed(TWO_TOOL_T4_T6, "A", 39)
+    result = generate_master_gcode([p], {**END_ON_2, "end_of_job_choice": 0})
+    assert _m06_words(result) == ["4", "6"]
+
+
+def test_an_operator_choice_of_the_last_pocket_is_still_skipped():
+    p = _placed(TWO_TOOL_T4_T6, "A", 39)
+    result = generate_master_gcode([p], {**END_ON_2, "end_of_job_choice": 6})
+    assert _m06_words(result) == ["4", "6"]
+
+
+@pytest.mark.parametrize("choice", [-1, 9, "two"])
+def test_an_impossible_operator_choice_is_refused(choice):
+    p = _placed(TWO_TOOL_T4_T6, "A", 39)
+    with pytest.raises(ValueError):
+        generate_master_gcode([p], {**END_ON_2, "end_of_job_choice": choice})
+
+
+def test_end_of_job_pocket_names_its_source():
+    adv = END_ON_2["advanced"]
+    assert end_of_job_pocket(adv, ["T4"]) == (4, "only_tool")
+    assert end_of_job_pocket(adv, ["T4", "T6"]) == (2, "default")
+    assert end_of_job_pocket(adv, ["T4", "T6"], 7) == (7, "operator")
+    assert end_of_job_pocket(adv, ["T4", "T6"], 0) == (None, "none")
+    assert end_of_job_pocket({**adv, "end_of_job_pocket": None}, ["T4", "T6"]) == (None, "none")
+    # Nothing on the bed yet: Auto shows the shop default, not "the only tool".
+    assert end_of_job_pocket(adv, []) == (2, "default")
 
 
 def test_the_end_of_job_change_runs_after_the_retract_and_before_the_traverse():
     """The preconditions are the ones every mid-file change already runs under: the
     spindle stopped by the last block's M05 and Z retracted to machine 0. The park
     traverse has to follow the change, or the change moves the gantry off the park."""
-    p = _placed(_nc([("T4", "Table Stiff", 0.75)]), "A", 39)
+    p = _placed(TWO_TOOL_T4_T6, "A", 39)
     park = _park_block(generate_master_gcode([p], END_ON_2))
     retract = next(i for i, l in enumerate(park)
                    if re.search(r"\bG53\b", l) and re.search(r"\bZ0\b", l))
@@ -1180,7 +1254,7 @@ def test_the_end_of_job_change_asserts_no_tool_length_offset():
     """No G43 follows it, because nothing after it cuts. A G43 here would activate an
     offset the program never uses and leave the file ending under G43 rather than the
     G49 the per-tool retract set."""
-    p = _placed(_nc([("T4", "Table Stiff", 0.75)]), "A", 39)
+    p = _placed(TWO_TOOL_T4_T6, "A", 39)
     park = _park_block(generate_master_gcode([p], END_ON_2))
     assert not any(re.search(r"\bG43\b", l) for l in park)
 
@@ -1217,7 +1291,7 @@ def test_no_end_of_job_change_without_the_key():
 def test_an_impossible_end_of_job_pocket_is_refused_rather_than_emitted(pocket):
     """A pocket the changer does not have is a config error, and emitting it would send
     the carousel after a tool that is not there at the end of every job."""
-    p = _placed(SINGLE_T2, "A", 39)
+    p = _placed(TWO_TOOL_T4_T6, "A", 39)
     settings = {**SETTINGS,
                 "advanced": {**SETTINGS["advanced"], "end_of_job_pocket": pocket,
                              "tool_capacity": 8}}
@@ -1229,7 +1303,7 @@ def test_the_end_of_job_change_adds_no_validator_finding():
     """Relative to the same job without it, because these fixtures carry no F word and
     trip the no-feed check on their own. What has to hold is that the change itself
     reports nothing — no missing G43, no stray stop, no unreachable block after M30."""
-    p = _placed(_nc([("T4", "Table Stiff", 0.75)]), "A", 39)
+    p = _placed(TWO_TOOL_T4_T6, "A", 39)
     plain = [str(f) for f in validate_gcode(
         generate_master_gcode([p], SETTINGS), SETTINGS["advanced"])]
     ended = [str(f) for f in validate_gcode(

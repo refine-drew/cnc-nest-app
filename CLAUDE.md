@@ -260,15 +260,31 @@ tokeniser cannot consume is an **ERROR** and the file is never written. It stays
 on a block whose stripped form still holds a paren: that is a broken comment, and the
 comment check names the real problem rather than reporting the same defect twice.
 
-**Every job ends by loading pocket 2, and that `T#` is a pocket rather than an
+**Every job ends by loading a pocket, and that `T#` is a pocket rather than an
 identity** (2026-08-20). The shop starts almost every job with the ½" end mill and keeps
 it in pocket 2, so the job that just finished is the cheap place to load it — the bed is
 cut, nothing is waiting on the machine, and the next job starts with the tool already up.
-`advanced.end_of_job_pocket` names the pocket; absent or `null` means no end-of-job
+`advanced.end_of_job_pocket` names the shop default; absent or `null` means no end-of-job
 change, which is what every job did before this existed.
 `gcode_generator.park_tool_word` is the **single rule** for whether one is emitted, read
-by the generator, the live panel and the setup sheet, so none of the three can claim a
-tool the program does not leave in the spindle.
+by the generator, the live panel, the setup sheet and the PDF, so none of them can claim
+a tool the program does not leave in the spindle.
+
+**Which pocket is a per-job pick, made on the main screen, and Auto is not the config
+value** (2026-10-09). The "Ends holding" selector in the dock header offers Auto, No
+change, and the 8 pockets; the pick lives in `app._end_pocket_choice`, job state like
+`_placements` (it resets with Clear all, as the job name does), and is never written to
+`config.json`, which is shared across four machines. The selector sits in the changer
+dock's header beside "Reset pockets" (moved from the top bar 2026-10-10), because the
+pockets it names are directly below it. `gcode_generator.end_of_job_pocket`
+resolves it: an explicit pick wins; otherwise **a one-tool job ends holding its own
+tool**, and only a multi-tool job falls back to the config pocket. The one-tool rule is
+there so a job that never used pocket 2 does not cycle the carousel to load a cutter
+nobody asked for — it is a default, not a bar, and the operator can still pick pocket 2
+for it. "One tool" is counted on the block list, not the file `T#`, so two files that
+call one cutter `T2` and `T4` are one tool. The selector labels Auto with what it will
+resolve to off the same call (`end_pocket.auto_pocket` in the stats), so what the
+operator reads is what the file does.
 
 It is the one `T#` in the file that names a **pocket** instead of a cutter identity, and
 that is not a lapse in the split — the block cuts nothing, so it means "leave whatever is

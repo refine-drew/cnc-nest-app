@@ -695,6 +695,127 @@ def test_tool_changes_matches_the_emitted_file(client, tmp_path, monkeypatch):
     assert len(re.findall(r"^N\d+\s+T\d+ M06\b", emitted, re.MULTILINE)) == expected
 
 
+# ── the pocket the job ends holding, picked on the main screen ────────────────
+#
+# `advanced.end_of_job_pocket` is the shop default. The operator can override it per
+# job from the top bar, and a one-tool job defaults to its own tool rather than
+# cycling the carousel to load a cutter the job never used.
+
+def _m06_pockets(nc_path: str) -> list:
+    return re.findall(r"^N\d+\s+T(\d+) M06\b", Path(nc_path).read_text(), re.MULTILINE)
+
+
+def test_a_one_tool_job_defaults_to_ending_on_its_own_tool(client, tmp_path, monkeypatch):
+    _seed_library(tmp_path, monkeypatch)
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    client.post("/api/place", json={"path": "part.nc", "rail": "A", "slot_inches": 39})
+
+    info = client.get("/api/placements").get_json()
+    assert info["block_sequence"] == ["T2"] or len(set(info["block_sequence"])) == 1
+    assert info["park_tool"] is None
+    assert info["end_pocket"]["choice"] is None
+    assert info["end_pocket"]["auto_source"] == "only_tool"
+    assert f"T{info['end_pocket']['pocket']}" == info["block_sequence"][-1]
+    assert info["tool_changes"] == len(info["block_sequence"])
+
+    r = client.post("/api/generate", json={"job_name": "onetool"})
+    assert r.status_code == 200
+    assert _m06_pockets(r.get_json()["nc_path"]) == [w.lstrip("T") for w in info["block_sequence"]]
+
+
+def test_a_multi_tool_job_defaults_to_the_shop_pocket(client, tmp_path, monkeypatch):
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2})
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+    info = client.get("/api/placements").get_json()
+    assert info["end_pocket"] == {"choice": None, "pocket": 2, "source": "default",
+                                  "auto_pocket": 2, "auto_source": "default"}
+    assert info["park_tool"] == "T2"
+
+
+def test_the_operator_can_pick_the_pocket_the_job_ends_holding(
+        client, tmp_path, monkeypatch):
+    """The pick reaches the panel, the file and the setup sheet through one rule."""
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2})
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+
+    r = client.post("/api/end-pocket", json={"pocket": 7})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["park_tool"] == "T7"
+    assert body["end_pocket"]["choice"] == 7 and body["end_pocket"]["source"] == "operator"
+    # Auto is still reported, so the selector can say what it would have done.
+    assert body["end_pocket"]["auto_pocket"] == 2
+
+    info = client.get("/api/placements").get_json()
+    assert info["park_tool"] == "T7"
+    assert info["tool_changes"] == len(info["block_sequence"]) + 1
+
+    r = client.post("/api/generate", json={"job_name": "pick7"})
+    assert r.status_code == 200
+    assert _m06_pockets(r.get_json()["nc_path"])[-1] == "7"
+    sheet = (tmp_path / "pick7_setup.txt").read_text()
+    assert "Ends holding pocket 7" in sheet
+
+
+def test_the_operator_can_override_the_one_tool_default(client, tmp_path, monkeypatch):
+    _seed_library(tmp_path, monkeypatch)
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    client.post("/api/place", json={"path": "part.nc", "rail": "A", "slot_inches": 39})
+    info = client.get("/api/placements").get_json()
+    # A pocket the job does not already end on, so the change is really emitted.
+    other = next(n for n in range(1, 9) if f"T{n}" != info["block_sequence"][-1])
+    client.post("/api/end-pocket", json={"pocket": other})
+    info = client.get("/api/placements").get_json()
+    assert info["park_tool"] == f"T{other}"
+    r = client.post("/api/generate", json={"job_name": "forced"})
+    assert _m06_pockets(r.get_json()["nc_path"])[-1] == str(other)
+
+
+def test_the_operator_can_choose_no_end_of_job_change(client, tmp_path, monkeypatch):
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2})
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+    body = client.post("/api/end-pocket", json={"pocket": 0}).get_json()
+    assert body["park_tool"] is None
+    assert body["end_pocket"]["source"] == "none"
+    r = client.post("/api/generate", json={"job_name": "nochange"})
+    assert _m06_pockets(r.get_json()["nc_path"]) == ["1", "3"]
+    assert "Ends holding" not in (tmp_path / "nochange_setup.txt").read_text()
+
+
+def test_null_puts_the_end_pocket_back_on_auto(client, tmp_path, monkeypatch):
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2})
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+    client.post("/api/end-pocket", json={"pocket": 7})
+    body = client.post("/api/end-pocket", json={"pocket": None}).get_json()
+    assert body["end_pocket"]["choice"] is None and body["park_tool"] == "T2"
+
+
+@pytest.mark.parametrize("pocket", [-1, 9, "two"])
+def test_an_impossible_end_pocket_is_refused(client, pocket):
+    assert client.post("/api/end-pocket", json={"pocket": pocket}).status_code == 400
+    assert app_module._end_pocket_choice is None
+
+
+def test_clearing_the_bed_puts_the_end_pocket_back_on_auto(client, tmp_path, monkeypatch):
+    """Picked for the tools that were on the bed, like the job name — the next nest's
+    Auto answer may be a different pocket."""
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2})
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+    client.post("/api/end-pocket", json={"pocket": 7})
+    client.delete("/api/placements")
+    assert app_module._end_pocket_choice is None
+
+
+def test_the_end_pocket_choice_is_not_written_to_config(client, tmp_path, monkeypatch):
+    _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2})
+    client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
+    before = app_module.config["advanced"].get("end_of_job_pocket")
+    client.post("/api/end-pocket", json={"pocket": 7})
+    assert app_module.config["advanced"].get("end_of_job_pocket") == before
+
+
 def test_block_sequence_is_the_order_the_file_calls_its_pockets(
         client, tmp_path, monkeypatch):
     """The panel's tool order must be the file's, block for block.

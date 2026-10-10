@@ -103,7 +103,8 @@ var Placement = (() => {
     if (!n) return;
     if (!confirm(`Take all ${n} part${n === 1 ? "" : "s"} off the bed?\n\n` +
                  "The parts tray, the tool changer pockets and any tools you " +
-                 "identified by hand are kept. The job name goes back to auto.")) return;
+                 "identified by hand are kept. The job name and the end-of-job " +
+                 "tool go back to auto.")) return;
     await fetch("/api/placements", { method: "DELETE" });
     document.getElementById("job-name-input").value = "";
     await refresh();
@@ -117,6 +118,7 @@ var Placement = (() => {
     App.toolSequence      = r.tool_sequence || [];
     App.blockSequence     = r.block_sequence || [];
     App.parkTool          = r.park_tool || null;
+    App.endPocket         = r.end_pocket || {};
     App.toolChanges       = r.tool_changes ?? 0;
     App.utilization       = r.utilization ?? 0;
     App.runtimeSeconds    = r.runtime_seconds ?? 0;

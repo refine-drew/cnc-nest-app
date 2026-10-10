@@ -72,9 +72,13 @@ var Changer = (() => {
       const here = pocket.codes.map(byCode).filter(Boolean);
       const cell = document.createElement("div");
       cell.className = "pocket" + (here.length > 1 ? " dbl" : "");
+      // The pocket the program loads last is marked on the pocket as well as in the
+      // header's selector, so the mark sits beside what is in it.
+      const endsHere = (App.endPocket || {}).pocket === pocket.number;
       cell.innerHTML =
         `<div class="pocket-no"><span>POCKET ${pocket.number}</span>` +
-        (here.length > 1 ? '<span class="free" style="color:var(--bad)">2 tools</span>' : "") +
+        (here.length > 1 ? '<span class="free" style="color:var(--bad)">2 tools</span>'
+          : endsHere ? '<span class="ends" title="The program ends with this pocket in the spindle">ends here</span>' : "") +
         `</div><div class="pocket-cards"></div>`;
       const cards = cell.querySelector(".pocket-cards");
       if (!here.length) {
@@ -371,7 +375,9 @@ var Changer = (() => {
   function init() {
     collapsed = !!(window.Layout && Layout.get("dockCollapsed"));
     document.getElementById("dock-head").addEventListener("click", e => {
-      if (e.target.closest("button")) return;
+      // The reset button and the "Ends holding" selector live in the header; a click
+      // on either is not a request to collapse the dock.
+      if (e.target.closest("button, select, label")) return;
       if (!state().valid) return;      // locked open while Generate is blocked
       collapsed = !collapsed;
       if (window.Layout) Layout.setFlag("dockCollapsed", collapsed);

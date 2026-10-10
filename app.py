@@ -26,7 +26,8 @@ from config import (
     _sanitize_path_str, normalize_library_paths, resolve_library_root,
 )
 from gcode_generator import (
-    IdentityMap, block_tool_sequence, generate_master_gcode, park_tool_word,
+    IdentityMap, block_tool_sequence, end_of_job_pocket, generate_master_gcode,
+    park_tool_word,
     with_runtime_header,
 )
 from gcode_parser import GcodePart, parse_vcarve_text
@@ -87,6 +88,10 @@ _instance_counts: Dict[str, int] = {}   # filename stem → counter for unique I
 # the whole class of "stale override in a saved job" problems does not exist.
 _tool_binds: Dict[str, Dict[str, str]] = {}   # library-relative path → {T#: code}
 _pocket_overrides: Dict[str, int] = {}        # code → pocket; the operator's drags
+# The pocket this job ends holding, as picked on the main screen. `None` is auto (the
+# job's only tool, else `advanced.end_of_job_pocket`), 0 is "no change", else a pocket.
+# Job state like `_placements`: it belongs to the nest on the bed and resets with it.
+_end_pocket_choice: Optional[int] = None
 
 VALID_EXT = {".nc", ".mmg"}
 MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -345,8 +350,14 @@ def _compute_job_stats(state: Optional[dict] = None) -> dict:
     # The end-of-job change is a real `T# M06` in the file, so it is a real change to
     # count and a real 27–57 s to charge. `park_tool_word` is the single rule for
     # whether it is emitted, so the panel and the file cannot disagree about it.
-    park_tool = park_tool_word(config["advanced"], block_tools)
+    park_tool = park_tool_word(config["advanced"], block_tools, _end_pocket_choice)
     tool_changes = len(block_tools) + (1 if park_tool else 0)
+    # What the selector in the top bar shows: the operator's pick, and what Auto would
+    # resolve to for this nest — the same call the generator decides from, so the label
+    # "Auto · pocket 5" and the file cannot disagree.
+    end_pocket, end_source = end_of_job_pocket(
+        config["advanced"], block_tools, _end_pocket_choice)
+    auto_pocket, auto_source = end_of_job_pocket(config["advanced"], block_tools, None)
 
     # Per-part runtimes deliberately exclude tool-change time (the generator
     # merges same-tool passes across parts, so a part's own change count means
@@ -386,6 +397,13 @@ def _compute_job_stats(state: Optional[dict] = None) -> dict:
         # trailing tool that looks like one more operation. Counted in `tool_changes`,
         # because it is a real `T# M06`.
         "park_tool": park_tool,
+        "end_pocket": {
+            "choice": _end_pocket_choice,
+            "pocket": end_pocket,
+            "source": end_source,
+            "auto_pocket": auto_pocket,
+            "auto_source": auto_source,
+        },
         "tool_changes": tool_changes,
         "tool_count": len(ordered_tools),
         "tool_capacity": capacity,
@@ -704,7 +722,7 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "",
     # all end up quoting one sequence.
     identity = _identity_map(state)
     block_tools = block_tool_sequence(list(_placements.values()), identity)
-    park_tool = park_tool_word(config["advanced"], block_tools)
+    park_tool = park_tool_word(config["advanced"], block_tools, _end_pocket_choice)
 
     # Passed in by `api_generate` so the setup sheet and the PDF quote one number;
     # computed here only for the callers that build a model without generating.
@@ -1148,12 +1166,16 @@ def api_clear_placements():
     button quietly do three jobs.
 
     `_instance_counts` does reset, so the rebuilt nest numbers from `_1` again rather
-    than carrying on from wherever the cleared one stopped.
+    than carrying on from wherever the cleared one stopped. So does the end-of-job
+    pocket choice, for the reason the job name does: it was picked for the tools that
+    were on the bed, and the next nest's Auto answer may be a different pocket.
     """
+    global _end_pocket_choice
     count = len(_placements)
     _placements.clear()
     _placement_paths.clear()
     _instance_counts.clear()
+    _end_pocket_choice = None
     return jsonify({
         "ok": True,
         "removed": count,
@@ -1197,6 +1219,30 @@ def api_changer_assign():
 
     _pocket_overrides[code] = pocket
     return jsonify({"ok": True, "changer": _changer_state()})
+
+
+@app.route("/api/end-pocket", methods=["POST"])
+def api_end_pocket():
+    """Pick the pocket this job ends holding: `null` for auto, 0 for no change, or a
+    pocket number. Job-scoped and never written to `config.json` — the config value is
+    the shop default Auto falls back to, and it is shared across every machine."""
+    global _end_pocket_choice
+    data = request.get_json(force=True) or {}
+    raw = data.get("pocket")
+    if raw is None or raw == "":
+        choice = None
+    else:
+        try:
+            choice = int(raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "pocket must be a number, 0 for no change, "
+                                     "or null for auto"}), 400
+        capacity = _tool_capacity()
+        if not 0 <= choice <= capacity:
+            return jsonify({"error": f"Pocket must be between 1 and {capacity}, "
+                                     "0 for no change, or null for auto"}), 400
+    _end_pocket_choice = choice
+    return jsonify({"ok": True, **_compute_job_stats()})
 
 
 @app.route("/api/changer/reset", methods=["POST"])
@@ -1470,7 +1516,8 @@ def api_generate():
     data = request.get_json(force=True) or {}
     job_name = _job_name(data)
     safe_z = _compute_job_safe_z()
-    settings = {**config, "job_name": job_name, "job_safe_z": safe_z}
+    settings = {**config, "job_name": job_name, "job_safe_z": safe_z,
+                "end_of_job_choice": _end_pocket_choice}
 
     identity = _identity_map(state)
     try:
@@ -1526,6 +1573,7 @@ def api_generate():
             park_tool_word(
                 config["advanced"],
                 block_tool_sequence(list(_placements.values()), identity),
+                _end_pocket_choice,
             ),
         ),
         encoding="utf-8",

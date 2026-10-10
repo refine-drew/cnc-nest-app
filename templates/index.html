@@ -134,6 +134,9 @@ body.resizing-y{user-select:none;cursor:row-resize}
 .pocket{background:#202022;border:1px solid #333;border-radius:5px;min-height:var(--pocket-h,92px);display:flex;flex-direction:column;transition:border-color .12s,background .12s;min-width:0}
 .pocket-no{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:#5f5f63;padding:3px 6px 2px;letter-spacing:.06em;display:flex;justify-content:space-between;align-items:center}
 .pocket-no .free{text-transform:uppercase;letter-spacing:.1em;font-size:9px}
+.pocket-no .ends{text-transform:uppercase;letter-spacing:.1em;font-size:9px;color:var(--accent,#4c9aff)}
+#dock-head .end-lbl{font-size:11px;color:#888;cursor:default}
+#end-pocket-select{max-width:230px;font-size:11px;cursor:pointer}
 .pocket-cards{flex:1;display:flex;flex-direction:column;gap:3px;padding:0 4px 4px}
 .pocket.over{border-color:var(--accent);background:#16232f}
 .pocket.dbl{border-color:var(--bad);background:#251618;box-shadow:inset 0 0 0 1px #4a1e1e}
@@ -360,6 +363,9 @@ table.audit td.feed-varies{color:#ffd60a}
     <span class="lbl">Tool changer</span>
     <span id="dock-verdict"></span>
     <div style="flex:1"></div>
+    <label for="end-pocket-select" class="end-lbl"
+           title="The pocket the program loads last, so the next job starts with that tool already up. Auto is the job's only tool when it has one, otherwise the shop's usual pocket.">Ends holding</label>
+    <select id="end-pocket-select" title="The pocket the program loads last, so the next job starts with that tool already up"></select>
     <button id="dock-reset" title="Put every tool back in the pocket the library declares">Reset pockets</button>
     <span id="dock-chev">▼</span>
   </div>
@@ -507,6 +513,7 @@ var App = {
   toolSequence: [],     // distinct file tool numbers — a capacity figure, not an order
   blockSequence: [],    // pocket word per emitted block, in the order they run
   parkTool: null,       // the end-of-job load, which cuts nothing
+  endPocket: {},        // the operator's pick for that load, and what Auto resolves to
   toolChanges: 0,
   utilization: 0,       // % of bed area covered by placed blanks
   runtimeSeconds: 0,    // estimated total cut time
@@ -515,6 +522,7 @@ var App = {
   onPlacementsChanged() {
     if (window.BedCanvas) BedCanvas.render();
     if (window.JobPanel)  JobPanel.refresh();
+    if (window.JobEnd)    JobEnd.render();
     if (window.Changer)   Changer.render();
     _updateStatusBar();
     _updateTopButtons();

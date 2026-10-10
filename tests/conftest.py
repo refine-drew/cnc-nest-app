@@ -67,11 +67,13 @@ def reset_job_state():
                   app_module._placement_paths, app_module._instance_counts,
                   app_module._tool_binds, app_module._pocket_overrides):
         state.clear()
+    app_module._end_pocket_choice = None
     yield
     for state in (app_module._loaded, app_module._placements,
                   app_module._placement_paths, app_module._instance_counts,
                   app_module._tool_binds, app_module._pocket_overrides):
         state.clear()
+    app_module._end_pocket_choice = None
 
 
 @pytest.fixture(autouse=True)
