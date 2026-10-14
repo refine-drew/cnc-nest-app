@@ -30,6 +30,12 @@ if errorlevel 1 (
     for /f %%i in ('git rev-parse HEAD 2^>nul') do set "AFTER=%%i"
 )
 
+REM A .bat cannot carry an icon, so the RK icon lives on a desktop shortcut to this
+REM launcher, made if it is missing. Sits after the pull so a pull that rewrites this
+REM file mid-run does not move anything above where cmd resumes reading.
+set "SHORTCUT_PS=$l=Join-Path ([Environment]::GetFolderPath('Desktop')) 'SS2 Layout Tool.lnk'; if (-not (Test-Path $l)) { $s=(New-Object -ComObject WScript.Shell).CreateShortcut($l); $s.TargetPath='%~dp0launch.bat'; $s.WorkingDirectory='%~dp0'; $s.IconLocation='%~dp0icon\rk.ico,0'; $s.Save() }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "%SHORTCUT_PS%" >nul 2>&1
+
 REM Check Python is installed
 python --version >nul 2>&1
 if errorlevel 1 (

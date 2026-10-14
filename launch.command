@@ -25,6 +25,14 @@ else
     AFTER=$(git rev-parse HEAD 2>/dev/null)
 fi
 
+# Give this launcher the RK icon. A custom icon is a Finder attribute git does not
+# carry, and a pull that rewrites this file drops it, so it is re-applied whenever
+# it is missing. Sits after the pull so a pull that rewrites this script mid-run
+# does not move anything above where bash resumes reading.
+if ! xattr -p com.apple.ResourceFork launch.command &>/dev/null; then
+    osascript -l JavaScript -e 'ObjC.import("AppKit"); var d=$.NSFileManager.defaultManager.currentDirectoryPath.js; $.NSWorkspace.sharedWorkspace.setIconForFileOptions($.NSImage.alloc.initWithContentsOfFile(d+"/icon/rk.icns"), d+"/launch.command", 0)' &>/dev/null
+fi
+
 # Check Python 3
 if ! command -v python3 &>/dev/null; then
     echo "ERROR: Python 3 is not installed."
