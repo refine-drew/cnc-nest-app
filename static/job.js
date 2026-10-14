@@ -90,12 +90,7 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       const data = await r.json();
       if (data.ok) {
-        const warned = (data.warnings || []).length;
-        App.setMessage(
-          `Saved: ${data.nc_path} (+ layout PDF)` +
-            (warned ? ` — ${warned} check(s) flagged for review, see ${data.job_name}_validation.txt` : ""),
-          false,
-        );
+        App.setMessage(`Saved: ${data.nc_path} (+ layout PDF)`, false);
       } else {
         // Prefer `message`: `error` is a slug like "validation_failed" and the
         // people running this are operators, not developers.

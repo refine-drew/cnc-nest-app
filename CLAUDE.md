@@ -208,16 +208,13 @@ on load, which would lose exactly the line that has to survive — and with line
 **The header states the estimated cycle time — the total, and nothing else**
 (2026-08-21). `(Est cycle time: 10m 53s)`. It carried the per-bucket breakdown and the
 per-event unit costs for one afternoon and they were cut the same day (operator): at
-the control, the total is what anyone reads. The detail is not lost, it moved to where
-it means something — `<job>_setup.txt` states the touch-off posture as an instruction
-*and* the same cycle time, which is the right home for "this assumed 27 s a change"
-because it sits beside the setting it depends on, and `calibrate_runtime.py` prints
-every bucket per file. Don't put them back in the header.
+the control, the total is what anyone reads. `calibrate_runtime.py` prints every bucket
+per file. Don't put them back in the header.
 
 `with_runtime_header` is a separate call from `generate_master_gcode` for a reason the
 chicken-and-egg makes plain: the estimate is derived from the finished file, so the
 generator cannot know it while writing one, and `app.api_generate` therefore takes
-**one** estimate and hands the same dict to the header, `<job>_setup.txt` and the PDF.
+**one** estimate and hands the same dict to the header and the PDF.
 A second walk inside the generator would be a second number for one program. Inserting
 a comment cannot change what the comment says (the estimator skips comments) and it
 carries no `N` word, so nothing is renumbered — but the insert happens **before**
@@ -267,7 +264,7 @@ cut, nothing is waiting on the machine, and the next job starts with the tool al
 `advanced.end_of_job_pocket` names the shop default; absent or `null` means no end-of-job
 change, which is what every job did before this existed.
 `gcode_generator.park_tool_word` is the **single rule** for whether one is emitted, read
-by the generator, the live panel, the setup sheet and the PDF, so none of them can claim
+by the generator, the live panel and the PDF, so none of them can claim
 a tool the program does not leave in the spindle.
 
 **Which pocket is a per-job pick, made on the main screen, and Auto is not the config
@@ -293,7 +290,7 @@ Resolving an identity here would emit a *different* pocket whenever a job remapp
 mill, and the library holds two ½" mills (`EM-0512`, `EM-0520`) that both declare slot 2,
 so it would also have to guess which one is loaded. The assumption it does carry is that
 pocket 2 still holds a ½" mill: a job that drags another cutter there ends holding that
-cutter, which is why the setup sheet names the pocket **and** what is in it.
+cutter.
 
 Three details are load-bearing. It is **skipped when the last block already ran from that
 pocket** — the tool is up, the machine state after the program is identical either way,
@@ -314,8 +311,8 @@ modal state by reading it block by block, the way the control does, and reports
 `Finding`s at two severities. **It deliberately shares no state with
 `gcode_generator`** — the point is to catch the generator being wrong, which a
 checker built from the generator's own bookkeeping cannot do. An `ERROR` means
-the file is never written; a `WARNING` lands in `<job>_validation.txt` beside the
-output. The split follows what a check can prove: a G49 cutting move is wrong
+the file is never written; a `WARNING` is not reported anywhere (the
+`_validation.txt` file was dropped 2026-10-14). The split follows what a check can prove: a G49 cutting move is wrong
 under every reading, a straight-down plunge may be exactly what was intended.
 `G71` is correct for Syntec (the one documented deviation from Fanuc 0M) and must
 never be "fixed" to `G21`. The three files from the 2026-08-15 output review are
@@ -528,8 +525,7 @@ edit: turned off it charges `TOOL_SWAP_SECONDS` per change instead of the sum
 about the *decision* and wrong about the *arithmetic* — the gap between the postures is
 4–7.5 minutes on a typical job, and a number you have to edit the source to see is a
 number nobody looks at. The flag commands nothing: it is the operator telling the
-estimate which control setting the machine is on, which is why `<job>_setup.txt` states
-the posture as an instruction rather than a note.
+estimate which control setting the machine is on.
 
 **The posture is part of an observation, not a setting to read at analysis time.** Both
 calibration tests hold their job at 27 s explicitly rather than reading `config.json`,
@@ -724,7 +720,8 @@ a collapse by the back door.
 4. User clicks Generate → `/api/generate` gates on the §3.4 validity rules →
    `gcode_generator` merges all `_placements` **by identity** and rewrites `T#`/`H#`
    for the pocket map → the file is priced once and the estimate goes into its header →
-   `gcode_validator` reads the result → writes `.nc`, `.pdf`, `<job>_setup.txt`
+   `gcode_validator` reads the result → writes `.nc` and `.pdf`, nothing else
+   (the `_setup.txt` and `_validation.txt` files were dropped 2026-10-14)
 
 **Resolution is strict and happens before the bed** (§3.5.3): an unresolved tool has no
 declared radius, the library is its only source, and the app must not invent one.

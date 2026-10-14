@@ -350,11 +350,8 @@ def runtime_comment(runtime: Dict) -> str:
 
     It carried the buckets and the per-event unit costs for one afternoon
     (2026-08-21) and they were cut the same day — at the control, the total is what
-    anyone reads. The detail is not lost, it is just not here: `<job>_setup.txt`
-    states the touch-off posture as an instruction *and* the same cycle time, which
-    is the right place for "this number assumed 27 s a change" because it sits next
-    to the setting it is talking about. `calibrate_runtime.py` is where the buckets
-    matter, and it prints them per file.
+    anyone reads. `calibrate_runtime.py` is where the buckets matter, and it prints
+    them per file.
 
     "Est" is doing real work: `DEFAULT_ACCEL_MM_S2` is fitted to one timed job.
     """

@@ -11,4 +11,4 @@
 3. View page 1 on the shop monitor from about 20 ft and judge whether the 0.5" part number and size lines are enough (F1).
 4. Decide Q1, which closes R1.
 5. `CLAUDE.md` is over the 30 KB cap. Move its dated decision prose into `DECISIONS.md` as coded entries, leaving what every session needs.
-6. Generate a one-tool job and a two-tool job with a picked pocket, confirm each file's last `T# M06` and the setup sheet's "Ends holding" line, and run one on the SS2 to see it end holding that pocket (D10, R6).
+6. Generate a one-tool job and a two-tool job with a picked pocket, confirm each file's last `T# M06` and the PDF footer's "loaded for the next job" entry, and run one on the SS2 to see it end holding that pocket (D10, R6).

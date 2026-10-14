@@ -31,7 +31,7 @@ from gcode_generator import (
     with_runtime_header,
 )
 from gcode_parser import GcodePart, parse_vcarve_text
-from gcode_validator import format_findings, validate_gcode
+from gcode_validator import validate_gcode
 from pdf_report import generate_layout_pdf, palette_color as pdf_palette_color
 from pocket_map import STAGED, build_changer_state
 from runtime_estimator import (
@@ -598,74 +598,6 @@ def _setup_rows(state: dict) -> list:
     )
 
 
-def _setup_sheet_text(job_name: str, state: dict, safe_z: dict,
-                      auto_tool_touch_off: bool = True,
-                      runtime: Optional[float] = None,
-                      park_tool: Optional[str] = None) -> str:
-    """The same sheet as plain text, written beside the `.nc`.
-
-    Generation is deliberately **not** gated on confirming the changer is loaded
-    (operator's call, 2026-08-17) — the sheet informs, it does not interrogate.
-    """
-    rows = _setup_rows(state)
-    out = [
-        f"TOOL SETUP — {job_name}",
-        f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "",
-        "Load the changer to match this before running. The pocket number is the",
-        "tool number the program calls, and the height offset follows the pocket.",
-        "",
-    ]
-    width = max([len(r["name"]) for r in rows] + [4])
-    for r in rows:
-        called = ", ".join(r["tool_numbers"])
-        out.append(
-            f"  Pocket {r['pocket']}  {r['name']:<{width}}  {r['diameter_inches']:g}\" "
-            f"{r['geometry_class']}, {r['flute_display']}"
-            + (f", {r['cutting_length_in']}\" cutting length" if r["cutting_length_in"] else "")
-        )
-        out.append(f"{'':>12}{'':<{width}}  code {r['code']}   files call it {called}")
-        out.append(f"{'':>12}{'':<{width}}  needed by {', '.join(r['parts'])}")
-        if r["off_home"]:
-            # A deviation is a TEMPORARY instruction, because the declared slot is the
-            # standard the operator is being trained toward (§3.2.1).
-            out.append(f"{'':>12}{'':<{width}}  *** moved for this job only — "
-                       f"normally lives in pocket {r['default_slot']}, put it back after ***")
-        out.append("")
-
-    empty = [p for p in range(1, state.get("capacity", 8) + 1)
-             if p not in {r["pocket"] for r in rows}]
-    if empty:
-        out.append(f"  Pockets not used by this job: {', '.join(str(p) for p in empty)}")
-        out.append("")
-    if safe_z.get("value"):
-        out.append(f"  Safe Z for the whole job: {safe_z['value'] / 25.4:.3f}\" "
-                   f"(driven by {safe_z.get('driven_by')})")
-    if park_tool:
-        # The program hands the machine back with a tool already in the spindle, which
-        # the operator has to know before reaching for the next job — and if this job
-        # borrowed that pocket for something else, this is where the two facts sit
-        # together (the row above says the pocket was moved, this says what the spindle
-        # keeps). Named by pocket, because that is what the program calls.
-        pocket = park_tool.lstrip("Tt")
-        held = next((r["name"] for r in rows if str(r["pocket"]) == pocket), None)
-        out.append(f"  Ends holding pocket {pocket}"
-                   + (f" ({held})" if held else "")
-                   + " in the spindle, ready for the next job.")
-    # Auto tool touch-off is a *control* setting, not something the app commands, and
-    # the runtime below is only true if the machine is on the posture the estimate
-    # assumed. The OFF form is a real instruction — the touch-off does not vanish when
-    # it is off, it moves to setup, and this sheet is where setup is written down.
-    if auto_tool_touch_off:
-        out.append("  Auto tool touch-off: ON at the control. The runtime below assumes it.")
-    else:
-        out.append("  Auto tool touch-off: OFF at the control — "
-                   "touch each tool off as you load it.")
-    if runtime is not None:
-        out.append(f"  Estimated cycle time: {format_duration(runtime)}")
-    return "\n".join(out) + "\n"
-
-
 def _build_pdf_model(job_name: str, settings: dict, gcode: str = "",
                      state: Optional[dict] = None,
                      runtime: Optional[dict] = None) -> tuple:
@@ -724,7 +656,7 @@ def _build_pdf_model(job_name: str, settings: dict, gcode: str = "",
     block_tools = block_tool_sequence(list(_placements.values()), identity)
     park_tool = park_tool_word(config["advanced"], block_tools, _end_pocket_choice)
 
-    # Passed in by `api_generate` so the setup sheet and the PDF quote one number;
+    # Passed in by `api_generate` so the header and the PDF quote one number;
     # computed here only for the callers that build a model without generating.
     if runtime is None and gcode:
         runtime = estimate_lines_runtime(
@@ -780,9 +712,9 @@ def _timestamp() -> str:
     return datetime.now().strftime("%m%d-%H%M")
 
 
-# The four files one Generate writes. `_unique_job_name` treats the whole set as
-# the name's footprint; `api_generate` writes them.
-_JOB_SUFFIXES = (".nc", ".pdf", "_setup.txt", "_validation.txt")
+# The two files one Generate writes. `_unique_job_name` treats the pair as the
+# name's footprint; `api_generate` writes them.
+_JOB_SUFFIXES = (".nc", ".pdf")
 
 
 def _unique_job_name(base: str) -> str:
@@ -798,11 +730,10 @@ def _unique_job_name(base: str) -> str:
     operator who types a name means that name, and re-generating over it is a
     normal thing to do. A collision in a name nobody chose is always an accident.
 
-    A name is taken if *any* of the four files a job writes is already there, not
-    just the `.nc`. They are one set: an operator who moved the program onto the
-    machine and left the setup sheet behind would otherwise have the sheet
-    silently replaced by the next job, and a sheet describing a different nest is
-    worse than no sheet.
+    A name is taken if either file a job writes is already there, not just the
+    `.nc`. They are one set: an operator who moved the program onto the machine and
+    left the PDF behind would otherwise have it silently replaced by the next job,
+    and a layout describing a different nest is worse than none.
     """
     out = _output_dir()
     for n in count():
@@ -1525,12 +1456,11 @@ def api_generate():
     except Exception as e:
         return jsonify({"error": f"Generation failed: {e}"}), 500
 
-    # One estimate for the whole job, taken here so the header, the setup sheet and
-    # the PDF cannot disagree about how long the same program takes. It is taken
+    # One estimate for the whole job, taken here so the header and the PDF cannot
+    # disagree about how long the same program takes. It is taken
     # *before* validation because the line it adds becomes part of the file that gets
     # validated and written — a file the operator runs should be the file the checker
     # read, down to the line numbers in its findings.
-    auto_tool = bool(config["advanced"].get("auto_tool_touch_off", True))
     runtime = estimate_lines_runtime(
         gcode.splitlines(),
         limits=_motion_limits(),
@@ -1544,7 +1474,6 @@ def api_generate():
     # finding is never written — the operator cannot run what does not exist.
     findings = validate_gcode(gcode, config["advanced"])
     errors = [f for f in findings if f.severity == "error"]
-    warnings = [f for f in findings if f.severity == "warning"]
     if errors:
         return jsonify({
             "error": "validation_failed",
@@ -1561,23 +1490,6 @@ def api_generate():
     pdf_path = out / f"{job_name}.pdf"
 
     nc_path.write_text(gcode, encoding="utf-8")
-    if findings:
-        (out / f"{job_name}_validation.txt").write_text(
-            format_findings(findings), encoding="utf-8")
-    setup_path = out / f"{job_name}_setup.txt"
-    setup_path.write_text(
-        _setup_sheet_text(
-            job_name, state, safe_z, auto_tool, runtime["seconds"],
-            # Same rule the generator emitted from, over the same block sequence, so
-            # the sheet cannot claim a tool the program does not leave in the spindle.
-            park_tool_word(
-                config["advanced"],
-                block_tool_sequence(list(_placements.values()), identity),
-                _end_pocket_choice,
-            ),
-        ),
-        encoding="utf-8",
-    )
 
     try:
         meta, parts, geom = _build_pdf_model(job_name, settings, gcode, state, runtime)
@@ -1586,9 +1498,7 @@ def api_generate():
         return jsonify({"error": f"PDF generation failed: {e}"}), 500
 
     return jsonify({"ok": True, "job_name": job_name,
-                    "nc_path": str(nc_path), "pdf_path": str(pdf_path),
-                    "setup_path": str(setup_path),
-                    "warnings": [str(f) for f in warnings]})
+                    "nc_path": str(nc_path), "pdf_path": str(pdf_path)})
 
 
 @app.route("/api/audit")

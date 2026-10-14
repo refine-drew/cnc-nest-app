@@ -524,15 +524,13 @@ def test_generate_writes_nc_and_pdf(client, tmp_path, monkeypatch):
         assert f.read(5) == b"%PDF-"
 
 
-def test_the_header_states_the_cycle_time_the_setup_sheet_states(
+def test_the_header_states_the_cycle_time_the_pdf_states(
         client, tmp_path, monkeypatch):
-    """One estimate, three places to read it.
+    """One estimate, two places to read it.
 
-    The operator reads the cycle time off whichever of the three is in front of them —
-    the program at the control, the setup sheet at the bench, the PDF on the wall — so
-    a job that quotes two different numbers is worse than one that quotes none. They
-    agree by construction (`with_runtime_header` is handed the estimate the sheet
-    reports, rather than taking its own), and this is what keeps that true.
+    The operator reads the cycle time off whichever is in front of them — the program
+    at the control, the PDF on the wall — so a job that quotes two different numbers
+    is worse than one that quotes none.
     """
     _seed_library(tmp_path, monkeypatch, {"a.nc": _SETUP_A, "b.nc": _SETUP_B})
     monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
@@ -544,9 +542,9 @@ def test_the_header_states_the_cycle_time_the_setup_sheet_states(
     written = (tmp_path / "timed.nc").read_text().splitlines()
     header = [ln for ln in written if ln.startswith(f"({RUNTIME_COMMENT_PREFIX}")]
     assert len(header) == 1
-    sheet = (tmp_path / "timed_setup.txt").read_text()
-    stated = re.search(r"Estimated cycle time: (.+)", sheet).group(1).strip()
-    assert stated in header[0]
+    meta, _parts, _geom = app_module._build_pdf_model(
+        "timed", app_module.config, "\n".join(written))
+    assert meta["runtime"] in header[0]
 
     # A comment, so it sits above the first numbered block and renumbers nothing.
     assert written.index(header[0]) < next(
@@ -734,7 +732,7 @@ def test_a_multi_tool_job_defaults_to_the_shop_pocket(client, tmp_path, monkeypa
 
 def test_the_operator_can_pick_the_pocket_the_job_ends_holding(
         client, tmp_path, monkeypatch):
-    """The pick reaches the panel, the file and the setup sheet through one rule."""
+    """The pick reaches the panel and the file through one rule."""
     _seed_library(tmp_path, monkeypatch, {"ab.nc": _T1_THEN_T2})
     monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
     client.post("/api/place", json={"path": "ab.nc", "rail": "A", "slot_inches": 39})
@@ -754,8 +752,6 @@ def test_the_operator_can_pick_the_pocket_the_job_ends_holding(
     r = client.post("/api/generate", json={"job_name": "pick7"})
     assert r.status_code == 200
     assert _m06_pockets(r.get_json()["nc_path"])[-1] == "7"
-    sheet = (tmp_path / "pick7_setup.txt").read_text()
-    assert "Ends holding pocket 7" in sheet
 
 
 def test_the_operator_can_override_the_one_tool_default(client, tmp_path, monkeypatch):
@@ -781,7 +777,6 @@ def test_the_operator_can_choose_no_end_of_job_change(client, tmp_path, monkeypa
     assert body["end_pocket"]["source"] == "none"
     r = client.post("/api/generate", json={"job_name": "nochange"})
     assert _m06_pockets(r.get_json()["nc_path"]) == ["1", "3"]
-    assert "Ends holding" not in (tmp_path / "nochange_setup.txt").read_text()
 
 
 def test_null_puts_the_end_pocket_back_on_auto(client, tmp_path, monkeypatch):
@@ -887,84 +882,17 @@ _SETUP_B = (
 )
 
 
-def _generate_with_setup(client, tmp_path, monkeypatch, files=None, drags=None):
-    _seed_library(tmp_path, monkeypatch, files or {"a.nc": _SETUP_A, "b.nc": _SETUP_B})
-    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
-    for name, slot in zip(sorted(files or {"a.nc": 1, "b.nc": 1}), (39, 26, 13, 0)):
-        client.post("/api/place", json={"path": name, "rail": "A", "slot_inches": slot})
-    for code, pocket in (drags or {}).items():
-        client.post("/api/changer/assign", json={"code": code, "pocket": pocket})
-    r = client.post("/api/generate", json={"job_name": "sheet"})
-    assert r.status_code == 200, r.get_json()
-    return (tmp_path / "sheet_setup.txt").read_text()
-
-
-def test_setup_sheet_is_keyed_on_pocket_not_on_the_files_tool_number(
-        client, tmp_path, monkeypatch):
-    """One cutter can be T2 in one file and T4 in another; the pocket is what the
-    operator loads and what the emitted `T# M06` calls."""
-    sheet = _generate_with_setup(client, tmp_path, monkeypatch)
-    assert "Pocket 2" in sheet and "Pocket 3" in sheet
-    assert "EM-0500" in sheet and "SB-0500" in sheet
-    # The file's own number is still named, because the operator reads this beside a
-    # CAM file that says T4.
-    assert "files call it T2" in sheet and "files call it T4" in sheet
-
-
-def test_setup_sheet_names_the_parts_each_tool_is_needed_by(client, tmp_path, monkeypatch):
-    sheet = _generate_with_setup(client, tmp_path, monkeypatch)
-    assert "needed by a.nc" in sheet and "needed by b.nc" in sheet
-
-
-def test_setup_sheet_marks_a_moved_tool_as_temporary(client, tmp_path, monkeypatch):
-    """A deviation is a *temporary* instruction, because the declared slot is the
-    standard the operator is being trained toward (spec §3.2.1)."""
-    sheet = _generate_with_setup(client, tmp_path, monkeypatch, drags={"SB-0500": 7})
-    assert "Pocket 7" in sheet
-    assert "moved for this job only" in sheet
-    assert "normally lives in pocket 3" in sheet
-    assert "put it back after" in sheet
-
-
-def test_setup_sheet_says_nothing_temporary_when_nothing_moved(client, tmp_path, monkeypatch):
-    sheet = _generate_with_setup(client, tmp_path, monkeypatch)
-    assert "moved for this job only" not in sheet
-
-
-def test_setup_sheet_lists_the_pockets_the_job_leaves_alone(client, tmp_path, monkeypatch):
-    sheet = _generate_with_setup(client, tmp_path, monkeypatch)
-    assert "Pockets not used by this job: 1, 4, 5, 6, 7, 8" in sheet
-
-
-def test_setup_sheet_says_which_tool_the_program_leaves_in_the_spindle(
-        client, tmp_path, monkeypatch):
-    """The program hands the machine back with a tool already up (`end_of_job_pocket`),
-    which the operator has to know before reaching for the next job — and if this job
-    borrowed that pocket, this is the line that says what the spindle actually keeps."""
-    sheet = _generate_with_setup(client, tmp_path, monkeypatch)
-    assert "Ends holding pocket 2" in sheet
-    assert '1/2" End Mill' in sheet
-
-
-def test_setup_sheet_is_silent_about_the_spindle_when_no_tool_is_left_in_it(
-        client, tmp_path, monkeypatch):
-    monkeypatch.setitem(app_module.config["advanced"], "end_of_job_pocket", None)
-    sheet = _generate_with_setup(client, tmp_path, monkeypatch)
-    assert "Ends holding" not in sheet
-
-
-def test_setup_sheet_is_written_beside_the_output(client, tmp_path, monkeypatch):
+def test_generate_writes_only_the_program_and_the_pdf(client, tmp_path, monkeypatch):
     _seed_library(tmp_path, monkeypatch, {"a.nc": _SETUP_A})
-    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    out = tmp_path / "out"
+    monkeypatch.setitem(app_module.config, "output_path", str(out))
     client.post("/api/place", json={"path": "a.nc", "rail": "A", "slot_inches": 39})
-    r = client.post("/api/generate", json={"job_name": "beside"})
-    data = r.get_json()
-    assert os.path.isfile(data["setup_path"])
-    assert data["setup_path"].endswith("beside_setup.txt")
+    assert client.post("/api/generate", json={"job_name": "pair"}).status_code == 200
+    assert sorted(p.name for p in out.iterdir()) == ["pair.nc", "pair.pdf"]
 
 
 def test_the_pdf_carries_the_same_setup_rows(client, tmp_path, monkeypatch):
-    """The sheet and the PDF are built from one changer state, so they cannot disagree
+    """The PDF is built from the changer state, so it cannot disagree with the dock
     about which pocket holds what."""
     _seed_library(tmp_path, monkeypatch, {"a.nc": _SETUP_A, "b.nc": _SETUP_B})
     monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))

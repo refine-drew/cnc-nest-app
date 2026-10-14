@@ -1336,8 +1336,7 @@ def test_the_cycle_time_line_lands_after_the_header_and_before_the_code():
 def test_the_cycle_time_line_states_the_total_and_nothing_else():
     """It carried the buckets and the per-event unit costs for one afternoon and they
     were cut the same day: at the control, the total is what anyone reads. The detail
-    lives in `<job>_setup.txt`, next to the touch-off setting it depends on, and in
-    `calibrate_runtime.py`."""
+    lives in `calibrate_runtime.py`."""
     line = runtime_comment(_RUNTIME)
     assert line == "(Est cycle time: 10m 53s)"
 
