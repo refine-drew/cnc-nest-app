@@ -200,7 +200,8 @@ var Changer = (() => {
            ? `<span class="chip home" title="Its declared pocket is ${tool.default_slot}">home ${tool.default_slot}</span>`
            : ""}
          ${tool.default_slot ? "" : '<span class="chip home" title="The library declares no pocket for this tool">no default</span>'}
-       </div>`;
+       </div>
+       <div class="code">${_esc(tool.code)}</div>`;
 
     el.addEventListener("dragstart", e => {
       dragCode = tool.code;
