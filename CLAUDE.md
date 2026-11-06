@@ -34,6 +34,16 @@ pytest -k "test_collision"    # single test by name
 
 No build step, linter, or type checker is configured.
 
+**Run the full suite before every commit, whatever the change touches** (operator,
+2026-11-06: a toolpath geometry change "absolutely 100% cannot happen").
+`tests/test_geometry_guarantee.py` pins two real jobs' emitted G-code byte-for-byte in
+`tests/fixtures/golden/`, everything but the `(Est cycle time:)` and `(Date:)` header
+comments, and proves the cycle-time estimate cannot change a line of the program. A
+golden-master failure is a G-code change until shown otherwise: stop and report the
+first differing line. **Never re-bless (`CNC_NEST_BLESS_GOLDEN=1 pytest`) to make a
+failure go away.** A bless happens only for an intended output change, with the diff
+reviewed line by line and the operator's sign-off.
+
 ## Architecture
 
 ### Backend (Python/Flask)

@@ -1,7 +1,9 @@
 # Test fixtures
 
-Six files. Two merged masters this app wrote and the shop then ran against a clock;
-three masters from the 2026-08-15 output review; and one reconstructed tool header.
+Six files at the top level. Two merged masters this app wrote and the shop then ran
+against a clock; three masters from the 2026-08-15 output review; and one
+reconstructed tool header. Plus two folders, `parts/` and `golden/`, described at the
+end.
 They live here rather than in `Source Data/` or `~/Downloads` because both are
 outside the repo, and **a file the test suite asserts against cannot be untracked and
 unreviewable** — the same reason `post/syntec_Refine.cps` moved out of `Source Data/`.
@@ -109,3 +111,27 @@ the `skipif` had been passing over the assertion silently. Only the header is un
 test, so a reconstructed skeleton around the real line is enough — but it is a
 reconstruction, and unlike the four files above it is not evidence of anything the
 machine did.
+
+## `parts/` and `golden/` — the golden masters
+
+Added 2026-11-06, before the cycle-time estimator was replaced. The operator's
+constraint: a toolpath geometry change "absolutely 100% cannot happen".
+
+`parts/` holds six Fusion-posted library files, copied verbatim from the `SS2 Library`
+shared drive on 2026-11-06: `T24.nc`, `T24G.nc`, `T24H.nc` (the parts behind
+`t24-test.nc`), `18G.nc`, `12H.nc` and `Desk/Back.nc`. Between them they carry G18 and
+G19 arcs, Fusion's trailing-dot words, and six cutters. They are snapshots, so a
+re-post in the library does not reach them, which is the point.
+
+`golden/t24.nc` and `golden/mixed.nc` are what `/api/generate` wrote for two jobs built
+from those parts (layouts in `_GOLDEN_JOBS`, `tests/test_geometry_guarantee.py`).
+Between them: both rails, the plane swap on each, a tool changed back to, a pocket drag,
+the config end-of-job change, and an operator pick that the last block already
+satisfies. The test compares every line except the `(Est cycle time:)` and `(Date:)`
+header comments.
+
+**A difference is a G-code change until shown otherwise.** Re-bless only for an
+intended output change, with `CNC_NEST_BLESS_GOLDEN=1 pytest
+tests/test_geometry_guarantee.py`, after reviewing the `git diff` of this folder line by
+line and getting the operator's sign-off. The bless run fails on purpose, so it cannot
+pass unnoticed.

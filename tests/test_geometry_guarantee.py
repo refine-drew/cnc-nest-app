@@ -23,14 +23,24 @@ Per §6.1 the test asserts **two** things about that exception set, not one: tha
 moved as the pocket map says, *and* that every `H` still equals its preceding `T`. With
 posture 2's self-correction unproven on the machine, `H`-follows-pocket carries the
 safety load alone, so it is covered as tightly as the geometry words.
+
+The same guarantee is extended to the cycle-time estimate and pinned against golden
+masters at the bottom of this file — see the section header there.
 """
+import os
 import re
+from pathlib import Path
 
 import pytest
 
+import app as app_module
+import runtime_estimator
 from collision import PlacedPart
-from gcode_generator import IdentityMap, block_tool_sequence, generate_master_gcode
+from gcode_generator import (
+    RUNTIME_COMMENT_PREFIX, IdentityMap, block_tool_sequence, generate_master_gcode,
+)
 from gcode_parser import parse_vcarve_text
+from tool_library import LibraryTool, ToolLibrary
 
 SETTINGS = {
     "job_name": "remap_proof",
@@ -239,3 +249,153 @@ def test_capacity_counts_physical_cutters_not_tool_numbers():
     # Nine parts, nine `T4`s, one cutter — and the capacity backstop stays quiet.
     gcode = generate_master_gcode(parts, SETTINGS, identity)
     assert re.findall(r"\bT(\d+)\s+M06\b", gcode) == ["1"]
+
+
+# ── the cycle-time estimate cannot touch the program ──────────────────────────
+#
+# Operator, 2026-11-06: a toolpath geometry change "absolutely 100% cannot happen". The
+# estimator is about to be replaced (the Syntec-parameter model in `ss2_motion`), so this
+# is proven here rather than argued in review. Two guards, over real Fusion-posted parts
+# run through the real `/api/place` → `/api/generate` path:
+#
+# - **Golden masters.** Each job's emitted file is pinned byte-for-byte in
+#   `fixtures/golden/`, except the `(Est cycle time: …)` and `(Date: …)` header comments.
+#   That is what lets the *old* estimator's output be compared with the new one's after
+#   the old one is gone, and it catches a geometry change from any other source too.
+# - **Independence.** The same job generated under a stand-in estimator that returns
+#   absurd numbers must differ from the real one only in those lines. That proves no
+#   decision in the generator reads an estimate, whatever the estimate says.
+#
+# **Re-blessing a golden master is a G-code change and is never routine.** Set
+# `CNC_NEST_BLESS_GOLDEN=1` to rewrite them; the test then fails on purpose, so a bless
+# can never pass silently. Review `git diff tests/fixtures/golden/` line by line and get
+# the operator's sign-off before committing it.
+
+_PARTS = Path(__file__).resolve().parent / "fixtures" / "parts"
+_GOLDEN = Path(__file__).resolve().parent / "fixtures" / "golden"
+_BLESS = os.environ.get("CNC_NEST_BLESS_GOLDEN") == "1"
+
+
+def _golden_tool(code, diameter, slot, description, geometry="Flat End Mill", flute="down"):
+    return LibraryTool(
+        code=code, name=code, diameter_inches=diameter, geometry_class=geometry,
+        flute_direction=flute, cutting_length_in=None, cam_descriptions=[description],
+        default_slot=slot, vendor="",
+    )
+
+
+# Frozen here rather than read from `tool_library.json`: a declared slot is a `T#` in the
+# output, so a seed edit would move the golden masters for a reason unrelated to the code.
+# Codes and descriptions are what the fixture parts post; `EM-2510` is not in the seed.
+_GOLDEN_TOOLS = [
+    _golden_tool("BN-0500", 0.5, 1, "12 BALL NOSE - UPCUT", "Ball Nose", "up"),
+    _golden_tool("EM-0512", 0.5, 2, "12 FLAT ENDMILL"),
+    _golden_tool("BB-0250", 0.75, 4, "14 BOWL BIT", "Bowl Bit", "straight"),
+    _golden_tool("CB-0375", 0.375, 4,
+                 "SPETOOL W02002 SC COMPRESSION SPIRAL 38 DIA X 12 SHANK X 1-14 CUTT",
+                 flute="up"),
+    _golden_tool("RO-0125", 0.3, 5, "18 ROUNDOVER", "Roundover", "straight"),
+    _golden_tool("EM-2510", 0.25, 6, "14 END MILL 1.0 LG"),
+]
+
+# Between them: both rails, G18 and G19 arcs on each (the plane swap), Fusion's
+# trailing-dot words, a tool the pass-index walk returns to, a pocket drag, and both
+# end-of-job rules (the config default, and an operator pick).
+_GOLDEN_JOBS = {
+    "t24": {
+        "placements": [("T24.nc", "A", 0), ("T24G.nc", "A", 26), ("T24H.nc", "B", 0)],
+        "drags": [],
+        "end_pocket": None,
+    },
+    "mixed": {
+        "placements": [("18G.nc", "A", 0), ("12H.nc", "A", 26),
+                       ("Back.nc", "B", 0), ("12H.nc", "B", 39)],
+        "drags": [("EM-2510", 7)],
+        "end_pocket": 7,
+    },
+}
+
+
+@pytest.fixture()
+def golden_shop(client, monkeypatch, tmp_path):
+    library = ToolLibrary(list(_GOLDEN_TOOLS))
+    monkeypatch.setattr(library, "save", lambda *a, **k: None)
+    monkeypatch.setattr(app_module, "tool_library", library)
+    monkeypatch.setitem(app_module.config, "library_path", str(_PARTS))
+    monkeypatch.setitem(app_module.config, "output_path", str(tmp_path))
+    return client
+
+
+def _generate(client, name):
+    """Lay the job out the way an operator would, generate it, return the file."""
+    job = _GOLDEN_JOBS[name]
+    for path, rail, slot in job["placements"]:
+        r = client.post("/api/place", json={"path": path, "rail": rail, "slot_inches": slot})
+        assert r.status_code == 200, r.get_json()
+    for code, pocket in job["drags"]:
+        assert client.post("/api/changer/assign",
+                           json={"code": code, "pocket": pocket}).status_code == 200
+    if job["end_pocket"] is not None:
+        assert client.post("/api/end-pocket",
+                           json={"pocket": job["end_pocket"]}).status_code == 200
+    r = client.post("/api/generate", json={"job_name": f"golden-{name}"})
+    assert r.status_code == 200, r.get_json()
+    return Path(r.get_json()["nc_path"]).read_bytes().decode("utf-8")
+
+
+# The two header comments allowed to differ: the estimate, and when the file was written.
+# Neither commands motion, and each must appear exactly once so a stray copy cannot hide.
+_UNPINNED = (f"({RUNTIME_COMMENT_PREFIX}", "(Date:")
+
+
+def _without_unpinned(gcode):
+    """`(line number, line)` for every pinned line, numbered as in the file."""
+    lines = gcode.splitlines()
+    for prefix in _UNPINNED:
+        found = [ln for ln in lines if ln.startswith(prefix)]
+        assert len(found) == 1, f"expected one {prefix!r} line, found {found}"
+    return [(n, ln) for n, ln in enumerate(lines, start=1) if not ln.startswith(_UNPINNED)]
+
+
+def _assert_same_program(expected, actual, what):
+    for (n, a), (_, b) in zip(expected, actual):
+        assert a == b, f"{what}: first difference at line {n}: {a!r} became {b!r}"
+    assert len(expected) == len(actual), (
+        f"{what}: {len(expected)} lines became {len(actual)}")
+
+
+@pytest.mark.parametrize("name", sorted(_GOLDEN_JOBS))
+def test_the_program_matches_its_golden_master(golden_shop, name):
+    gcode = _generate(golden_shop, name)
+    golden = _GOLDEN / f"{name}.nc"
+    if _BLESS:
+        golden.parent.mkdir(exist_ok=True)
+        golden.write_bytes(gcode.encode("utf-8"))
+        pytest.fail(f"Re-blessed {golden.name}. Review `git diff` on it line by line "
+                    "before committing; this failure is deliberate.")
+    assert golden.exists(), f"{golden} is missing — a deleted master proves nothing"
+    _assert_same_program(_without_unpinned(golden.read_bytes().decode("utf-8")),
+                         _without_unpinned(gcode),
+                         f"{name} no longer matches its golden master")
+
+
+@pytest.mark.parametrize("name", sorted(_GOLDEN_JOBS))
+def test_the_cycle_time_estimate_cannot_change_the_program(golden_shop, monkeypatch, name):
+    real = _generate(golden_shop, name)
+    assert golden_shop.delete("/api/placements").status_code == 200
+
+    def absurd(*args, **kwargs):
+        return {"seconds": 987654.0, "cutting": 1.0, "rapid": 2.0, "tool_changes": 3.0,
+                "tool_change_count": 99, "spindle": 4.0, "spindle_start_count": 99}
+
+    # Every name an estimate is reached by: the job total in `api_generate`, and the
+    # per-part figure at parse time and on a config save.
+    for module in (app_module, runtime_estimator):
+        monkeypatch.setattr(module, "estimate_lines_runtime", absurd)
+        monkeypatch.setattr(module, "estimate_passes_runtime", absurd)
+    app_module._loaded.clear()
+    stand_in = _generate(golden_shop, name)
+
+    assert real != stand_in, "the stand-in estimate never reached the file"
+    _assert_same_program(_without_unpinned(real), _without_unpinned(stand_in),
+                         f"{name} changed when only the estimate did")
